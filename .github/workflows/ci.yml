@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (all workspaces)
+        run: pnpm -r typecheck
+
+      - name: Unit tests (state machine, pure logic)
+        run: pnpm --filter web exec vitest run lib/
+
+      # Integration tests need a real DB. We only run them when the secret is
+      # present — that means PRs from forks skip them, scheduled main jobs run
+      # them. This avoids spinning Postgres in CI for now.
+      - name: Integration tests (live DB)
+        if: ${{ env.DATABASE_URL != '' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm --filter web exec vitest run test/
+
+      - name: Build (Next.js)
+        env:
+          DATABASE_URL: postgres://stub:stub@localhost:5432/stub
+          SUPABASE_URL: https://stub.supabase.co
+          SUPABASE_ANON_KEY: stub
+          NEXT_PUBLIC_SUPABASE_URL: https://stub.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: stub
+          INTERNAL_API_TOKEN: stub
+        run: pnpm --filter web build
