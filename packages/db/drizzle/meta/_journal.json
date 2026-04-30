@@ -8,6 +8,13 @@
       "when": 1777537646258,
       "tag": "0000_lowly_gideon",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1746131520000,
+      "tag": "0001_learning_loop",
+      "breakpoints": true
     }
   ]
 }

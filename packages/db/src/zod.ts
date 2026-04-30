@@ -9,6 +9,8 @@ import {
   metrics,
   auditLog,
   settings,
+  agentFeedback,
+  outcomes,
 } from "./schema";
 
 // Insert schemas — used to validate POST/PATCH payloads in Route Handlers.
@@ -21,6 +23,8 @@ export const insertAssetSchema = createInsertSchema(assets);
 export const insertMetricSchema = createInsertSchema(metrics);
 export const insertAuditSchema = createInsertSchema(auditLog);
 export const insertSettingSchema = createInsertSchema(settings);
+export const insertAgentFeedbackSchema = createInsertSchema(agentFeedback);
+export const insertOutcomeSchema = createInsertSchema(outcomes);
 
 // Select schemas — used to type API responses.
 export const selectCampaignSchema = createSelectSchema(campaigns);
@@ -28,3 +32,5 @@ export const selectContentItemSchema = createSelectSchema(contentItems);
 export const selectApprovalSchema = createSelectSchema(approvals);
 export const selectPublishJobSchema = createSelectSchema(publishJobs);
 export const selectAssetSchema = createSelectSchema(assets);
+export const selectAgentFeedbackSchema = createSelectSchema(agentFeedback);
+export const selectOutcomeSchema = createSelectSchema(outcomes);

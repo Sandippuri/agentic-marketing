@@ -5,6 +5,12 @@ import { CpClient } from "@marketing/cp-client";
 import { runJob } from "./worker";
 import { buildAdapters } from "./adapters";
 import { buildMetricsQueue, startMetricsWorker } from "./metrics-cron";
+import { buildEmbedQueue, startEmbedWorker, startEmbedHttpServer } from "./embed-worker";
+import {
+  buildOutcomesRollupQueue,
+  scheduleNightlyRollup,
+  startOutcomesRollupWorker,
+} from "./outcomes-rollup";
 
 const log = pino({ name: "distributor" });
 
@@ -27,6 +33,18 @@ export const publishQueue = new Queue("publish", { connection });
 // Metrics-fetch queue declared before worker so it's in scope.
 export const metricsQueue = buildMetricsQueue(connection);
 startMetricsWorker(connection, cp, adapters);
+
+// Embedding queue + HTTP server (POST /embed from Control Plane).
+export const embedQueue = buildEmbedQueue(connection);
+startEmbedWorker(connection);
+startEmbedHttpServer(embedQueue, internalToken);
+
+// Nightly outcomes rollup (aggregates raw metrics into pre-rolled windows).
+const rollupQueue = buildOutcomesRollupQueue(connection);
+startOutcomesRollupWorker(connection);
+scheduleNightlyRollup(rollupQueue).catch((err) =>
+  log.error({ err }, "failed to schedule nightly rollup"),
+);
 
 const worker = new Worker(
   "publish",

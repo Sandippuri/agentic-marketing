@@ -9,9 +9,23 @@ import {
   integer,
   numeric,
   date,
+  boolean,
   index,
   uniqueIndex,
+  customType,
 } from "drizzle-orm/pg-core";
+
+// pgvector column type (requires the `vector` extension on Postgres).
+// Drizzle doesn't have first-class pgvector support yet, so we use customType.
+const vector = (name: string, dimensions: number) =>
+  customType<{ data: number[]; driverData: string }>({
+    dataType() { return `vector(${dimensions})`; },
+    fromDriver(val: string) {
+      // pgvector returns e.g. "[0.1,0.2,...]"
+      return JSON.parse(val.replace(/^\[/, "[").replace(/\]$/, "]"));
+    },
+    toDriver(val: number[]) { return `[${val.join(",")}]`; },
+  })(name);
 import {
   CAMPAIGN_PHASES,
   CAMPAIGN_STATUSES,
@@ -264,6 +278,86 @@ export const auditLog = pgTable(
   }),
 );
 
+// --- agent_feedback -----------------------------------------------------------
+// Captures every approval decision for future fine-tuning.
+// Phase 4 add-on. See plan §Phase 11 for the retrieval layer.
+
+export const agentFeedback = pgTable(
+  "agent_feedback",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    contentId: uuid("content_id")
+      .notNull()
+      .references(() => contentItems.id, { onDelete: "cascade" }),
+    // The revision ID that was being reviewed.
+    revisionId: uuid("revision_id"),
+    // The raw AI draft at submission time (snapshot).
+    aiDraftMd: text("ai_draft_md").notNull(),
+    // The final human-edited version (null until approved).
+    humanFinalMd: text("human_final_md"),
+    decision: approvalDecisionEnum("decision").notNull(),
+    // Levenshtein distance between aiDraftMd and humanFinalMd.
+    // Null until the final version is known (i.e. on 'approved' decisions).
+    editDistance: integer("edit_distance"),
+    decidedBy: uuid("decided_by"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
+    reason: text("reason"),
+  },
+  (t) => ({
+    contentIdx: index("agent_feedback_content_idx").on(t.contentId),
+    decisionIdx: index("agent_feedback_decision_idx").on(t.decision),
+    decidedAtIdx: index("agent_feedback_decided_at_idx").on(t.decidedAt),
+  }),
+);
+
+// --- outcomes -----------------------------------------------------------------
+// Pre-rolled performance windows: one row per content × channel × window.
+// Computed nightly by the rollup cron. Idempotent (upsert).
+
+export const outcomes = pgTable(
+  "outcomes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    contentId: uuid("content_id")
+      .notNull()
+      .references(() => contentItems.id, { onDelete: "cascade" }),
+    channel: channelEnum("channel").notNull(),
+    // 7d | 30d | 90d
+    window: text("window").notNull().$type<"7d" | "30d" | "90d">(),
+    impressions: integer("impressions").notNull().default(0),
+    clicks: integer("clicks").notNull().default(0),
+    ctr: numeric("ctr", { precision: 10, scale: 6 }).notNull().default("0"),
+    conversions: integer("conversions").notNull().default(0),
+    engagementRate: numeric("engagement_rate", { precision: 10, scale: 6 }).notNull().default("0"),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    contentChannelWindowUq: uniqueIndex("outcomes_content_channel_window_uq").on(
+      t.contentId,
+      t.channel,
+      t.window,
+    ),
+    ctrIdx: index("outcomes_ctr_idx").on(t.ctr),
+    channelIdx: index("outcomes_channel_idx").on(t.channel),
+  }),
+);
+
+// --- content_embeddings -------------------------------------------------------
+// text-embedding-3-small produces 1536-dimensional vectors.
+// Requires: CREATE EXTENSION IF NOT EXISTS vector; (see migration SQL).
+
+export const contentEmbeddings = pgTable(
+  "content_embeddings",
+  {
+    contentId: uuid("content_id")
+      .primaryKey()
+      .references(() => contentItems.id, { onDelete: "cascade" }),
+    embedding: vector("embedding", 1536).notNull(),
+    embeddedAt: timestamp("embedded_at", { withTimezone: true }).notNull().defaultNow(),
+    model: text("model").notNull().default("text-embedding-3-small"),
+  },
+);
+
 // --- settings -----------------------------------------------------------------
 
 export const settings = pgTable(
@@ -292,6 +386,11 @@ export type Asset = typeof assets.$inferSelect;
 export type Metric = typeof metrics.$inferSelect;
 export type AuditEntry = typeof auditLog.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
+export type AgentFeedback = typeof agentFeedback.$inferSelect;
+export type NewAgentFeedback = typeof agentFeedback.$inferInsert;
+export type Outcome = typeof outcomes.$inferSelect;
+export type NewOutcome = typeof outcomes.$inferInsert;
+export type ContentEmbedding = typeof contentEmbeddings.$inferSelect;
 
 // Re-export enum type unions so callers don't need a second import.
 export {

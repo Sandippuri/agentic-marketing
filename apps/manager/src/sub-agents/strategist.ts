@@ -5,6 +5,8 @@ import pino from "pino";
 import type { CpClient } from "@marketing/cp-client";
 import { STRATEGIST_PROMPT } from "@marketing/prompts";
 import { buildBaseMemory, loadMemory, loadMemoryDir } from "../memory";
+import { findSimilarContent } from "../find-similar";
+import { CHANNELS } from "@marketing/shared-types";
 
 const log = pino({ name: "strategist" });
 
@@ -65,6 +67,25 @@ export async function runStrategist({ request, campaignId, cp }: StrategistInput
           const result = await cp.patchCampaign(id, fields);
           log.info({ id }, "updated campaign");
           return result;
+        },
+      }),
+
+      find_similar_content: tool({
+        description:
+          "Retrieve semantically similar approved content items from the knowledge base. " +
+          "Call this BEFORE drafting any new content to ground the response in past wins. " +
+          "Cite the results in a <rationale> block in your response.",
+        parameters: z.object({
+          topic: z.string().describe("Short description of the topic / angle you're exploring"),
+          channel: z.enum(CHANNELS).optional().describe("Filter by a specific channel"),
+          minCTR: z.number().min(0).max(1).optional().describe("Minimum click-through rate (0–1)"),
+          minEngagement: z.number().min(0).max(1).optional().describe("Minimum engagement rate (0–1)"),
+          limit: z.number().int().min(1).max(10).optional().default(5),
+        }),
+        execute: async (opts) => {
+          const results = await findSimilarContent(opts);
+          log.info({ topic: opts.topic, count: results.length }, "similar content retrieved");
+          return results;
         },
       }),
 

@@ -1,12 +1,13 @@
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { getDb, schema } from "@marketing/db";
+import { getDb, schema, levenshtein } from "@marketing/db";
 import { APPROVAL_DECISIONS } from "@marketing/shared-types";
 import { withAudit } from "@/lib/audit";
 import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { assertContentTransition } from "@/lib/state-machine";
 import { errorResponse, parseJson } from "@/lib/http";
+import { enqueueEmbedding } from "@/lib/embedding-queue";
 
 const Decide = z.object({
   decision: z.enum(APPROVAL_DECISIONS),
@@ -73,6 +74,44 @@ export async function POST(
           })
           .where(eq(schema.approvals.id, id))
           .returning();
+
+        // --- Phase 11 / Phase 4 add-on ---
+        // Capture the AI draft vs. final human version for every decision.
+        // Fetch the current revision to snapshot the AI draft.
+        const [revision] = content.currentRevisionId
+          ? await db
+              .select()
+              .from(schema.contentRevisions)
+              .where(eq(schema.contentRevisions.id, content.currentRevisionId))
+              .limit(1)
+          : [undefined];
+
+        const aiDraftMd = revision?.bodyMd ?? content.bodyMd;
+        const humanFinalMd =
+          input.decision === "approved" ? content.bodyMd : null;
+
+        await db.insert(schema.agentFeedback).values({
+          contentId: approval.contentId,
+          revisionId: content.currentRevisionId ?? null,
+          aiDraftMd,
+          humanFinalMd,
+          decision: input.decision,
+          editDistance:
+            humanFinalMd !== null
+              ? levenshtein(aiDraftMd, humanFinalMd)
+              : null,
+          decidedBy: input.decidedBy ?? actor.id ?? null,
+          decidedAt: new Date(),
+          reason: input.reason ?? null,
+        });
+
+        // If approved, enqueue embedding so the content is searchable.
+        if (input.decision === "approved") {
+          await enqueueEmbedding(approval.contentId).catch(() => {
+            // Non-critical: embedding can be backfilled later.
+          });
+        }
+
         return updated!;
       },
     );

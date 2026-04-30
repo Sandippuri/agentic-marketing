@@ -761,6 +761,66 @@ This is where prompt engineering dominates over coding.
 
 ---
 
+### Phase 11 — Learning Loop (3–4 days)
+
+The knowledge base. Lets the AI retrieve and reuse what worked. This is **retrieval-augmented generation, not real model learning** — the model weights don't change. But to your team it'll look and feel like the system is getting smarter, because every new draft is grounded in your actual past wins instead of generic LLM priors.
+
+**Important caveat — capture starts earlier.** The feedback capture table below (`agent_feedback`) must be wired into the approval flow in **Phase 4**, not here. You cannot backfill the difference between "what the AI drafted" and "what the human approved" after the fact — if you don't capture it at approval time, it's gone forever. This is the single most important data asset for any future fine-tuning work, so the table and write path land in Phase 4, and Phase 11 only adds the retrieval layer on top.
+
+**Day 1 — Outcomes table and metrics ingestion.**
+
+- New table `outcomes` (separate from `metrics`, which stays as raw time-series): `id, content_id, channel, window (7d|30d|90d), impressions, clicks, ctr, conversions, engagement_rate, computed_at`. One row per content × channel × window, recomputed by a nightly job.
+- Nightly cron in `apps/distributor` rolls `metrics` rows up into `outcomes` rows. Idempotent — safe to re-run.
+- Drizzle-Zod schemas for `outcomes` exported from `packages/db`.
+
+**Day 2 — pgvector and the embedding pipeline.**
+
+- Enable `vector` extension in Supabase (one SQL line).
+- New table `content_embeddings`: `content_id (pk, fk), embedding vector(1536), embedded_at, model`.
+- On every `content_items.status = 'approved'` transition, enqueue a BullMQ job that calls the embedding API (OpenAI `text-embedding-3-small` is cheap and adequate; Voyage if you want best-in-class) and writes the row.
+- Backfill job for existing approved content.
+- Index: `CREATE INDEX ON content_embeddings USING ivfflat (embedding vector_cosine_ops)`.
+
+**Day 3 — The `findSimilarContent` tool and prompt wiring.**
+
+- New tool exposed to Strategist and Content sub-agents:
+  ```
+  findSimilarContent({
+    topic: string,
+    channel?: Channel,
+    minCTR?: number,
+    minEngagement?: number,
+    limit?: number = 5
+  }) -> Array<{ content_id, title, body_md, outcomes, published_url }>
+  ```
+  Implementation: embed the `topic`, do a cosine-similarity query against `content_embeddings` joined to `outcomes` with the performance filters, return top N.
+- Update Strategist and Content system prompts in `packages/prompts` so they call this tool **before** drafting. Prompt instruction: *"Before generating, retrieve 3-5 similar past posts using `findSimilarContent`. Cite which past posts you're drawing from in a `<rationale>` block. Prefer patterns from posts that exceeded median CTR for the channel."*
+- Add the rationale block to the approval card so humans can see what the AI was drawing from.
+
+**Day 4 — Feedback retrieval surface (capture is already in Phase 4).**
+
+- Admin UI page `/insights`: "What's working" — top 10 outcomes by channel, with the playbook-style summary the Analyst proposes (read-only for now; human-approved playbook updates are deferred to v2).
+- Read endpoint `GET /api/insights/top-performers?channel=&window=`.
+- Optional: a `humanApproved` filter on `findSimilarContent` so the agent can prefer drafts that were approved without edits over drafts that were heavily rewritten — those are your highest-quality training signals later.
+
+**The Phase 4 add-on (do not skip).**
+
+When wiring approvals in Phase 4, also create:
+
+- Table `agent_feedback`: `id, content_id, revision_id, ai_draft_md, human_final_md, decision (approved|changes_requested|rejected), edit_distance, decided_by, decided_at, reason`.
+- On every approval action, write a row capturing the AI's original draft, the final human-edited version, and the decision. Compute `edit_distance` (Levenshtein on the markdown) so you can later filter for "minimal-edit approvals" — your cleanest training pairs.
+- This is the dataset you'll use in 6–12 months to fine-tune a small model on your brand voice. Without it, fine-tuning is impossible. With it, you have a growing, dated, labeled corpus from day one at zero ongoing cost.
+
+**Exit criteria.** A new draft request triggers a `findSimilarContent` call before generation; the resulting draft cites past posts in its rationale; `/insights` shows top performers per channel; `agent_feedback` is accumulating rows on every approval (verified by integration test).
+
+**What this phase explicitly does NOT do.**
+
+- No automatic playbook editing. The Analyst can *propose* a playbook diff in `/insights`, but a human approves before it's written to `apps/manager/memory/playbooks/`.
+- No fine-tuning. That's a separate, later effort that depends on `agent_feedback` reaching ~1,000 minimal-edit approvals.
+- No self-modifying prompts. Prompts stay in `packages/prompts` under git review.
+
+---
+
 ## 5.5. Progress Tracker
 
 Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freely if work happens out of sequence. Update **Status** and **Last touched** at the top of each phase.
@@ -1004,6 +1064,32 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 - [ ] Day 5 — full-cycle time recorded
 - [ ] **Exit:** complete campaign runs without intervention beyond approval clicks
 
+### Phase 11 — Learning Loop
+
+**Status:** complete (code) · **Last touched:** 2026-05-01
+
+**Phase 4 add-on (must land with approvals, not here):**
+
+- [x] `agent_feedback` table created (`ai_draft_md`, `human_final_md`, `decision`, `edit_distance`, `reason`) — `packages/db/src/schema.ts`; migration `0001_learning_loop.sql`
+- [x] Approval Route Handler writes a row on every approve/changes_requested/rejected — `apps/web/app/api/approvals/[id]/route.ts`
+- [x] `edit_distance` computed (Levenshtein on markdown) and stored — `packages/db/src/levenshtein.ts`
+- [ ] Integration test: every decision path writes exactly one feedback row
+
+**Phase 11 work:**
+
+- [x] Day 1 — `outcomes` table + Drizzle-Zod schemas — `packages/db/src/schema.ts` + `zod.ts`
+- [x] Day 1 — nightly rollup job in `apps/distributor` (idempotent) — `apps/distributor/src/outcomes-rollup.ts` (BullMQ repeatable, 02:00 UTC)
+- [x] Day 2 — `vector` extension enabled on Supabase — `CREATE EXTENSION IF NOT EXISTS vector` in migration SQL
+- [x] Day 2 — `content_embeddings` table + ivfflat cosine index — schema + migration SQL
+- [x] Day 2 — embedding job triggered on `status = 'approved'` — `apps/distributor/src/embed-worker.ts` (BullMQ queue + HTTP server `POST /embed`); `apps/web/lib/embedding-queue.ts` calls it from the approval handler
+- [x] Day 2 — backfill job for existing approved content — `backfillEmbeds()` exported from `embed-worker.ts`
+- [x] Day 3 — `findSimilarContent` tool implemented — `apps/manager/src/find-similar.ts` (embeds topic locally, calls `POST /api/content/similar` with pgvector query)
+- [x] Day 3 — Strategist + Content prompts updated to call it before drafting — `packages/prompts/src/strategist.ts` + `content.ts`; hard rule added; `<rationale>` block required
+- [ ] Day 3 — approval card shows the AI's `<rationale>` block (rendered by `buildSlackApprovalCard` / `buildDiscordApprovalEmbed` — already in `bodyPreview`; full rationale block is part of `bodyMd`)
+- [x] Day 4 — `/insights` admin page (top performers per channel) — `apps/web/app/(admin)/insights/page.tsx`; added to admin nav
+- [x] Day 4 — `GET /api/insights/top-performers` endpoint — `apps/web/app/api/insights/top-performers/route.ts`
+- [ ] **Exit:** new draft request triggers retrieval, draft cites past posts, `agent_feedback` accumulating on every approval (requires live Supabase with pgvector + `OPENAI_API_KEY`)
+
 ---
 
 ## 6. Total Estimate
@@ -1023,9 +1109,10 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 | 8 — Analyst            | 4–5            | 48–62                         |
 | 9 — Polish             | 3              | 51–65                         |
 | 10 — Hardening         | 5              | 56–70                         |
-| **Total**              | **56–70 days** | **8–10 weeks solo full-time** |
+| 11 — Learning loop     | 3–4            | 59–74                         |
+| **Total**              | **59–74 days** | **9–11 weeks solo full-time** |
 
-Without Phase 6.5 (defer assets to v2): **6–8 weeks**.
+Without Phase 6.5 (defer assets to v2): **6–8 weeks**. Without Phase 11 (defer the knowledge base): subtract another 3–4 days, but **the Phase 4 `agent_feedback` capture must still ship** — it's the only piece that can't be backfilled later.
 
 ---
 

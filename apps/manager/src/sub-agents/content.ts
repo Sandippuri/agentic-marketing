@@ -6,6 +6,8 @@ import type { CpClient } from "@marketing/cp-client";
 import { CONTENT_PROMPT } from "@marketing/prompts";
 import { buildBaseMemory, loadMemory } from "../memory";
 import { buildSlackApprovalCard, buildDiscordApprovalEmbed } from "../cards/approval";
+import { findSimilarContent } from "../find-similar";
+import { CHANNELS } from "@marketing/shared-types";
 
 const log = pino({ name: "content" });
 
@@ -54,6 +56,25 @@ export async function runContent({
         description: "Read a memory file by relative path",
         parameters: z.object({ path: z.string() }),
         execute: async ({ path }) => loadMemory(path),
+      }),
+
+      find_similar_content: tool({
+        description:
+          "Retrieve semantically similar approved content items from the knowledge base. " +
+          "Call this BEFORE writing the first draft to ground the post in past wins. " +
+          "Cite the results in a <rationale> block at the top of your response.",
+        parameters: z.object({
+          topic: z.string().describe("Short description of the topic / angle you're drafting"),
+          channel: z.enum(CHANNELS).optional().describe("Target channel — helps filter outcomes"),
+          minCTR: z.number().min(0).max(1).optional(),
+          minEngagement: z.number().min(0).max(1).optional(),
+          limit: z.number().int().min(1).max(10).optional().default(5),
+        }),
+        execute: async (opts) => {
+          const results = await findSimilarContent(opts);
+          log.info({ topic: opts.topic, count: results.length }, "similar content retrieved");
+          return results;
+        },
       }),
 
       create_content: tool({
