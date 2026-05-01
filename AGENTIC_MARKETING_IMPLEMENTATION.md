@@ -773,28 +773,51 @@ The knowledge base. Lets the AI retrieve and reuse what worked. This is **retrie
 - Nightly cron in `apps/distributor` rolls `metrics` rows up into `outcomes` rows. Idempotent — safe to re-run.
 - Drizzle-Zod schemas for `outcomes` exported from `packages/db`.
 
-**Day 2 — pgvector and the embedding pipeline.**
+**Day 2 — pgvector and the embedding pipeline (build it generic).**
+
+The v1 design used a content-specific `content_embeddings` table. The current plan supersedes that with a single generic `embeddings` table so the same pipeline serves every future RAG use case (brand docs, product docs, rejected drafts, playbooks, external sources) without a re-architecture each time.
 
 - Enable `vector` extension in Supabase (one SQL line).
-- New table `content_embeddings`: `content_id (pk, fk), embedding vector(1536), embedded_at, model`.
-- On every `content_items.status = 'approved'` transition, enqueue a BullMQ job that calls the embedding API (OpenAI `text-embedding-3-small` is cheap and adequate; Voyage if you want best-in-class) and writes the row.
+- New table `embeddings` (deliberately generic, not content-specific):
+  ```
+  embeddings
+    id (uuid, pk),
+    source_type (enum: content | brand_doc | product_doc | rejected_draft | playbook | external),
+    source_id (text — content_id, file path, or external URL),
+    chunk_index (int — 0 for whole-doc, >0 for chunked),
+    text (the chunked text that was embedded — kept for debugging and re-display),
+    embedding vector(1536),
+    metadata (jsonb — channel, stage, outcomes_summary, etc),
+    model, embedded_at
+  ```
+  Composite unique index on `(source_type, source_id, chunk_index)`.
+- On every `content_items.status = 'approved'` transition, enqueue a BullMQ job that calls the embedding API (OpenAI `text-embedding-3-small` is cheap and adequate; Voyage if you want best-in-class) and writes a row with `source_type = 'content'`, `source_id = content_id`, `chunk_index = 0`.
 - Backfill job for existing approved content.
-- Index: `CREATE INDEX ON content_embeddings USING ivfflat (embedding vector_cosine_ops)`.
+- Index: `CREATE INDEX ON embeddings USING ivfflat (embedding vector_cosine_ops) WHERE source_type = 'content'` — partial indexes per source_type stay efficient as the table grows mixed.
+- **Why generic:** the same table later holds embeddings for `apps/manager/memory/brand/*.md`, `memory/product/*.md`, rejected drafts from `agent_feedback`, approved playbooks, and any external sources you ingest. One pipeline, one retrieval function, many tools on top. Adding a new RAG use case becomes a 1-day task instead of a re-architecture.
 
-**Day 3 — The `findSimilarContent` tool and prompt wiring.**
+**Day 3 — The retrieval tools and prompt wiring.**
 
-- New tool exposed to Strategist and Content sub-agents:
+- One generic retrieval primitive (server-side, not exposed to agents directly):
   ```
-  findSimilarContent({
-    topic: string,
-    channel?: Channel,
-    minCTR?: number,
-    minEngagement?: number,
-    limit?: number = 5
-  }) -> Array<{ content_id, title, body_md, outcomes, published_url }>
+  retrieve({ sourceType, queryText, filters?, limit? })
+    -> Array<{ source_id, chunk_index, text, metadata, similarity }>
   ```
-  Implementation: embed the `topic`, do a cosine-similarity query against `content_embeddings` joined to `outcomes` with the performance filters, return top N.
-- Update Strategist and Content system prompts in `packages/prompts` so they call this tool **before** drafting. Prompt instruction: *"Before generating, retrieve 3-5 similar past posts using `findSimilarContent`. Cite which past posts you're drawing from in a `<rationale>` block. Prefer patterns from posts that exceeded median CTR for the channel."*
+- Tools exposed to sub-agents are thin wrappers over `retrieve`, each with the right filters and join shape:
+  ```
+  findSimilarContent({ topic, channel?, minCTR?, minEngagement?, limit? })
+    -> Array<{ content_id, title, body_md, outcomes, published_url }>
+    // sourceType='content', joins outcomes, filters by performance
+
+  findBrandGuidance({ topic, limit? })
+    -> Array<{ source_id, text, metadata }>
+    // sourceType='brand_doc', no join, returns chunks verbatim
+
+  findCommonMistakes({ topic, channel?, limit? })  // optional, after ~50 rejections exist
+    -> Array<{ ai_draft_md, reason, edit_distance }>
+    // sourceType='rejected_draft', joins agent_feedback
+  ```
+- Update Strategist and Content system prompts in `packages/prompts` so they call `findSimilarContent` and `findBrandGuidance` **before** drafting. Prompt instruction: *"Before generating, retrieve 3-5 similar past posts using `findSimilarContent` and any relevant brand guidance with `findBrandGuidance`. Cite the sources you drew from in a `<rationale>` block. Prefer patterns from posts that exceeded median CTR for the channel."*
 - Add the rationale block to the approval card so humans can see what the AI was drawing from.
 
 **Day 4 — Feedback retrieval surface (capture is already in Phase 4).**
@@ -864,14 +887,16 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 - [x] Day 3 — `lib/state-machine.ts` with `canTransition*` + 11 unit tests passing
 - [x] Day 3 — `lib/audit.ts` higher-order audit wrapper (`withAudit`)
 - [x] Day 4 — campaign Route Handlers (POST/GET, GET-by-id)
-- [x] Day 4 — content Route Handlers (POST/PATCH/submit)
+- [x] Day 4 — content Route Handlers (POST/GET list/PATCH/submit); `GET /api/content?campaignId=&status=&type=&limit=&offset=` with total count; `cp.listContent()` added
+- [x] Day 4 — publish-jobs Route Handlers: `GET /api/publish-jobs?contentId=&status=&channel=&limit=&offset=` list endpoint; `cp.listPublishJobs()` + `cp.getPublishJob()` added
+- [x] Day 4 — approvals list: `GET /api/approvals?pending=true` returns all undecided approvals joined with content title/type/stage + age minutes; `cp.getPendingApprovals()` added
 - [x] Day 4 — approval Route Handler with state-machine validation
 - [x] Day 4 — audit-log Route Handler (paginated GET with filters)
 - [x] Day 4 — publish-jobs handler with publish-gate check (PublishGateError -> 409, smoke-tested live)
 - [x] Day 5 — Supabase Auth magic-link flow (`/login` form + `/auth/callback` route exchanges code for session cookie)
 - [x] Day 5 — `proxy.ts` redirects unauthenticated users (Next 16 `proxy` convention, not `middleware`)
 - [x] Day 5 — `X-Internal-Token` for OpenClaw service-role calls (`lib/internal-auth.ts`, constant-time compare)
-- [x] Day 6 — `(admin)/campaigns` list page (Server Component, lists from Drizzle)
+- [x] Day 6 — `(admin)/campaigns` list page: redesigned with status/phase filter links, content count + approved/published breakdown per campaign, phase/status badges; `GET /api/campaigns?status=&phase=` filter support added; `cp.listCampaigns({ status?, phase? })` updated
 - [x] Day 6 — `(admin)/campaigns/[id]` detail page
 - [x] Day 6 — TanStack Query create-campaign mutation wired in `NewCampaignForm` (Provider in root layout)
 - [x] Day 7 — Live-DB integration tests in `apps/web/test/lifecycle.test.ts` (preferred Testcontainers pattern; deferrable since Supabase is the canonical environment)
@@ -900,7 +925,7 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 **Status:** code complete; OTel spans live; smoke tests pending `ANTHROPIC_API_KEY` · **Last touched:** 2026-05-01
 
 - [x] Day 1 — Vercel AI SDK (`ai` + `@ai-sdk/anthropic`) already in `apps/manager/package.json`
-- [x] Day 1 — `runOrchestrator` ToolLoopAgent with 6 tools: `run_strategist`, `run_content`, `run_analyst`, `run_distributor`, `run_asset`, `clarify` (`apps/manager/src/orchestrator.ts`)
+- [x] Day 1 — `runOrchestrator` ToolLoopAgent with 9 tools: `run_strategist`, `run_content`, `run_analyst`, `run_distributor`, `run_asset`, `clarify`, `list_campaigns`, `get_pending_approvals`, `check_publish_job` (`apps/manager/src/orchestrator.ts`); prompt updated with decision rules for direct-lookup vs sub-agent routing
 - [x] Day 1 — `onNewMention` routes to `runOrchestrator` in `apps/manager/src/index.ts`
 - [x] Day 2 — `loadMemory()` / `loadMemoryDir()` / `buildBaseMemory()` helpers (`apps/manager/src/memory.ts`)
 - [x] Day 2 — `cp-client` wired into all sub-agent tool `execute()` callbacks
@@ -939,7 +964,7 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 - [x] Day 3 — `get_revision_reason` tool in Content sub-agent fetches `GET /api/approvals?contentId=...` for latest `changes_requested` reason; `apps/web/app/api/approvals/route.ts` added
 - [x] Day 3 — Content sub-agent `submit_for_review` now posts approval card to originating thread via `postToThread` callback; orchestrator passes `threadRef` + `cp.notifyThread` callback; platform detected from `threadRef` prefix to choose Slack Block Kit vs. Discord embed vs. plain text
 - [ ] Day 4 — end-to-end smoke on both platforms (needs registered apps + env vars)
-- [x] Day 4 — Supabase Realtime subscription (`apps/web/lib/realtime-invalidator.tsx`) invalidates TanStack Query keys; mounted in admin layout
+- [x] Day 4 — Supabase Realtime subscription (`apps/web/lib/realtime-invalidator.tsx`) invalidates TanStack Query keys; mounted in admin layout; extended to also invalidate `insights` on `outcomes` table changes
 - [ ] **Exit:** both platforms drive draft → approved with audit trail; admin UI live-updates
 
 ### Phase 5 — First Adapter (Internal Blog) + Distributor Wiring
@@ -1013,16 +1038,17 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 - [x] Day 2–3 — `MailchimpAdapter` fully implemented: `POST /campaigns` → `PUT .../content` → `POST .../actions/send`; Basic auth from `MAILCHIMP_API_KEY`; `retract()` → cancel-send; `fetchMetrics()` → `/reports/:id` (open_rate, click_rate, bounces, unsubscribes); env-gated on `MAILCHIMP_API_KEY`
 - [ ] Day 2–3 — small-audience test send succeeds (needs live credentials)
 - [x] Day 4 — BullMQ 24h-delayed metrics-fetch job (`apps/distributor/src/metrics-cron.ts`): `scheduleMetricsFetch` called in `runJob` after successful email publish; `startMetricsWorker` started alongside publish worker
-- [x] Day 5 — `memory/channel-sops/email.md` scaffolded with subject-line, preheader, body-structure, send-time, and tone guidelines
+- [x] Day 5 — `memory/channel-sops/email.md` scaffolded (both `apps/manager` and `apps/distributor`); `linkedin.md`, `x.md`, `internal-blog.md` SOPs added to `apps/manager/memory/channel-sops/`; `findBrandGuidance` now also scans `playbooks/`; README updated
 - [ ] Day 5 — Content sub-agent produces good email bodies (needs real prompt run)
 - [ ] **Exit:** real broadcast ships E2E; metrics populate within 24h
 
 ### Phase 8 — Analyst Sub-Agent and Metrics Rollups
 
-**Status:** code complete including GA4 client; live data pending GCP setup · **Last touched:** 2026-05-01
+**Status:** code complete including GA4 client + metrics API; live data pending GCP setup · **Last touched:** 2026-05-01
 
 - [ ] Day 1 — GA4 service account + Data API access (external: GCP console); set `GA4_PROPERTY_ID` + `GA4_SERVICE_ACCOUNT_JSON`
 - [x] Day 1 — `runReport` with `utm_campaign` filter + 1-hour in-memory cache (`apps/manager/src/ga4-client.ts`): JWT/OAuth 2.0 service-account signing via Node.js `crypto`; access-token cached separately; `query_campaign_performance` and `query_stage_performance` tools now call `runGA4Report`; gracefully degrades when env vars absent
+- [x] **Extra** — `POST /api/metrics` + `GET /api/metrics` Control Plane endpoints (`apps/web/app/api/metrics/route.ts`); `cp.recordMetrics()` + `cp.getMetrics()` added to `cp-client`; metrics-cron TODO resolved — now calls `cp.recordMetrics()` after every successful email publish
 - [x] Day 2 — SQL views: `campaign_performance`, `stage_performance`, `channel_performance` — already in `infra/supabase/views.sql`
 - [x] Day 3 — Analyst sub-agent prompt + tools (`apps/manager/src/sub-agents/analyst.ts`): `query_campaign_performance`, `query_stage_performance`, `read_learnings`, `write_learnings`
 - [ ] Day 3 — first reports produce useful prose (needs `ANTHROPIC_API_KEY` + live data)
@@ -1068,12 +1094,17 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 
 **Status:** complete (code) · **Last touched:** 2026-05-01
 
+**Also shipped in this session:**
+- [x] RLS policies for `agent_feedback`, `outcomes`, `content_embeddings` added to `infra/supabase/policies.sql`
+- [x] `levenshtein.test.ts` — 11 unit tests (all passing); wired into CI (`ci.yml`)
+- [x] `agent-feedback.test.ts` — 4 integration tests covering all three decision paths (approved/changes_requested/rejected) plus zero-edit path; runs with `DATABASE_URL` secret in CI
+
 **Phase 4 add-on (must land with approvals, not here):**
 
 - [x] `agent_feedback` table created (`ai_draft_md`, `human_final_md`, `decision`, `edit_distance`, `reason`) — `packages/db/src/schema.ts`; migration `0001_learning_loop.sql`
 - [x] Approval Route Handler writes a row on every approve/changes_requested/rejected — `apps/web/app/api/approvals/[id]/route.ts`
-- [x] `edit_distance` computed (Levenshtein on markdown) and stored — `packages/db/src/levenshtein.ts`
-- [ ] Integration test: every decision path writes exactly one feedback row
+- [x] `edit_distance` computed (Levenshtein on markdown) and stored — `packages/db/src/levenshtein.ts`; 11 unit tests in `packages/db/src/levenshtein.test.ts` (all passing)
+- [x] Integration test: every decision path writes exactly one feedback row — `apps/web/test/agent-feedback.test.ts` (4 tests: approved with edit_distance, changes_requested null, rejected null, zero-edit approved)
 
 **Phase 11 work:**
 
@@ -1085,10 +1116,28 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 - [x] Day 2 — backfill job for existing approved content — `backfillEmbeds()` exported from `embed-worker.ts`
 - [x] Day 3 — `findSimilarContent` tool implemented — `apps/manager/src/find-similar.ts` (embeds topic locally, calls `POST /api/content/similar` with pgvector query)
 - [x] Day 3 — Strategist + Content prompts updated to call it before drafting — `packages/prompts/src/strategist.ts` + `content.ts`; hard rule added; `<rationale>` block required
-- [ ] Day 3 — approval card shows the AI's `<rationale>` block (rendered by `buildSlackApprovalCard` / `buildDiscordApprovalEmbed` — already in `bodyPreview`; full rationale block is part of `bodyMd`)
-- [x] Day 4 — `/insights` admin page (top performers per channel) — `apps/web/app/(admin)/insights/page.tsx`; added to admin nav
+- [x] Day 3 — approval card shows the AI's `<rationale>` block: `parseRationale()` utility added to `packages/shared-types/src/rationale.ts`; Slack card shows a dedicated "🧠 AI Rationale" section block; Discord embed adds a "🧠 AI Rationale" field; admin `ApprovalRow` shows an expandable violet rationale section separate from the post copy; post copy preview is stripped of the rationale block so approvers see clean copy
+- [x] Day 4 — `/insights` admin page (top performers per channel) — `apps/web/app/(admin)/insights/page.tsx`; added to admin nav; sort controls converted to link-based navigation so the page works without client-side JS
 - [x] Day 4 — `GET /api/insights/top-performers` endpoint — `apps/web/app/api/insights/top-performers/route.ts`
+- [x] Day 4 — `GET /api/content` list endpoint — `apps/web/app/api/content/route.ts`; cp-client `listContent()` added; Strategist + Content agents given `list_content` tool to check existing drafts before creating new items
+- [x] Day 4 — `query_top_performers` + `query_metrics` tools added to Analyst sub-agent — `apps/manager/src/sub-agents/analyst.ts`; analyst prompt updated with accurate tool signatures
+- [x] Day 4 — 8 unit tests for `parseRationale` utility — `apps/web/lib/parse-rationale.test.ts`; all 25 unit tests passing across `auth-allowlist`, `state-machine`, and `parse-rationale`
+- [x] Day 4 — Campaign detail page enhanced: brief preview, calendar table, content item table with status/stage badges, status summary pills — `apps/web/app/(admin)/campaigns/[id]/page.tsx`
 - [ ] **Exit:** new draft request triggers retrieval, draft cites past posts, `agent_feedback` accumulating on every approval (requires live Supabase with pgvector + `OPENAI_API_KEY`)
+
+**Phase 11.1 — Generic embeddings refactor:**
+
+**Status:** complete (code) · **Last touched:** 2026-05-01
+
+- [x] New migration `0002_generic_embeddings.sql`: `embedding_source_type` enum (`content`, `brand_doc`, `rejected_draft`); `embeddings` table with `source_type`, `source_id`, `chunk_index`, `text`, `embedding`, `metadata`, `model`, `embedded_at`; composite unique constraint `(source_type, source_id, chunk_index)`; partial ivfflat indexes per `source_type`; data migration `INSERT … FROM content_embeddings ON CONFLICT DO NOTHING`; journal updated
+- [x] `embedding_source_type` enum + `embeddings` table added to `packages/db/src/schema.ts`; `Embedding` + `NewEmbedding` types exported; `embeddingSourceTypeEnum` exported
+- [x] `apps/distributor/src/embed-worker.ts` now writes to `embeddings` (`source_type='content'`) first; also writes to legacy `content_embeddings` during migration window (silent catch if already dropped); `embedText` extracted as named export; `backfillEmbeds` updated to left-join `embeddings` table
+- [x] `POST /api/content/similar` updated to query `embeddings WHERE source_type='content'` with `source_id = content_items.id::text` join; no longer references `contentEmbeddings`
+- [x] RLS: `alter table embeddings enable row level security` + `team_read_embeddings` select policy added to `infra/supabase/policies.sql`
+- [x] `findBrandGuidance` implemented in `apps/manager/src/brand-guidance.ts`: loads `memory/brand/*.md` + `memory/channel-sops/*.md`; paragraph chunker; OpenAI embed with 5-min in-process cache; pure cosine similarity ranking; returns `{ source, text, similarity }[]`
+- [x] `find_brand_guidance` tool added to both Strategist + Content sub-agents; prompts updated — Content must call `find_brand_guidance` AND `find_similar_content` before every first draft
+- [ ] Drop `content_embeddings` after verifying data parity in staging (run `DROP TABLE content_embeddings;` after 0002 migration is applied)
+- [ ] `findCommonMistakes` tool (defer until ~50+ `agent_feedback` rejections exist)
 
 ---
 

@@ -79,6 +79,45 @@ export async function runAnalyst({ request, campaignId, cp }: AnalystInput): Pro
         },
       }),
 
+      query_top_performers: tool({
+        description:
+          "Retrieve top-performing content items from the outcomes table. " +
+          "Use to identify what worked before writing a learnings summary.",
+        parameters: z.object({
+          channel: z.enum(["internal_blog", "linkedin", "x", "email_hubspot", "email_mailchimp"]).optional(),
+          window: z.enum(["7d", "30d", "90d"]).optional().default("30d"),
+          sortBy: z.enum(["ctr", "engagement", "impressions", "clicks"]).optional().default("ctr"),
+          limit: z.number().int().min(1).max(20).optional().default(10),
+        }),
+        execute: async ({ channel, window, sortBy, limit }) => {
+          const cpBase = process.env.CP_BASE_URL ?? "http://localhost:3000";
+          const token = process.env.INTERNAL_API_TOKEN ?? "";
+          const qs = new URLSearchParams({
+            window: window ?? "30d",
+            sortBy: sortBy ?? "ctr",
+            limit: String(limit ?? 10),
+            ...(channel ? { channel } : {}),
+          });
+          const res = await fetch(`${cpBase}/api/insights/top-performers?${qs}`, {
+            headers: { "x-internal-token": token },
+          });
+          if (!res.ok) return { error: `top-performers API returned ${res.status}` };
+          return res.json();
+        },
+      }),
+
+      query_metrics: tool({
+        description: "Fetch raw metrics rows for a specific content item or campaign from the metrics table.",
+        parameters: z.object({
+          scopeType: z.enum(["content", "campaign"]),
+          scopeId: z.string().uuid(),
+          channel: z.enum(["internal_blog", "linkedin", "x", "email_hubspot", "email_mailchimp"]).optional(),
+        }),
+        execute: async (opts) => {
+          return cp.getMetrics(opts).catch((err) => ({ error: (err as Error).message }));
+        },
+      }),
+
       read_learnings: tool({
         description: "Read all past analyst learnings files",
         parameters: z.object({}),

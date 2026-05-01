@@ -7,6 +7,7 @@ import { CONTENT_PROMPT } from "@marketing/prompts";
 import { buildBaseMemory, loadMemory } from "../memory";
 import { buildSlackApprovalCard, buildDiscordApprovalEmbed } from "../cards/approval";
 import { findSimilarContent } from "../find-similar";
+import { findBrandGuidance } from "../brand-guidance";
 import { CHANNELS } from "@marketing/shared-types";
 
 const log = pino({ name: "content" });
@@ -52,6 +53,20 @@ export async function runContent({
         },
       }),
 
+      list_content: tool({
+        description: "List existing content items for a campaign. Use this to check what drafts already exist before creating a new one, and to find content IDs when revising.",
+        parameters: z.object({
+          campaignId: z.string(),
+          status: z.enum(["draft", "in_review", "approved", "scheduled", "published", "retracted"]).optional(),
+          limit: z.number().int().min(1).max(50).optional().default(20),
+        }),
+        execute: async ({ campaignId: cid, status, limit }) => {
+          const result = await cp.listContent({ campaignId: cid, status, limit });
+          log.info({ cid, total: result.total }, "listed content");
+          return result;
+        },
+      }),
+
       read_memory: tool({
         description: "Read a memory file by relative path",
         parameters: z.object({ path: z.string() }),
@@ -73,6 +88,23 @@ export async function runContent({
         execute: async (opts) => {
           const results = await findSimilarContent(opts);
           log.info({ topic: opts.topic, count: results.length }, "similar content retrieved");
+          return results;
+        },
+      }),
+
+      find_brand_guidance: tool({
+        description:
+          "Search brand documents (voice, ICP, positioning, channel SOPs) for guidance " +
+          "relevant to the topic you're writing about. " +
+          "Call this alongside find_similar_content before drafting to ensure tone, " +
+          "terminology, and structural conventions match the brand guidelines.",
+        parameters: z.object({
+          topic: z.string().describe("The topic, angle, or specific question to look up in brand docs"),
+          limit: z.number().int().min(1).max(8).optional().default(4),
+        }),
+        execute: async ({ topic, limit }) => {
+          const results = await findBrandGuidance({ topic, limit });
+          log.info({ topic, count: results.length }, "brand guidance retrieved");
           return results;
         },
       }),

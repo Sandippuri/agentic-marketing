@@ -29,8 +29,11 @@ jobs:
       - name: Typecheck (all workspaces)
         run: pnpm -r typecheck
 
-      - name: Unit tests (state machine, pure logic)
+      - name: Unit tests — state machine + auth-allowlist + parseRationale (web)
         run: pnpm --filter web exec vitest run lib/
+
+      - name: Unit tests — levenshtein (db package)
+        run: pnpm --filter @marketing/db run test
 
       # Integration tests need a real DB. We only run them when the secret is
       # present — that means PRs from forks skip them, scheduled main jobs run

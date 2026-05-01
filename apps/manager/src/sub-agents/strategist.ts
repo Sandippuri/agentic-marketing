@@ -6,6 +6,7 @@ import type { CpClient } from "@marketing/cp-client";
 import { STRATEGIST_PROMPT } from "@marketing/prompts";
 import { buildBaseMemory, loadMemory, loadMemoryDir } from "../memory";
 import { findSimilarContent } from "../find-similar";
+import { findBrandGuidance } from "../brand-guidance";
 import { CHANNELS } from "@marketing/shared-types";
 
 const log = pino({ name: "strategist" });
@@ -38,6 +39,33 @@ export async function runStrategist({ request, campaignId, cp }: StrategistInput
         parameters: z.object({ since: z.string().optional().describe("ISO date string — not used for filtering yet, included for future") }),
         execute: async () => {
           return loadMemoryDir("learnings");
+        },
+      }),
+
+      list_content: tool({
+        description: "List existing content items for a campaign by status. Use to see what's already in flight before scheduling new items.",
+        parameters: z.object({
+          campaignId: z.string(),
+          status: z.enum(["draft", "in_review", "approved", "scheduled", "published", "retracted"]).optional(),
+          limit: z.number().int().min(1).max(50).optional().default(20),
+        }),
+        execute: async ({ campaignId: cid, status, limit }) => {
+          const result = await cp.listContent({ campaignId: cid, status, limit });
+          return result;
+        },
+      }),
+
+      find_brand_guidance: tool({
+        description:
+          "Search brand Markdown files (voice, ICP, positioning) for guidance relevant to " +
+          "the campaign or brief you're writing. Use before writing a campaign brief to ensure " +
+          "the messaging matches the brand's established voice and target audience.",
+        parameters: z.object({
+          topic: z.string().describe("The campaign topic, product area, or question to look up"),
+          limit: z.number().int().min(1).max(6).optional().default(4),
+        }),
+        execute: async ({ topic, limit }) => {
+          return findBrandGuidance({ topic, limit });
         },
       }),
 

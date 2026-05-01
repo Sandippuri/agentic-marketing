@@ -1,12 +1,64 @@
 import { z } from "zod";
-import { eq, and, gte } from "drizzle-orm";
+import { eq, and, gte, desc, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
-import { CHANNELS } from "@marketing/shared-types";
+import { CHANNELS, PUBLISH_JOB_STATUSES } from "@marketing/shared-types";
 import { withAudit } from "@/lib/audit";
 import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson, PublishGateError } from "@/lib/http";
 import { enqueuePublish } from "@/lib/publish-queue";
+
+/**
+ * GET /api/publish-jobs
+ * List publish jobs. Filterable by contentId, status, channel.
+ */
+export async function GET(request: Request) {
+  try {
+    const isInternalCall = isInternal(request);
+    if (!isInternalCall) {
+      await getRequestActor();
+    }
+
+    const url = new URL(request.url);
+    const contentId = url.searchParams.get("contentId");
+    const status = url.searchParams.get("status");
+    const channel = url.searchParams.get("channel");
+    const limit = Math.min(100, parseInt(url.searchParams.get("limit") ?? "50", 10));
+    const offset = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0", 10));
+
+    const db = getDb();
+    const conditions = [];
+
+    if (contentId) {
+      conditions.push(eq(schema.publishJobs.contentId, contentId));
+    }
+    if (status && PUBLISH_JOB_STATUSES.includes(status as (typeof PUBLISH_JOB_STATUSES)[number])) {
+      conditions.push(eq(schema.publishJobs.status, status as (typeof PUBLISH_JOB_STATUSES)[number]));
+    }
+    if (channel && CHANNELS.includes(channel as (typeof CHANNELS)[number])) {
+      conditions.push(eq(schema.publishJobs.channel, channel as (typeof CHANNELS)[number]));
+    }
+
+    const [rows, countResult] = await Promise.all([
+      db
+        .select()
+        .from(schema.publishJobs)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(schema.publishJobs.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ total: sql<number>`count(*)::int` })
+        .from(schema.publishJobs)
+        .where(conditions.length > 0 ? and(...conditions) : undefined),
+    ]);
+
+    const total = countResult[0]?.total ?? 0;
+    return Response.json({ items: rows, total, limit, offset });
+  } catch (err) {
+    return errorResponse(err);
+  }
+}
 
 const Enqueue = z.object({
   contentId: z.string().uuid(),

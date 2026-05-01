@@ -1,16 +1,17 @@
 /**
  * BullMQ worker that embeds approved content items using the OpenAI
- * text-embedding-3-small API and writes the vector to content_embeddings.
+ * text-embedding-3-small API and writes vectors to the generic `embeddings`
+ * table (source_type='content').
  *
  * Also exposes a tiny HTTP endpoint (POST /embed) consumed by the Control Plane
  * via apps/web/lib/embedding-queue.ts.
  *
- * Phase 11 Day 2.
+ * Phase 11 Day 2 / Phase 11.1 refactor.
  */
 
 import { Queue, Worker, type Job } from "bullmq";
 import type IORedis from "ioredis";
-import { getDb, schema, contentEmbeddings } from "@marketing/db";
+import { getDb, schema, embeddings, contentEmbeddings } from "@marketing/db";
 import { eq } from "drizzle-orm";
 import pino from "pino";
 import http from "node:http";
@@ -20,6 +21,28 @@ const log = pino({ name: "embed-worker" });
 export type EmbedJobData = {
   contentId: string;
 };
+
+// ---------- shared embed helper -----------------------------------------------
+
+export async function embedText(text: string, apiKey: string): Promise<number[]> {
+  const res = await fetch(OPENAI_EMBED_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model: MODEL, input: text }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`OpenAI embed failed: ${res.status} ${await res.text()}`);
+  }
+
+  const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
+  const embedding = json.data[0]?.embedding;
+  if (!embedding?.length) throw new Error("empty embedding returned");
+  return embedding;
+}
 
 const QUEUE_NAME = "embed";
 const OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings";
@@ -36,7 +59,7 @@ export function buildEmbedQueue(connection: IORedis): Queue<EmbedJobData> {
 export function startEmbedHttpServer(
   queue: Queue<EmbedJobData>,
   internalToken: string,
-  port = 4002,
+  port = parseInt(process.env.EMBED_HTTP_PORT ?? "4002", 10),
 ): http.Server {
   const server = http.createServer((req, res) => {
     if (req.url === "/healthz" && req.method === "GET") {
@@ -110,35 +133,45 @@ export function startEmbedWorker(connection: IORedis): Worker<EmbedJobData> {
 
       const text = `${content.title}\n\n${content.bodyMd}`.slice(0, 8_000);
 
-      const res = await fetch(OPENAI_EMBED_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({ model: MODEL, input: text }),
-      });
+      const embeddingVec = await embedText(text, apiKey);
 
-      if (!res.ok) {
-        throw new Error(`OpenAI embed failed: ${res.status} ${await res.text()}`);
-      }
-
-      const json = (await res.json()) as {
-        data: Array<{ embedding: number[] }>;
-      };
-      const embedding = json.data[0]?.embedding;
-      if (!embedding?.length) throw new Error("empty embedding returned");
-
-      // Upsert into content_embeddings (replace if already exists).
+      // Upsert into generic embeddings table (source_type='content').
       await db
-        .insert(contentEmbeddings)
-        .values({ contentId, embedding, model: MODEL })
+        .insert(embeddings)
+        .values({
+          sourceType: "content",
+          sourceId: contentId,
+          chunkIndex: 0,
+          text: text.slice(0, 2_000),
+          embedding: embeddingVec,
+          metadata: { contentId },
+          model: MODEL,
+        })
         .onConflictDoUpdate({
-          target: contentEmbeddings.contentId,
-          set: { embedding, embeddedAt: new Date(), model: MODEL },
+          target: [embeddings.sourceType, embeddings.sourceId, embeddings.chunkIndex],
+          set: {
+            text: text.slice(0, 2_000),
+            embedding: embeddingVec,
+            embeddedAt: new Date(),
+            model: MODEL,
+          },
         });
 
-      log.info({ contentId, dims: embedding.length }, "embedded");
+      // Also write to legacy content_embeddings for backward compat during
+      // the migration window. Remove after 0002_generic_embeddings is applied
+      // and DROP TABLE content_embeddings runs in staging.
+      await db
+        .insert(contentEmbeddings)
+        .values({ contentId, embedding: embeddingVec, model: MODEL })
+        .onConflictDoUpdate({
+          target: contentEmbeddings.contentId,
+          set: { embedding: embeddingVec, embeddedAt: new Date(), model: MODEL },
+        })
+        .catch(() => {
+          // Silently ignore if content_embeddings was already dropped.
+        });
+
+      log.info({ contentId, dims: embeddingVec.length }, "embedded");
     },
     { connection, concurrency: 2 },
   );
@@ -159,18 +192,20 @@ export function startEmbedWorker(connection: IORedis): Worker<EmbedJobData> {
 export async function backfillEmbeds(queue: Queue<EmbedJobData>): Promise<void> {
   const db = getDb();
 
+  // Find approved content items that don't yet have a row in `embeddings`.
   const rows = await db
     .select({ id: schema.contentItems.id })
     .from(schema.contentItems)
     .leftJoin(
-      contentEmbeddings,
-      eq(contentEmbeddings.contentId, schema.contentItems.id),
+      embeddings,
+      eq(embeddings.sourceId, schema.contentItems.id),
     )
     .where(eq(schema.contentItems.status, "approved"));
 
-  const missing = rows.filter((r: { id: string }) => !r.id);
+  const missing = rows.filter((r) => !r.id);
   log.info({ total: rows.length, missing: missing.length }, "backfill scan");
 
+  let enqueued = 0;
   for (const row of rows) {
     if (!row.id) continue;
     await queue.add(
@@ -178,7 +213,8 @@ export async function backfillEmbeds(queue: Queue<EmbedJobData>): Promise<void> 
       { contentId: row.id },
       { jobId: `embed:${row.id}`, removeOnComplete: 500 },
     );
+    enqueued++;
   }
 
-  log.info({ enqueued: rows.length }, "backfill enqueued");
+  log.info({ enqueued }, "backfill enqueued");
 }

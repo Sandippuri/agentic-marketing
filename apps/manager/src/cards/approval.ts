@@ -1,13 +1,16 @@
 // Approval card builders for Slack (Block Kit) and Discord (embed).
 // Each builder returns the platform-native payload; the bot posts it as-is.
 
+import { parseRationale } from "@marketing/shared-types";
+
 export type ApprovalCardData = {
   approvalId: string;
   contentId: string;
   title: string;
   type: string;
   stage: string;
-  bodyPreview: string; // first 300 chars of bodyMd
+  /** First 300 chars of bodyMd — may include a <rationale> block at the top. */
+  bodyPreview: string;
   campaignName: string;
   requestedAt: string;
   /** Signed URL for the visual asset preview, if any */
@@ -19,49 +22,66 @@ export type ApprovalCardData = {
 // ---------------------------------------------------------------------------
 
 export function buildSlackApprovalCard(data: ApprovalCardData) {
+  const { rationale, bodyCopy } = parseRationale(data.bodyPreview);
   const preview =
-    data.bodyPreview.length > 300
-      ? data.bodyPreview.slice(0, 297) + "…"
-      : data.bodyPreview;
+    bodyCopy.length > 300 ? bodyCopy.slice(0, 297) + "…" : bodyCopy;
+
+  const blocks: object[] = [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: `📋 Review: ${data.title}`,
+        emoji: true,
+      },
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Campaign:*\n${data.campaignName}` },
+        {
+          type: "mrkdwn",
+          text: `*Type / Stage:*\n${data.type} · ${data.stage}`,
+        },
+      ],
+    },
+  ];
+
+  // Rationale block — shown only when the AI included one.
+  if (rationale) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*🧠 AI Rationale:*\n_${rationale.slice(0, 280)}${rationale.length > 280 ? "…" : ""}_`,
+      },
+    });
+  }
+
+  blocks.push(
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Preview:*\n${preview}`,
+      },
+      // Attach thumbnail if an asset is available.
+      ...(data.assetSignedUrl
+        ? {
+            accessory: {
+              type: "image",
+              image_url: data.assetSignedUrl,
+              alt_text: "Visual asset preview",
+            },
+          }
+        : {}),
+    },
+    { type: "divider" },
+  );
 
   return {
     blocks: [
-      {
-        type: "header",
-        text: {
-          type: "plain_text",
-          text: `📋 Review: ${data.title}`,
-          emoji: true,
-        },
-      },
-      {
-        type: "section",
-        fields: [
-          { type: "mrkdwn", text: `*Campaign:*\n${data.campaignName}` },
-          {
-            type: "mrkdwn",
-            text: `*Type / Stage:*\n${data.type} · ${data.stage}`,
-          },
-        ],
-      },
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `*Preview:*\n${preview}`,
-        },
-        // Attach thumbnail if an asset is available.
-        ...(data.assetSignedUrl
-          ? {
-              accessory: {
-                type: "image",
-                image_url: data.assetSignedUrl,
-                alt_text: "Visual asset preview",
-              },
-            }
-          : {}),
-      },
-      { type: "divider" },
+      ...blocks,
       {
         type: "actions",
         block_id: `approval:${data.approvalId}`,
@@ -98,6 +118,7 @@ export function buildSlackApprovalCard(data: ApprovalCardData) {
   };
 }
 
+
 // ---------------------------------------------------------------------------
 // Discord embed
 // ---------------------------------------------------------------------------
@@ -110,12 +131,31 @@ const STAGE_COLOR: Record<string, number> = {
 };
 
 export function buildDiscordApprovalEmbed(data: ApprovalCardData) {
+  const { rationale, bodyCopy } = parseRationale(data.bodyPreview);
   const preview =
-    data.bodyPreview.length > 300
-      ? data.bodyPreview.slice(0, 297) + "…"
-      : data.bodyPreview;
+    bodyCopy.length > 300 ? bodyCopy.slice(0, 297) + "…" : bodyCopy;
 
   const color = STAGE_COLOR[data.stage] ?? 0x6b7280;
+
+  const fields: object[] = [
+    { name: "Campaign", value: data.campaignName, inline: true },
+    { name: "Type", value: data.type, inline: true },
+    { name: "Stage", value: data.stage, inline: true },
+    ...(rationale
+      ? [
+          {
+            name: "🧠 AI Rationale",
+            value: rationale.slice(0, 1024),
+            inline: false,
+          },
+        ]
+      : []),
+    {
+      name: "Approval ID",
+      value: `\`${data.approvalId}\``,
+      inline: false,
+    },
+  ];
 
   return {
     embeds: [
@@ -123,16 +163,7 @@ export function buildDiscordApprovalEmbed(data: ApprovalCardData) {
         title: `📋 Review: ${data.title}`,
         description: `**Preview:**\n${preview}`,
         color,
-        fields: [
-          { name: "Campaign", value: data.campaignName, inline: true },
-          { name: "Type", value: data.type, inline: true },
-          { name: "Stage", value: data.stage, inline: true },
-          {
-            name: "Approval ID",
-            value: `\`${data.approvalId}\``,
-            inline: false,
-          },
-        ],
+        fields,
         // Show asset thumbnail if available.
         ...(data.assetSignedUrl
           ? { image: { url: data.assetSignedUrl } }
@@ -142,8 +173,6 @@ export function buildDiscordApprovalEmbed(data: ApprovalCardData) {
         },
       },
     ],
-    // Discord doesn't have interactive buttons in the same way, so we include
-    // slash-command instructions as a follow-up message.
     content: [
       "React to this message to decide:",
       "✅ `/approve " + data.approvalId + "`",

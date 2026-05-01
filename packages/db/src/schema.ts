@@ -66,6 +66,11 @@ export const assetStatusEnum = pgEnum("asset_status", ASSET_STATUSES);
 export const actorKindEnum = pgEnum("actor_kind", ACTOR_KINDS);
 export const scopeTypeEnum = pgEnum("scope_type", SCOPE_TYPES);
 export const channelEnum = pgEnum("channel", CHANNELS);
+export const embeddingSourceTypeEnum = pgEnum("embedding_source_type", [
+  "content",
+  "brand_doc",
+  "rejected_draft",
+] as const);
 
 // --- campaigns ----------------------------------------------------------------
 
@@ -358,6 +363,33 @@ export const contentEmbeddings = pgTable(
   },
 );
 
+// --- embeddings (generic) -----------------------------------------------------
+// Replaces content_embeddings. Stores vectors for any source_type:
+//   - 'content'       → approved ContentItem (source_id = content_items.id)
+//   - 'brand_doc'     → brand/ICP/positioning Markdown chunk (source_id = filename:chunk)
+//   - 'rejected_draft'→ agent_feedback row (source_id = agent_feedback.id)
+// Partial ivfflat indexes per source_type are created in migration SQL.
+
+export const embeddings = pgTable(
+  "embeddings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceType: embeddingSourceTypeEnum("source_type").notNull(),
+    sourceId: text("source_id").notNull(),
+    chunkIndex: integer("chunk_index").notNull().default(0),
+    text: text("text").notNull().default(""),
+    embedding: vector("embedding", 1536).notNull(),
+    metadata: jsonb("metadata").notNull().default({}),
+    model: text("model").notNull().default("text-embedding-3-small"),
+    embeddedAt: timestamp("embedded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    sourceUq: uniqueIndex("embeddings_source_uq").on(t.sourceType, t.sourceId, t.chunkIndex),
+    sourceTypeIdx: index("embeddings_source_type_idx").on(t.sourceType),
+    sourceIdIdx: index("embeddings_source_id_idx").on(t.sourceId),
+  }),
+);
+
 // --- settings -----------------------------------------------------------------
 
 export const settings = pgTable(
@@ -391,6 +423,8 @@ export type NewAgentFeedback = typeof agentFeedback.$inferInsert;
 export type Outcome = typeof outcomes.$inferSelect;
 export type NewOutcome = typeof outcomes.$inferInsert;
 export type ContentEmbedding = typeof contentEmbeddings.$inferSelect;
+export type Embedding = typeof embeddings.$inferSelect;
+export type NewEmbedding = typeof embeddings.$inferInsert;
 
 // Re-export enum type unions so callers don't need a second import.
 export {

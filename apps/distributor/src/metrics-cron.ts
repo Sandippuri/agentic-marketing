@@ -65,7 +65,22 @@ export function startMetricsWorker(
       // POST each metric value to the CP metrics endpoint.
       // Phase 8 will add a proper /api/metrics route; for now we log.
       log.info({ publishJobId, metrics }, "metrics fetched");
-      // TODO (Phase 8): await cp.recordMetrics({ scopeType: "content", scopeId: job.data.contentId, channel, metrics });
+
+      // Post each scalar metric to the Control Plane.
+      const entries = Object.entries(metrics).map(([metric, value]) => ({
+        metric,
+        value,
+        channel,
+        observedAt: new Date().toISOString(),
+      }));
+      if (entries.length > 0) {
+        await cp.recordMetrics({
+          scopeType: "content",
+          scopeId: job.data.contentId,
+          metrics: entries,
+        });
+        log.info({ publishJobId, count: entries.length }, "metrics recorded");
+      }
     },
     { connection, concurrency: 2 },
   );

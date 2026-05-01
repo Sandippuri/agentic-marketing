@@ -7,6 +7,7 @@ import type {
   CampaignStatus,
   ApprovalDecision,
   PublishJobStatus,
+  ScopeType,
   ThreadRef,
   SettingsShape,
 } from "@marketing/shared-types";
@@ -102,8 +103,12 @@ export class CpClient {
   }
 
   // --- campaigns ----------------------------------------------------------
-  listCampaigns() {
-    return this.req<CampaignDto[]>("GET", "/api/campaigns");
+  listCampaigns(params?: { status?: CampaignStatus; phase?: CampaignPhase }) {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.phase) qs.set("phase", params.phase);
+    const query = qs.toString() ? `?${qs.toString()}` : "";
+    return this.req<CampaignDto[]>("GET", `/api/campaigns${query}`);
   }
   getCampaign(id: string) {
     return this.req<CampaignDto>("GET", `/api/campaigns/${id}`);
@@ -121,6 +126,25 @@ export class CpClient {
   }
 
   // --- content ------------------------------------------------------------
+  listContent(params?: {
+    campaignId?: string;
+    status?: ContentStatus;
+    type?: ContentType;
+    limit?: number;
+    offset?: number;
+  }) {
+    const qs = new URLSearchParams();
+    if (params?.campaignId) qs.set("campaignId", params.campaignId);
+    if (params?.status) qs.set("status", params.status);
+    if (params?.type) qs.set("type", params.type);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    const query = qs.toString() ? `?${qs.toString()}` : "";
+    return this.req<{ items: ContentItemDto[]; total: number; limit: number; offset: number }>(
+      "GET",
+      `/api/content${query}`,
+    );
+  }
   getContent(id: string) {
     return this.req<ContentItemDto>("GET", `/api/content/${id}`);
   }
@@ -147,8 +171,47 @@ export class CpClient {
   ) {
     return this.req<ApprovalDto>("POST", `/api/approvals/${id}`, input);
   }
+  getApprovalsForContent(contentId: string) {
+    return this.req<ApprovalDto[]>("GET", `/api/approvals?contentId=${contentId}`);
+  }
+  getPendingApprovals(limit = 20) {
+    return this.req<{
+      items: Array<{
+        id: string;
+        contentId: string;
+        contentTitle: string;
+        contentType: string;
+        contentStage: string;
+        requestedAt: string;
+        ageMinutes: number;
+      }>;
+      total: number;
+    }>("GET", `/api/approvals?pending=true&limit=${limit}`);
+  }
 
   // --- publish-jobs -------------------------------------------------------
+  listPublishJobs(params?: {
+    contentId?: string;
+    status?: PublishJobStatus;
+    channel?: Channel;
+    limit?: number;
+    offset?: number;
+  }) {
+    const qs = new URLSearchParams();
+    if (params?.contentId) qs.set("contentId", params.contentId);
+    if (params?.status) qs.set("status", params.status);
+    if (params?.channel) qs.set("channel", params.channel);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    const query = qs.toString() ? `?${qs.toString()}` : "";
+    return this.req<{ items: PublishJobDto[]; total: number; limit: number; offset: number }>(
+      "GET",
+      `/api/publish-jobs${query}`,
+    );
+  }
+  getPublishJob(id: string) {
+    return this.req<PublishJobDto>("GET", `/api/publish-jobs/${id}`);
+  }
   enqueuePublish(input: {
     contentId: string;
     channel: Channel;
@@ -190,6 +253,32 @@ export class CpClient {
     return this.req<{ id: string; storagePath: string; signedUrl: string | null }>(
       "GET",
       `/api/assets/${id}`,
+    );
+  }
+
+  // --- metrics ------------------------------------------------------------
+  recordMetrics(input: {
+    scopeType: ScopeType;
+    scopeId: string;
+    metrics: Array<{
+      metric: string;
+      value: number;
+      channel?: Channel;
+      observedAt?: string;
+    }>;
+  }) {
+    return this.req<{ inserted: number }>("POST", "/api/metrics", input);
+  }
+
+  getMetrics(params: { scopeType: ScopeType; scopeId: string; channel?: Channel }) {
+    const qs = new URLSearchParams({
+      scopeType: params.scopeType,
+      scopeId: params.scopeId,
+      ...(params.channel ? { channel: params.channel } : {}),
+    });
+    return this.req<Array<{ metric: string; value: string; channel: Channel | null; observedAt: string }>>(
+      "GET",
+      `/api/metrics?${qs.toString()}`,
     );
   }
 

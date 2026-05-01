@@ -1,6 +1,8 @@
 // Enum string-literal unions. Drizzle pgEnum values must match these exactly.
 // Plan §3.
 
+export { parseRationale } from "./rationale";
+
 export const CAMPAIGN_PHASES = ["buildup", "launch", "post_launch"] as const;
 export type CampaignPhase = (typeof CAMPAIGN_PHASES)[number];
 

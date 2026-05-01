@@ -12,7 +12,9 @@
     "./zod": "./src/zod.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@marketing/shared-types": "workspace:*",
@@ -24,6 +26,7 @@
   "devDependencies": {
     "@types/node": "^22",
     "drizzle-kit": "^0.28.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
   }
 }

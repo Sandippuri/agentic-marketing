@@ -1,19 +1,21 @@
 "use client";
 
 import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { createBrowserClient } from "@supabase/ssr";
 
 /**
- * Subscribes to Supabase Realtime Postgres-changes for the three hot tables
- * (content_items, approvals, publish_jobs) and invalidates the matching
- * TanStack Query keys on every event.
+ * Subscribes to Supabase Realtime Postgres-changes on hot tables and invalidates
+ * matching TanStack Query keys. Also calls `router.refresh()` when `outcomes`
+ * changes so SSR pages like `/insights` (Server Components) pick up rollup data.
  *
- * Mount once in the admin layout — keeps the approval queue, campaign detail,
- * and publish-job list live without polling.
+ * Mount once in the admin layout — keeps the approval queue, campaign lists,
+ * and publish-job surfaces live without polling.
  */
 export function RealtimeInvalidator() {
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   useEffect(() => {
     const supabase = createBrowserClient(
@@ -47,12 +49,20 @@ export function RealtimeInvalidator() {
           queryClient.invalidateQueries({ queryKey: ["campaigns"] });
         },
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "outcomes" },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["insights"] });
+          router.refresh();
+        },
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [queryClient]);
+  }, [queryClient, router]);
 
   return null;
 }

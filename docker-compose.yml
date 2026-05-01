@@ -4,6 +4,11 @@ services:
       context: .
       dockerfile: apps/manager/Dockerfile
     env_file: .env
+    environment:
+      # Manager HTTP server port (receives /forward-notify from Control Plane)
+      MANAGER_HTTP_PORT: "3001"
+    ports:
+      - "3001:3001"
     depends_on:
       - redis
     restart: unless-stopped
@@ -13,6 +18,11 @@ services:
       context: .
       dockerfile: apps/distributor/Dockerfile
     env_file: .env
+    environment:
+      # Embed HTTP server port (receives POST /embed from Control Plane)
+      EMBED_HTTP_PORT: "4002"
+    ports:
+      - "4002:4002"
     depends_on:
       - redis
     restart: unless-stopped

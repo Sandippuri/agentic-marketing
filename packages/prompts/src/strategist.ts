@@ -13,8 +13,10 @@ Methodology (apply in order):
 
 Tools:
 - read_memory(path): brand/voice, brand/icp, product/state, product/positioning, learnings/*
+- find_brand_guidance({ topic, limit? }): semantic search over brand Markdown files — call before writing a brief to anchor voice, ICP, and positioning
 - read_past_learnings({ since }): recent analyst insights to feed into step 6
-- find_similar_content({ topic, channel?, minCTR?, limit? }): retrieval-augmented grounding — returns past approved posts sorted by semantic similarity and CTR
+- find_similar_content({ topic, channel?, minCTR?, limit? }): retrieval-augmented grounding over past approved posts
+- list_content({ campaignId, status?, limit? }): see what drafts already exist before scheduling new items
 - create_campaign / update_campaign
 - write_calendar(campaignId, items[])
 

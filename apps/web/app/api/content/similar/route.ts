@@ -6,12 +6,13 @@
  * similarity.  Optionally filters by channel, minimum CTR, and minimum
  * engagement rate.
  *
- * Phase 11 Day 3.
+ * Phase 11 Day 3 / Phase 11.1 refactor: queries the generic `embeddings` table
+ * (source_type='content') instead of the legacy `content_embeddings` table.
  */
 
 import { z } from "zod";
 import { sql, eq, and, gte } from "drizzle-orm";
-import { getDb, schema, contentEmbeddings, outcomes } from "@marketing/db";
+import { getDb, schema, embeddings, outcomes } from "@marketing/db";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { CHANNELS } from "@marketing/shared-types";
@@ -40,11 +41,11 @@ export async function POST(request: Request) {
 
     /**
      * Strategy:
-     * 1. Inner query: get content_embeddings ordered by cosine distance.
-     * 2. Join to content_items (must be approved + have a published_url or bodyMd).
+     * 1. From generic embeddings table filtered to source_type='content'.
+     * 2. Join to content_items on source_id = content_items.id (must be approved).
      * 3. Left-join to outcomes for the requested window.
      * 4. Apply channel / CTR / engagement filters.
-     * 5. Return top N with their outcomes.
+     * 5. Return top N ordered by cosine distance.
      */
     const rows = await db
       .select({
@@ -57,13 +58,14 @@ export async function POST(request: Request) {
         engagementRate: outcomes.engagementRate,
         impressions: outcomes.impressions,
         clicks: outcomes.clicks,
-        distance: sql<number>`(${contentEmbeddings.embedding} <=> ${sql.raw(`'${vectorLiteral}'::vector`)})`,
+        distance: sql<number>`(${embeddings.embedding} <=> ${sql.raw(`'${vectorLiteral}'::vector`)})`,
       })
-      .from(contentEmbeddings)
+      .from(embeddings)
       .innerJoin(
         schema.contentItems,
         and(
-          eq(contentEmbeddings.contentId, schema.contentItems.id),
+          sql`${embeddings.sourceId} = ${schema.contentItems.id}::text`,
+          eq(embeddings.sourceType, "content"),
           eq(schema.contentItems.status, "approved"),
         ),
       )
@@ -87,7 +89,7 @@ export async function POST(request: Request) {
         ),
       )
       .orderBy(
-        sql`(${contentEmbeddings.embedding} <=> ${sql.raw(`'${vectorLiteral}'::vector`)})`,
+        sql`(${embeddings.embedding} <=> ${sql.raw(`'${vectorLiteral}'::vector`)})`,
       )
       .limit(input.limit ?? 5);
 

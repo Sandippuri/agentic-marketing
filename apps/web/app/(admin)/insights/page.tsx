@@ -15,12 +15,13 @@ export const revalidate = 0;
 const WINDOWS = ["7d", "30d", "90d"] as const;
 const SORT_OPTIONS = ["ctr", "engagement", "impressions", "clicks"] as const;
 
-const CHANNEL_LABEL: Record<string, string> = {
+/** Must match CHANNELS enum in @marketing/shared-types */
+const CHANNEL_LABEL: Record<(typeof CHANNELS)[number], string> = {
   internal_blog: "Blog",
   linkedin: "LinkedIn",
-  x: "X / Twitter",
-  hubspot_email: "HubSpot Email",
-  mailchimp: "Mailchimp",
+  x: "X",
+  email_hubspot: "HubSpot email",
+  email_mailchimp: "Mailchimp",
 };
 
 const STAGE_CHIP: Record<string, string> = {
@@ -145,22 +146,22 @@ export default async function InsightsPage({
             ))}
           </div>
 
-          {/* Sort filter */}
-          <select
-            // Server form navigation isn't available here, so we render as a plain link set.
-            name="sortBy"
-            className="text-sm rounded-lg border border-zinc-200 dark:border-zinc-700 bg-transparent px-3 py-1.5 text-zinc-700 dark:text-zinc-300 focus:outline-none"
-            defaultValue={sortBy}
-            // We use a link approach — the select here is just visual; JS is needed for interaction.
-            // For full SSR interaction, users can use the URL params directly.
-            aria-label="Sort by"
-          >
+          {/* Sort filter — link-based so it works in Server Components */}
+          <div className="flex items-center gap-1 rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden text-sm">
             {SORT_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                Sort: {s}
-              </option>
+              <Link
+                key={s}
+                href={buildUrl({ sortBy: s })}
+                className={`px-3 py-1.5 transition-colors capitalize ${
+                  sortBy === s
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium"
+                    : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {s === "ctr" ? "CTR" : s === "engagement" ? "Eng." : s}
+              </Link>
             ))}
-          </select>
+          </div>
 
           {/* Channel filter */}
           <div className="flex items-center gap-1 flex-wrap">
@@ -247,21 +248,11 @@ export default async function InsightsPage({
                 <th className="px-4 py-2.5 text-right font-medium text-zinc-500 dark:text-zinc-400">
                   Clicks
                 </th>
-                <th className="px-4 py-2.5 text-right font-medium text-zinc-500 dark:text-zinc-400">
-                  <Link
-                    href={buildUrl({ sortBy: "ctr" })}
-                    className={`hover:text-zinc-900 dark:hover:text-zinc-100 ${sortBy === "ctr" ? "text-zinc-900 dark:text-zinc-100 font-semibold" : ""}`}
-                  >
-                    CTR ↓
-                  </Link>
+                <th className={`px-4 py-2.5 text-right font-medium ${sortBy === "ctr" ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400"}`}>
+                  CTR{sortBy === "ctr" ? " ↓" : ""}
                 </th>
-                <th className="px-4 py-2.5 text-right font-medium text-zinc-500 dark:text-zinc-400">
-                  <Link
-                    href={buildUrl({ sortBy: "engagement" })}
-                    className={`hover:text-zinc-900 dark:hover:text-zinc-100 ${sortBy === "engagement" ? "text-zinc-900 dark:text-zinc-100 font-semibold" : ""}`}
-                  >
-                    Eng. ↓
-                  </Link>
+                <th className={`px-4 py-2.5 text-right font-medium ${sortBy === "engagement" ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400"}`}>
+                  Eng.{sortBy === "engagement" ? " ↓" : ""}
                 </th>
                 <th className="px-4 py-2.5 text-right font-medium text-zinc-500 dark:text-zinc-400">
                   Conv.

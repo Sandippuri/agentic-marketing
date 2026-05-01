@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Image from "next/image";
 import { useDecideApproval } from "@/lib/query/use-approvals";
+import { parseRationale } from "@marketing/shared-types";
 
 export type PendingApproval = {
   id: string;
@@ -23,6 +24,9 @@ export function ApprovalRow({ approval }: { approval: PendingApproval }) {
   const [reason, setReason] = useState("");
   const [showReason, setShowReason] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [rationaleExpanded, setRationaleExpanded] = useState(false);
+
+  const { rationale, bodyCopy } = parseRationale(approval.bodyMd ?? "");
 
   const meta = (
     <div className="text-xs text-zinc-500 mt-1 flex items-center gap-2 flex-wrap">
@@ -42,7 +46,23 @@ export function ApprovalRow({ approval }: { approval: PendingApproval }) {
     </div>
   );
 
-  const copyPreview = approval.bodyMd ? (
+  const rationalePreview = rationale ? (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setRationaleExpanded((s) => !s)}
+        className="text-xs text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1"
+      >
+        🧠 {rationaleExpanded ? "Hide AI rationale ↑" : "Show AI rationale ↓"}
+      </button>
+      {rationaleExpanded && (
+        <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 italic leading-relaxed bg-violet-50 dark:bg-violet-900/20 rounded p-2 border border-violet-200 dark:border-violet-800">
+          {rationale}
+        </p>
+      )}
+    </div>
+  ) : null;
+
+  const copyPreview = bodyCopy ? (
     <div className="mt-1">
       <button
         onClick={() => setExpanded((s) => !s)}
@@ -52,7 +72,7 @@ export function ApprovalRow({ approval }: { approval: PendingApproval }) {
       </button>
       {expanded && (
         <pre className="mt-1 text-xs whitespace-pre-wrap leading-relaxed bg-zinc-50 dark:bg-zinc-800/60 rounded p-2 max-h-48 overflow-y-auto border border-zinc-200 dark:border-zinc-700">
-          {approval.bodyMd}
+          {bodyCopy}
         </pre>
       )}
     </div>
@@ -106,6 +126,7 @@ export function ApprovalRow({ approval }: { approval: PendingApproval }) {
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium truncate">{approval.contentTitle}</div>
             {meta}
+            {rationalePreview}
             {copyPreview}
             {actions}
           </div>
@@ -115,6 +136,7 @@ export function ApprovalRow({ approval }: { approval: PendingApproval }) {
         <div>
           <div className="text-sm font-medium">{approval.contentTitle}</div>
           {meta}
+          {rationalePreview}
           {copyPreview}
           {actions}
         </div>

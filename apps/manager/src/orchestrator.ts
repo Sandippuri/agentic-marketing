@@ -138,6 +138,53 @@ async function _runOrchestrator({
         },
       }),
 
+      list_campaigns: tool({
+        description:
+          "List all campaigns from the Control Plane. Use this to find a campaign ID " +
+          "before routing to run_strategist or run_content. Avoids needing a sub-agent spin-up for simple lookups.",
+        parameters: z.object({}),
+        execute: async () => {
+          const campaigns = await cp.listCampaigns();
+          return campaigns.map((c) => ({
+            id: c.id,
+            slug: c.slug,
+            name: c.name,
+            phase: c.phase,
+            status: c.status,
+          }));
+        },
+      }),
+
+      get_pending_approvals: tool({
+        description:
+          "List all content items currently waiting for human approval, oldest first. " +
+          "Use when the user asks 'what needs review?' or 'what's in the queue?'.",
+        parameters: z.object({
+          limit: z.number().int().min(1).max(20).optional().default(10),
+        }),
+        execute: async ({ limit }) => {
+          return cp.getPendingApprovals(limit);
+        },
+      }),
+
+      check_publish_job: tool({
+        description:
+          "Check the current status of a publish job by ID, or list recent jobs for a content item.",
+        parameters: z.object({
+          publishJobId: z.string().optional().describe("Specific publish job UUID"),
+          contentId: z.string().optional().describe("List all jobs for this content item"),
+        }),
+        execute: async ({ publishJobId, contentId }) => {
+          if (publishJobId) {
+            return cp.getPublishJob(publishJobId);
+          }
+          if (contentId) {
+            return cp.listPublishJobs({ contentId, limit: 5 });
+          }
+          return { error: "provide publishJobId or contentId" };
+        },
+      }),
+
       clarify: tool({
         description: "Ask the user a single clarifying question when the intent is ambiguous",
         parameters: z.object({

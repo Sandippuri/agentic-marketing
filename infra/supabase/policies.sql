@@ -15,6 +15,12 @@ alter table assets             enable row level security;
 alter table metrics            enable row level security;
 alter table audit_log          enable row level security;
 alter table settings           enable row level security;
+-- Phase 11 tables
+alter table agent_feedback     enable row level security;
+alter table outcomes           enable row level security;
+alter table content_embeddings enable row level security;
+-- Phase 11.1 generic embeddings table
+alter table embeddings         enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- 2. Authenticated team members can read everything.
@@ -30,6 +36,11 @@ create policy "team_read_assets"             on assets             for select to
 create policy "team_read_metrics"            on metrics            for select to authenticated using (true);
 create policy "team_read_audit_log"          on audit_log          for select to authenticated using (true);
 create policy "team_read_settings"           on settings           for select to authenticated using (true);
+-- Phase 11
+create policy "team_read_agent_feedback"     on agent_feedback     for select to authenticated using (true);
+create policy "team_read_outcomes"           on outcomes           for select to authenticated using (true);
+create policy "team_read_content_embeddings" on content_embeddings for select to authenticated using (true);
+create policy "team_read_embeddings"         on embeddings         for select to authenticated using (true);
 
 -- ---------------------------------------------------------------------------
 -- 3. Editable tables — authenticated team members can write subject to the
@@ -43,8 +54,8 @@ create policy "team_write_content_revisions"  on content_revisions  for all to a
 create policy "team_write_approvals"          on approvals          for all to authenticated using (true) with check (true);
 create policy "team_write_assets"             on assets             for all to authenticated using (true) with check (true);
 
--- audit_log, publish_jobs, settings: NO insert/update/delete policy for
--- authenticated. Only the service role can mutate them.
+-- audit_log, publish_jobs, settings, agent_feedback, outcomes, content_embeddings, embeddings:
+-- NO insert/update/delete policy for authenticated. Only the service role can mutate them.
 
 -- ---------------------------------------------------------------------------
 -- 4. The publish-gate trigger. Plan §3 — the entire safety story rests on
