@@ -12,7 +12,7 @@
 import { Queue, Worker, type Job } from "bullmq";
 import type IORedis from "ioredis";
 import { getDb, schema, embeddings, contentEmbeddings } from "@marketing/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import pino from "pino";
 import http from "node:http";
 
@@ -192,18 +192,20 @@ export function startEmbedWorker(connection: IORedis): Worker<EmbedJobData> {
 export async function backfillEmbeds(queue: Queue<EmbedJobData>): Promise<void> {
   const db = getDb();
 
-  // Find approved content items that don't yet have a row in `embeddings`.
+  // Approved items with no `embeddings` row yet (source_type='content', source_id = uuid text).
   const rows = await db
     .select({ id: schema.contentItems.id })
     .from(schema.contentItems)
     .leftJoin(
       embeddings,
-      eq(embeddings.sourceId, schema.contentItems.id),
+      and(
+        eq(embeddings.sourceType, "content"),
+        sql`${embeddings.sourceId} = ${schema.contentItems.id}::text`,
+      ),
     )
-    .where(eq(schema.contentItems.status, "approved"));
+    .where(and(eq(schema.contentItems.status, "approved"), isNull(embeddings.id)));
 
-  const missing = rows.filter((r) => !r.id);
-  log.info({ total: rows.length, missing: missing.length }, "backfill scan");
+  log.info({ missing: rows.length }, "backfill scan — approved without embeddings");
 
   let enqueued = 0;
   for (const row of rows) {

@@ -149,19 +149,17 @@ export async function runContent({
           if (postToThread) {
             try {
               const campaign = await cp.getCampaign(item.campaignId).catch(() => null);
-              const approvals = await fetch(
-                `${process.env.CP_BASE_URL ?? "http://localhost:3000"}/api/approvals?contentId=${id}`,
-                { headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" } },
-              ).then((r) => r.ok ? r.json() as Promise<Array<{ id: string }>> : []).catch(() => []);
+              const approvals = await cp.getApprovalsForContent(id).catch(() => []);
               const approvalId = approvals[0]?.id ?? id;
 
-              // Check for an asset.
-              const assetRes = await cp.getAsset
-                ? await fetch(
-                    `${process.env.CP_BASE_URL ?? "http://localhost:3000"}/api/assets?contentId=${id}`,
-                    { headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" } },
-                  ).then((r) => r.ok ? r.json() as Promise<Array<{ signedUrl?: string | null }>> : []).catch(() => [])
-                : [];
+              const assetRes = await fetch(
+                `${process.env.CP_BASE_URL ?? "http://localhost:3000"}/api/assets?contentId=${id}`,
+                { headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" } },
+              )
+                .then((r) =>
+                  r.ok ? (r.json() as Promise<Array<{ signedUrl?: string | null }>>) : Promise.resolve([]),
+                )
+                .catch(() => []);
               const assetSignedUrl = (assetRes[0] as { signedUrl?: string | null } | undefined)?.signedUrl ?? null;
 
               const cardData = {
@@ -203,15 +201,8 @@ export async function runContent({
         description: "Fetch the reason from the latest changes_requested approval decision for a content item. Call this at the start of a revision so you know exactly what the reviewer wants changed.",
         parameters: z.object({ contentId: z.string() }),
         execute: async ({ contentId }) => {
-          // Fetch from /api/approvals?contentId=... — returns the latest decision.
-          // The approval with decision='changes_requested' carries the reviewer's note.
           try {
-            const res = await fetch(
-              `${process.env.CP_BASE_URL ?? "http://localhost:3000"}/api/approvals?contentId=${contentId}`,
-              { headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" } },
-            );
-            if (!res.ok) return { reason: null, note: "Could not fetch approval" };
-            const approvals = (await res.json()) as Array<{ decision: string; reason: string | null }>;
+            const approvals = await cp.getApprovalsForContent(contentId);
             const latest = approvals.find((a) => a.decision === "changes_requested");
             return { reason: latest?.reason ?? null };
           } catch {

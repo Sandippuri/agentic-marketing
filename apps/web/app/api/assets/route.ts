@@ -65,6 +65,23 @@ export async function GET(request: Request) {
           .where(eq(schema.assets.contentId, contentId))
       : await db.select().from(schema.assets).limit(50);
 
+    // When scoped to one content item (e.g. Manager building an approval card),
+    // attach short-lived signed URLs so chat previews work without a second round-trip.
+    if (contentId) {
+      const withSigned = await Promise.all(
+        rows.map(async (row) => {
+          let signedUrl: string | null = null;
+          try {
+            signedUrl = await getSignedAssetUrl(row.storagePath);
+          } catch {
+            signedUrl = null;
+          }
+          return { ...row, signedUrl };
+        }),
+      );
+      return Response.json(withSigned);
+    }
+
     return Response.json(rows);
   } catch (err) {
     return errorResponse(err);
