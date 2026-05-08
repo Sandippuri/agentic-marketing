@@ -1,0 +1,86 @@
+/**
+ * Researcher sub-agent. Audience / persona / competitor / market research.
+ *
+ * Reads the Knowledge Base first (kb_search), fetches external pages
+ * (web_fetch — best-effort, env-gated), and writes findings back to the KB
+ * via kb_write_finding (high-confidence) or kb_propose_update (drafts for
+ * human review). Output is Markdown.
+ */
+import { generateText } from "ai";
+import { z } from "zod";
+import { tool } from "ai";
+import pino from "pino";
+import type { CpClient } from "@marketing/cp-client";
+import type { LlmModel } from "@marketing/shared-types";
+import { RESEARCHER_PROMPT } from "@marketing/prompts";
+import { getLanguageModel } from "../llm-registry";
+import { recordLlmUsage } from "../usage";
+import { buildKbTools } from "../tools/kb-tools";
+
+const log = pino({ name: "researcher" });
+
+export type ResearcherInput = {
+  request: string;
+  campaignId?: string;
+  cp: CpClient;
+  model?: LlmModel;
+  threadRef?: string | null;
+  jobId?: string | null;
+  workflowRunId?: string | null;
+};
+
+export async function runResearcher({
+  request,
+  campaignId,
+  model,
+  threadRef,
+  jobId,
+  workflowRunId,
+}: ResearcherInput): Promise<string> {
+  const kbTools = buildKbTools({ campaignId });
+
+  const { text, usage, experimental_providerMetadata } = await generateText({
+    model: getLanguageModel(model),
+    system: RESEARCHER_PROMPT,
+    prompt: request,
+    maxSteps: 8,
+    tools: {
+      ...kbTools,
+      web_fetch: tool({
+        description:
+          "Fetch a public URL and return its readable text (truncated to ~10k chars). Use sparingly — prefer kb_search for things we already know. Returns {status, contentType, text, url}.",
+        parameters: z.object({
+          url: z.string().url(),
+        }),
+        execute: async ({ url }) => {
+          try {
+            const res = await fetch(url, {
+              headers: { "user-agent": "marketing-agent-researcher/0.1" },
+            });
+            const contentType = res.headers.get("content-type") ?? "";
+            const text = (await res.text()).slice(0, 10_000);
+            return { status: res.status, contentType, text, url };
+          } catch (err) {
+            return {
+              status: 0,
+              error: (err as Error).message,
+              url,
+            };
+          }
+        },
+      }),
+    },
+  });
+
+  await recordLlmUsage({
+    agent: "researcher",
+    model,
+    threadRef: threadRef ?? undefined,
+    jobId: jobId ?? null,
+    workflowRunId: workflowRunId ?? null,
+    usage,
+    providerMetadata: experimental_providerMetadata,
+  });
+
+  return text;
+}

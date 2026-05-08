@@ -3,23 +3,11 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { CAMPAIGN_PHASES, CAMPAIGN_STATUSES } from "@marketing/shared-types";
 import { NewCampaignForm } from "./new-campaign-form";
+import { CampaignRowActions } from "./campaign-row-actions";
+import { PageHeader, Badge, Card, CardHeader, EmptyState, statusTone } from "../ui";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const PHASE_BADGE: Record<string, string> = {
-  buildup:     "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-  launch:      "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
-  post_launch: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  active:    "text-emerald-600 dark:text-emerald-400",
-  draft:     "text-zinc-500 dark:text-zinc-400",
-  paused:    "text-amber-600 dark:text-amber-400",
-  completed: "text-blue-600 dark:text-blue-400",
-  archived:  "text-zinc-400 dark:text-zinc-600",
-};
 
 export default async function CampaignsPage({
   searchParams,
@@ -68,142 +56,123 @@ export default async function CampaignsPage({
     return `/campaigns${str ? `?${str}` : ""}`;
   };
 
+  const filtersActive = !!(params.status || params.phase);
+  const totalContent = contentCounts.reduce((s, r) => s + r.total, 0);
+  const totalPublished = contentCounts.reduce((s, r) => s + r.published, 0);
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">Campaigns</h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            {campaigns.length} campaign{campaigns.length !== 1 ? "s" : ""}
-            {params.status || params.phase ? " (filtered)" : ""}
-          </p>
-        </div>
-      </div>
+    <div>
+      <PageHeader
+        title="Campaigns"
+        description="Multi-channel campaigns from buildup through post-launch."
+        meta={
+          <>
+            <Badge tone="neutral">{campaigns.length} {campaigns.length === 1 ? "campaign" : "campaigns"}</Badge>
+            <Badge tone="info">{totalContent} content items</Badge>
+            <Badge tone="success">{totalPublished} published</Badge>
+            {filtersActive && <Badge tone="warn">filtered</Badge>}
+          </>
+        }
+      />
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-3 items-center">
-        {/* Status filter */}
-        <div className="flex items-center gap-1 rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden text-sm">
-          <Link
-            href={buildUrl({ status: "" })}
-            className={`px-3 py-1.5 transition-colors ${
-              !params.status
-                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium"
-                : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-            }`}
-          >
-            All
-          </Link>
-          {CAMPAIGN_STATUSES.map((s) => (
-            <Link
-              key={s}
-              href={buildUrl({ status: s })}
-              className={`px-3 py-1.5 transition-colors capitalize ${
-                params.status === s
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium"
-                  : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-              }`}
-            >
-              {s}
-            </Link>
-          ))}
-        </div>
-
-        {/* Phase filter */}
-        <div className="flex items-center gap-1 rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden text-sm">
-          <Link
-            href={buildUrl({ phase: "" })}
-            className={`px-3 py-1.5 transition-colors ${
-              !params.phase
-                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium"
-                : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-            }`}
-          >
-            All phases
-          </Link>
-          {CAMPAIGN_PHASES.map((ph) => (
-            <Link
-              key={ph}
-              href={buildUrl({ phase: ph })}
-              className={`px-3 py-1.5 transition-colors capitalize ${
-                params.phase === ph
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium"
-                  : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-              }`}
-            >
-              {ph.replace("_", " ")}
-            </Link>
-          ))}
-        </div>
+      <div className="surface mb-5 px-3 py-2.5 flex flex-wrap items-center gap-3">
+        <span className="text-[11px] uppercase tracking-wider text-faint pl-1 pr-1">Status</span>
+        <SegmentedFilter
+          current={params.status ?? null}
+          options={[null, ...CAMPAIGN_STATUSES]}
+          buildUrl={(v) => buildUrl({ status: v ?? "" })}
+        />
+        <span className="h-5 w-px bg-[var(--border)] mx-1" />
+        <span className="text-[11px] uppercase tracking-wider text-faint pl-1 pr-1">Phase</span>
+        <SegmentedFilter
+          current={params.phase ?? null}
+          options={[null, ...CAMPAIGN_PHASES]}
+          buildUrl={(v) => buildUrl({ phase: v ?? "" })}
+        />
       </div>
 
       {/* Campaign list */}
       {campaigns.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-8 text-center text-sm text-zinc-500">
-          No campaigns yet. Create one below or via{" "}
-          <code className="font-mono">@marketing plan a campaign</code> in Slack.
-        </div>
+        <EmptyState
+          title="No campaigns yet"
+          description="Create your first campaign below, or kick one off via @marketing plan a campaign in Slack."
+        />
       ) : (
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="table-card overflow-x-auto">
+          <table className="table">
             <thead>
-              <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900">
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500">Name</th>
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500">Phase</th>
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500">Status</th>
-                <th className="px-4 py-2.5 text-right font-medium text-zinc-500">Content</th>
-                <th className="px-4 py-2.5 text-right font-medium text-zinc-500">Published</th>
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500">Created</th>
+              <tr>
+                <th>Name</th>
+                <th>Phase</th>
+                <th>Status</th>
+                <th className="text-right">Content</th>
+                <th className="text-right">Published</th>
+                <th>Created</th>
+                <th className="text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            <tbody>
               {campaigns.map((c) => {
                 const counts = countsByCampaign[c.id];
+                const phaseTone =
+                  c.phase === "buildup"
+                    ? "info"
+                    : c.phase === "launch"
+                      ? "warn"
+                      : "violet";
                 return (
-                  <tr key={c.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors">
-                    <td className="px-4 py-3">
+                  <tr key={c.id}>
+                    <td>
                       <Link
                         href={`/campaigns/${c.id}`}
-                        className="font-medium text-zinc-900 dark:text-zinc-100 hover:text-indigo-600 dark:hover:text-indigo-400"
+                        className="font-medium text-ink hover:text-[var(--accent)] transition-colors"
                       >
                         {c.name}
                       </Link>
-                      <p className="text-xs text-zinc-400 font-mono mt-0.5">{c.slug}</p>
+                      <div className="mono text-[11px] text-faint mt-0.5">{c.slug}</div>
                     </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                          PHASE_BADGE[c.phase] ?? "bg-zinc-100 text-zinc-600"
-                        }`}
-                      >
-                        {c.phase.replace("_", " ")}
-                      </span>
+                    <td>
+                      <Badge tone={phaseTone}>{c.phase.replace("_", " ")}</Badge>
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs font-medium capitalize ${STATUS_COLOR[c.status] ?? "text-zinc-500"}`}>
+                    <td>
+                      <Badge tone={statusTone(c.status)} dot>
                         {c.status}
-                      </span>
+                      </Badge>
                     </td>
-                    <td className="px-4 py-3 text-right text-zinc-600 dark:text-zinc-400">
+                    <td className="text-right">
                       {counts ? (
-                        <span>
-                          {counts.total}
+                        <div className="inline-flex items-center gap-1.5">
+                          <span className="text-ink font-medium tabular-nums">{counts.total}</span>
                           {counts.approved > 0 && (
-                            <span className="ml-1 text-emerald-600 dark:text-emerald-400">
-                              ({counts.approved} approved)
+                            <span className="text-[var(--success)] text-xs tabular-nums">
+                              · {counts.approved} approved
                             </span>
                           )}
-                        </span>
+                        </div>
                       ) : (
-                        <span className="text-zinc-400">—</span>
+                        <span className="text-faint">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right text-zinc-600 dark:text-zinc-400">
+                    <td className="text-right tabular-nums text-mid">
                       {counts?.published ?? "—"}
                     </td>
-                    <td className="px-4 py-3 text-zinc-500 text-xs whitespace-nowrap">
-                      {new Date(c.createdAt).toLocaleDateString()}
+                    <td className="text-mid mono text-xs whitespace-nowrap">
+                      {new Date(c.createdAt).toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "2-digit",
+                        year: "numeric",
+                      })}
+                    </td>
+                    <td className="text-right whitespace-nowrap">
+                      <CampaignRowActions
+                        campaign={{
+                          id: c.id,
+                          name: c.name,
+                          phase: c.phase,
+                          status: c.status,
+                        }}
+                      />
                     </td>
                   </tr>
                 );
@@ -213,13 +182,51 @@ export default async function CampaignsPage({
         </div>
       )}
 
-      {/* New campaign form */}
-      <div className="pt-2">
-        <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider mb-3">
-          New campaign
-        </h2>
-        <NewCampaignForm />
+      {/* New campaign */}
+      <div className="mt-8">
+        <Card>
+          <CardHeader
+            title="New campaign"
+            description="Quick-start a campaign with a slug, name, and phase. Strategy and content can come from the agent."
+          />
+          <div className="mt-4">
+            <NewCampaignForm />
+          </div>
+        </Card>
       </div>
+    </div>
+  );
+}
+
+function SegmentedFilter({
+  current,
+  options,
+  buildUrl,
+}: {
+  current: string | null;
+  options: (string | null)[];
+  buildUrl: (v: string | null) => string;
+}) {
+  return (
+    <div className="inline-flex items-center rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+      {options.map((opt) => {
+        const active = (current ?? null) === (opt ?? null);
+        const label = opt === null ? "All" : opt.replace("_", " ");
+        return (
+          <Link
+            key={opt ?? "_all"}
+            href={buildUrl(opt)}
+            className={[
+              "px-2.5 py-1 text-[12px] rounded capitalize transition-colors",
+              active
+                ? "bg-[var(--bg-elevated)] text-ink shadow-sm"
+                : "text-mid hover:text-ink",
+            ].join(" ")}
+          >
+            {label}
+          </Link>
+        );
+      })}
     </div>
   );
 }

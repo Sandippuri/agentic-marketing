@@ -8,6 +8,7 @@ import {
   jsonb,
   integer,
   numeric,
+  bigint,
   date,
   boolean,
   index,
@@ -39,6 +40,16 @@ import {
   ACTOR_KINDS,
   SCOPE_TYPES,
   CHANNELS,
+  BRAND_DOC_STATUSES,
+  BRAND_DRAFT_STATUSES,
+  EXTRACTION_RUN_STATUSES,
+} from "@marketing/shared-types";
+import type {
+  DesignColor,
+  DesignTypography,
+  DesignLogo,
+  DesignTokens,
+  BrandDraftCitation,
 } from "@marketing/shared-types";
 
 // `owner_id`, `decided_by`, and other actor columns are uuids that reference
@@ -61,6 +72,7 @@ export const publishJobStatusEnum = pgEnum(
   "publish_job_status",
   PUBLISH_JOB_STATUSES,
 );
+export const publishJobModeEnum = pgEnum("publish_job_mode", ["live", "test"]);
 export const assetKindEnum = pgEnum("asset_kind", ASSET_KINDS);
 export const assetStatusEnum = pgEnum("asset_status", ASSET_STATUSES);
 export const actorKindEnum = pgEnum("actor_kind", ACTOR_KINDS);
@@ -70,7 +82,117 @@ export const embeddingSourceTypeEnum = pgEnum("embedding_source_type", [
   "content",
   "brand_doc",
   "rejected_draft",
+  "kb_chunk",
 ] as const);
+export const kbCollectionKindEnum = pgEnum("kb_collection_kind", [
+  "brand",
+  "product",
+  "persona",
+  "competitor",
+  "sop",
+  "playbook",
+  "past_content",
+  "asset_caption",
+  "visual_reference",
+  "external_doc",
+] as const);
+export const kbScopeEnum = pgEnum("kb_scope", ["global", "campaign"] as const);
+export const kbDocSourceEnum = pgEnum("kb_doc_source", [
+  "manual",
+  "extracted",
+  "agent",
+  "channel_sop",
+  "ga4",
+  "web",
+  "upload",
+] as const);
+export const kbDocStatusEnum = pgEnum("kb_doc_status", [
+  "draft",
+  "active",
+  "archived",
+  "superseded",
+] as const);
+export const loopStatusEnum = pgEnum("loop_status", [
+  "idle",
+  "planning",
+  "executing",
+  "awaiting_approval",
+  "measuring",
+  "converged",
+  "failed",
+  "halted",
+] as const);
+export const goalEventKindEnum = pgEnum("goal_event_kind", [
+  "plan_drafted",
+  "fanout_started",
+  "approval_requested",
+  "approval_resolved",
+  "published",
+  "outcome_observed",
+  "reevaluated",
+  "converged",
+  "halted",
+  "error",
+] as const);
+export const experimentStatusEnum = pgEnum("experiment_status", [
+  "running",
+  "stopped",
+  "won",
+  "inconclusive",
+] as const);
+export const lifecycleStatusEnum = pgEnum("lifecycle_status", [
+  "draft",
+  "active",
+  "paused",
+  "completed",
+  "archived",
+] as const);
+export const generationJobStatusEnum = pgEnum("generation_job_status", [
+  "running",
+  "completed",
+  "failed",
+] as const);
+export const generationJobKindEnum = pgEnum("generation_job_kind", [
+  "campaign",
+  "single_post",
+  "asset",
+  "analysis",
+  "publish",
+  "other",
+] as const);
+export const generationStepNameEnum = pgEnum("generation_step_name", [
+  "strategist",
+  "content",
+  "asset",
+  "analyst",
+  "distributor",
+] as const);
+export const generationStepStatusEnum = pgEnum("generation_step_status", [
+  "running",
+  "succeeded",
+  "failed",
+] as const);
+export const workflowEngineEnum = pgEnum("workflow_engine", [
+  "custom",
+  "vercel",
+  "cloudflare",
+] as const);
+export const workflowRunStatusEnum = pgEnum("workflow_run_status", [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const);
+export const brandDocStatusEnum = pgEnum("brand_doc_status", BRAND_DOC_STATUSES);
+export const brandDraftStatusEnum = pgEnum(
+  "brand_draft_status",
+  BRAND_DRAFT_STATUSES,
+);
+export const extractionRunStatusEnum = pgEnum(
+  "extraction_run_status",
+  EXTRACTION_RUN_STATUSES,
+);
 
 // --- campaigns ----------------------------------------------------------------
 
@@ -87,6 +209,16 @@ export const campaigns = pgTable(
     endDate: date("end_date"),
     briefMd: text("brief_md"),
     calendarJson: jsonb("calendar_json"),
+    // Goal-loop fields (migration 0016). See apps/web/workflows/goal-loop.ts.
+    goalDefinition: jsonb("goal_definition"),
+    targetMetrics: jsonb("target_metrics"),
+    loopStatus: loopStatusEnum("loop_status").notNull().default("idle"),
+    loopIteration: integer("loop_iteration").notNull().default(0),
+    budgetCents: integer("budget_cents"),
+    costCentsSpent: integer("cost_cents_spent").notNull().default(0),
+    deadline: timestamp("deadline", { withTimezone: true }),
+    lastIterationAt: timestamp("last_iteration_at", { withTimezone: true }),
+    parentGoalId: uuid("parent_goal_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -97,6 +229,7 @@ export const campaigns = pgTable(
   (t) => ({
     slugUq: uniqueIndex("campaigns_slug_uq").on(t.slug),
     statusIdx: index("campaigns_status_idx").on(t.status),
+    loopStatusIdx: index("campaigns_loop_status_idx").on(t.loopStatus),
   }),
 );
 
@@ -115,11 +248,23 @@ export const contentItems = pgTable(
     bodyMd: text("body_md").notNull().default(""),
     channelHints: jsonb("channel_hints"),
     status: contentStatusEnum("status").notNull().default("draft"),
+    // Per-post toggle. When true (default), submit triggers Replicate variant
+    // generation. When false, the approval card renders without imagery and
+    // any [IMAGE N: ...] markers in the body are shown as plain text.
+    needsImages: boolean("needs_images").notNull().default(true),
     scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     publishedUrl: text("published_url"),
     // Set after a revision row is inserted; nullable until first revision.
     currentRevisionId: uuid("current_revision_id"),
+    // A/B variant fields (migration 0017). variant_group is a uuid shared
+    // by sibling variants; variant_index is 0-based within the group;
+    // experiment_id is set when the variants are part of a registered
+    // experiment (FK wired in 0018).
+    variantGroup: uuid("variant_group"),
+    variantIndex: integer("variant_index"),
+    experimentId: uuid("experiment_id"),
+    seoMeta: jsonb("seo_meta"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -131,6 +276,8 @@ export const contentItems = pgTable(
     campaignIdx: index("content_items_campaign_idx").on(t.campaignId),
     statusIdx: index("content_items_status_idx").on(t.status),
     stageIdx: index("content_items_stage_idx").on(t.stage),
+    variantGroupIdx: index("content_items_variant_group_idx").on(t.variantGroup),
+    experimentIdx: index("content_items_experiment_idx").on(t.experimentId),
   }),
 );
 
@@ -195,7 +342,11 @@ export const publishJobs = pgTable(
     externalUrl: text("external_url"),
     error: text("error"),
     threadRef: text("thread_ref"),
+    mode: publishJobModeEnum("mode").notNull().default("live"),
     requestedBy: uuid("requested_by"),
+    // Lifecycle/CRM (migration 0019). Both null for one-off publishes.
+    sequenceId: uuid("sequence_id"),
+    sequenceStepIndex: integer("sequence_step_index"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -212,6 +363,7 @@ export const publishJobs = pgTable(
       t.channel,
       t.createdAt,
     ),
+    sequenceIdx: index("publish_jobs_sequence_idx").on(t.sequenceId),
   }),
 );
 
@@ -229,6 +381,11 @@ export const assets = pgTable(
     storagePath: text("storage_path").notNull(),
     templateId: text("template_id"),
     promptUsed: text("prompt_used"),
+    // Set for any asset that isn't a vanilla image/png (e.g. Veo MP4 video).
+    // Null on legacy rows; cards fall back to image/png in that case.
+    mimeType: text("mime_type"),
+    // Duration in whole seconds for video assets. Null for stills.
+    durationSec: integer("duration_sec"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -347,24 +504,10 @@ export const outcomes = pgTable(
   }),
 );
 
-// --- content_embeddings -------------------------------------------------------
-// text-embedding-3-small produces 1536-dimensional vectors.
-// Requires: CREATE EXTENSION IF NOT EXISTS vector; (see migration SQL).
-
-export const contentEmbeddings = pgTable(
-  "content_embeddings",
-  {
-    contentId: uuid("content_id")
-      .primaryKey()
-      .references(() => contentItems.id, { onDelete: "cascade" }),
-    embedding: vector("embedding", 1536).notNull(),
-    embeddedAt: timestamp("embedded_at", { withTimezone: true }).notNull().defaultNow(),
-    model: text("model").notNull().default("text-embedding-3-small"),
-  },
-);
-
 // --- embeddings (generic) -----------------------------------------------------
-// Replaces content_embeddings. Stores vectors for any source_type:
+// Content vectors use source_type='content' and source_id = content_items.id (text).
+// Legacy `content_embeddings` table dropped in migration 0003_drop_content_embeddings.
+// Stores vectors for any source_type:
 //   - 'content'       → approved ContentItem (source_id = content_items.id)
 //   - 'brand_doc'     → brand/ICP/positioning Markdown chunk (source_id = filename:chunk)
 //   - 'rejected_draft'→ agent_feedback row (source_id = agent_feedback.id)
@@ -390,6 +533,367 @@ export const embeddings = pgTable(
   }),
 );
 
+// --- brand_memory -------------------------------------------------------------
+// Editable brand/product documents that used to live as Markdown files in
+// apps/manager/memory/{brand,product}/*.md. Moved to the DB so non-engineers
+// can edit voice / ICP / positioning / visual / product state from the admin
+// UI without a PR. The manager reads these on every sub-agent run and falls
+// back to the file copies in apps/manager/memory if a row is missing.
+//
+// Slug values are constrained at the application layer to BRAND_MEMORY_SLUGS
+// in @marketing/shared-types.
+
+// campaign_id NULL ⇒ global default. A row with the same slug + a non-null
+// campaign_id wins for that campaign. Uniqueness is enforced by two partial
+// indexes declared in migration 0008 (Drizzle's index() doesn't model partial
+// indexes here, so we keep them as raw SQL).
+export const brandMemory = pgTable(
+  "brand_memory",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    campaignId: uuid("campaign_id").references(() => campaigns.id, {
+      onDelete: "cascade",
+    }),
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    updatedBy: uuid("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    campaignIdx: index("brand_memory_campaign_idx").on(t.campaignId),
+  }),
+);
+
+// --- brand_design_system ------------------------------------------------------
+// Structured palette / typography / logo / token store. Sister table to
+// brand_memory: one is freeform Markdown the agents read, the other is
+// machine-friendly tokens the asset sub-agent passes into image-gen prompts
+// and the admin UI renders as swatches and previews.
+//
+// Single 'default' row today; the slug column leaves the door open to
+// multi-brand installs without another migration.
+
+// Same campaign-override pattern as brand_memory (see migration 0008).
+// A campaign-scoped row is a full snapshot, not a JSON patch — to override
+// only colors, copy the global row first, then edit. This keeps the read
+// path a single SELECT.
+export const brandDesignSystem = pgTable(
+  "brand_design_system",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    campaignId: uuid("campaign_id").references(() => campaigns.id, {
+      onDelete: "cascade",
+    }),
+    slug: text("slug").notNull().default("default"),
+    colors: jsonb("colors")
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<DesignColor[]>(),
+    typography: jsonb("typography")
+      .notNull()
+      .default(sql`'{}'::jsonb`)
+      .$type<DesignTypography>(),
+    logos: jsonb("logos")
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<DesignLogo[]>(),
+    tokens: jsonb("tokens")
+      .notNull()
+      .default(sql`'{}'::jsonb`)
+      .$type<DesignTokens>(),
+    // Beyond colors/type/logos: signature compositions, banned aesthetics,
+    // motion language, mood, etc. Read by the Art Director sub-agent before
+    // any image-gen step (migration 0020). Free-form jsonb to evolve fast.
+    visualLanguage: jsonb("visual_language")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    updatedBy: uuid("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    campaignIdx: index("brand_design_system_campaign_idx").on(t.campaignId),
+  }),
+);
+
+// --- brand_documents ----------------------------------------------------------
+// Raw uploads (PDF/DOCX/MD/TXT) that feed the brand-extractor pipeline.
+// Files live in the existing `assets` Supabase bucket under the `brand-docs/`
+// prefix; this table is the catalog + status tracker.
+//
+// Soft-delete via `removed_at`: removing a doc keeps the row for audit but
+// excludes it from future extraction runs. Embeddings are purged on remove
+// (handled by the API route, not the DB).
+
+export const brandDocuments = pgTable(
+  "brand_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    storagePath: text("storage_path").notNull(),
+    parsedTextPath: text("parsed_text_path"),
+    pageCount: integer("page_count"),
+    status: brandDocStatusEnum("status").notNull().default("uploaded"),
+    error: text("error"),
+    uploadedBy: uuid("uploaded_by"),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    statusIdx: index("brand_documents_status_idx").on(t.status),
+    uploadedAtIdx: index("brand_documents_uploaded_at_idx").on(t.uploadedAt),
+  }),
+);
+
+// --- extraction_runs ----------------------------------------------------------
+// One row per re-extraction kicked off from /brand/documents. Captures which
+// doc IDs were in the corpus at run time so a draft can be traced back to
+// the exact set of inputs that produced it.
+
+export const extractionRuns = pgTable(
+  "extraction_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    triggeredBy: uuid("triggered_by"),
+    status: extractionRunStatusEnum("status").notNull().default("running"),
+    sourceDocIds: jsonb("source_doc_ids")
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<string[]>(),
+    model: text("model"),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    statusIdx: index("extraction_runs_status_idx").on(t.status),
+    startedIdx: index("extraction_runs_started_idx").on(t.startedAt),
+  }),
+);
+
+// --- brand_memory_drafts ------------------------------------------------------
+// Per-slug drafts produced by the extractor. The human reviews on /brand and
+// approves/rejects; on approve, the body is upserted into brand_memory via
+// the existing PUT path. Drafts are kept for audit.
+//
+// Status transitions:
+//   pending → approved   (human accepted; brand_memory was updated)
+//   pending → rejected   (human rejected; brand_memory untouched)
+//   pending → superseded (a newer extraction run produced a fresh draft for
+//                         the same slug while this one was still pending)
+
+export const brandMemoryDrafts = pgTable(
+  "brand_memory_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => extractionRuns.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull(),
+    aiBody: text("ai_body").notNull().default(""),
+    humanBody: text("human_body"),
+    status: brandDraftStatusEnum("status").notNull().default("pending"),
+    confidence: numeric("confidence"),
+    citations: jsonb("citations")
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<BrandDraftCitation[]>(),
+    decidedBy: uuid("decided_by"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    slugIdx: index("brand_memory_drafts_slug_idx").on(t.slug),
+    statusIdx: index("brand_memory_drafts_status_idx").on(t.status),
+    runIdx: index("brand_memory_drafts_run_idx").on(t.runId),
+  }),
+);
+
+// --- generation_jobs ----------------------------------------------------------
+// Per-request tracking of orchestrator runs. One row per chat turn that
+// actually invokes a sub-agent. Pure observability — does not change the
+// orchestrator/sub-agent control flow.
+
+export const generationJobs = pgTable(
+  "generation_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    threadRef: text("thread_ref"),
+    userId: text("user_id"),
+    userMessage: text("user_message").notNull(),
+    kind: generationJobKindEnum("kind").notNull().default("other"),
+    status: generationJobStatusEnum("status").notNull().default("running"),
+    currentStep: generationStepNameEnum("current_step"),
+    campaignId: uuid("campaign_id").references(() => campaigns.id, {
+      onDelete: "set null",
+    }),
+    contentId: uuid("content_id").references(() => contentItems.id, {
+      onDelete: "set null",
+    }),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    statusIdx: index("generation_jobs_status_idx").on(t.status),
+    threadIdx: index("generation_jobs_thread_idx").on(t.threadRef),
+    createdIdx: index("generation_jobs_created_idx").on(t.createdAt),
+  }),
+);
+
+// --- generation_job_steps -----------------------------------------------------
+// One row per sub-agent invocation inside a generation_job. Started as
+// 'running' and patched to 'succeeded' / 'failed' when the agent returns.
+
+export const generationJobSteps = pgTable(
+  "generation_job_steps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => generationJobs.id, { onDelete: "cascade" }),
+    name: generationStepNameEnum("name").notNull(),
+    status: generationStepStatusEnum("status").notNull().default("running"),
+    input: jsonb("input"),
+    output: jsonb("output"),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    jobIdx: index("generation_job_steps_job_idx").on(t.jobId),
+    startedIdx: index("generation_job_steps_started_idx").on(t.startedAt),
+  }),
+);
+
+// --- workflow_runs ------------------------------------------------------------
+// Engine-agnostic dashboard layer. Every workflow run, regardless of which
+// backend executes it, writes one row here at start and updates status on
+// completion. engine_run_ref points back to the engine-native id (e.g.
+// generation_jobs.id for custom, the Vercel run id for vercel) so the page
+// can join through to engine-specific detail.
+
+export const workflowRuns = pgTable(
+  "workflow_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    engine: workflowEngineEnum("engine").notNull(),
+    kind: generationJobKindEnum("kind").notNull(),
+    status: workflowRunStatusEnum("status").notNull().default("queued"),
+    request: text("request").notNull(),
+    threadRef: text("thread_ref"),
+    userId: text("user_id"),
+    engineRunRef: text("engine_run_ref"),
+    campaignId: uuid("campaign_id").references(() => campaigns.id, {
+      onDelete: "set null",
+    }),
+    contentId: uuid("content_id").references(() => contentItems.id, {
+      onDelete: "set null",
+    }),
+    input: jsonb("input"),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    engineIdx: index("workflow_runs_engine_idx").on(t.engine),
+    statusIdx: index("workflow_runs_status_idx").on(t.status),
+    threadIdx: index("workflow_runs_thread_idx").on(t.threadRef),
+    createdIdx: index("workflow_runs_created_idx").on(t.createdAt),
+    engineRefIdx: index("workflow_runs_engine_ref_idx").on(t.engineRunRef),
+  }),
+);
+
+// --- llm_usage ----------------------------------------------------------------
+// One row per LLM call. Written by recordLlmUsage in @marketing/agents/usage,
+// read by the /api/usage aggregate endpoint and rendered on the settings page.
+// cost_usd is computed at write time from the static price map in
+// shared-types so historical rows stay accurate even if rates change later.
+
+export const llmUsage = pgTable(
+  "llm_usage",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    // strategist | content | asset | analyst | orchestrator | single-post …
+    agent: text("agent").notNull(),
+    threadRef: text("thread_ref"),
+    jobId: uuid("job_id"),
+    // Engine-agnostic workflow run this call belongs to. Lets the
+    // /api/usage/by-workflow endpoint sum tokens per run regardless of
+    // which engine (custom/vercel/cloudflare) executed it. Nullable for
+    // calls outside any workflow (e.g. chat orchestrator turns).
+    workflowRunId: uuid("workflow_run_id").references(
+      () => workflowRuns.id,
+      { onDelete: "set null" },
+    ),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    // Null when the model isn't in the price map (e.g. a brand-new id we
+    // haven't priced yet); the row is still useful for token aggregates.
+    costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
+    error: text("error"),
+  },
+  (t) => ({
+    occurredIdx: index("llm_usage_occurred_at_idx").on(t.occurredAt),
+    modelIdx: index("llm_usage_model_idx").on(t.model),
+    agentIdx: index("llm_usage_agent_idx").on(t.agent),
+    workflowRunIdx: index("llm_usage_workflow_run_idx").on(t.workflowRunId),
+  }),
+);
+
 // --- settings -----------------------------------------------------------------
 
 export const settings = pgTable(
@@ -402,6 +906,218 @@ export const settings = pgTable(
       .notNull()
       .defaultNow(),
   },
+);
+
+// --- kb_collections / kb_documents / kb_chunks --------------------------------
+// Knowledge Base (migration 0015). Replaces the scattered file-based memory
+// in apps/manager/memory/* and unifies brand_memory + brand_documents into
+// one queryable surface. Each kb_chunk is embedded into the existing
+// `embeddings` table with source_type='kb_chunk' and source_id=kb_chunks.id.
+
+export const kbCollections = pgTable(
+  "kb_collections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    kind: kbCollectionKindEnum("kind").notNull(),
+    scope: kbScopeEnum("scope").notNull().default("global"),
+    campaignId: uuid("campaign_id").references(() => campaigns.id, {
+      onDelete: "cascade",
+    }),
+    description: text("description"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    slugUq: uniqueIndex("kb_collections_slug_uq").on(t.slug),
+    kindIdx: index("kb_collections_kind_idx").on(t.kind),
+    campaignIdx: index("kb_collections_campaign_idx").on(t.campaignId),
+  }),
+);
+
+export const kbDocuments = pgTable(
+  "kb_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    collectionId: uuid("collection_id")
+      .notNull()
+      .references(() => kbCollections.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    source: kbDocSourceEnum("source").notNull().default("manual"),
+    sourceRef: text("source_ref"),
+    bodyMd: text("body_md").notNull().default(""),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    version: integer("version").notNull().default(1),
+    status: kbDocStatusEnum("status").notNull().default("active"),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    collectionSlugUq: uniqueIndex("kb_documents_collection_slug_uq").on(
+      t.collectionId,
+      t.slug,
+    ),
+    statusIdx: index("kb_documents_status_idx").on(t.status),
+    collectionIdx: index("kb_documents_collection_idx").on(t.collectionId),
+    updatedAtIdx: index("kb_documents_updated_at_idx").on(t.updatedAt),
+  }),
+);
+
+export const kbChunks = pgTable(
+  "kb_chunks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => kbDocuments.id, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    bodyMd: text("body_md").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    docIdxUq: uniqueIndex("kb_chunks_doc_idx_uq").on(t.documentId, t.chunkIndex),
+    documentIdx: index("kb_chunks_document_idx").on(t.documentId),
+  }),
+);
+
+// --- goal_events --------------------------------------------------------------
+// Durable trail for the goal-loop workflow (migration 0016). Combined with
+// Vercel Workflows' native durable execution, lets the loop resume from the
+// last completed step after a crash. (campaign_id, iteration, step_key) is
+// a partial-unique idempotency key — the loop's step.do() wrappers insert
+// here on first run and skip on re-run when the row already exists.
+
+export const goalEvents = pgTable(
+  "goal_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    iteration: integer("iteration").notNull().default(0),
+    kind: goalEventKindEnum("kind").notNull(),
+    stepKey: text("step_key"),
+    payload: jsonb("payload").notNull().default(sql`'{}'::jsonb`),
+    ts: timestamp("ts", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    campaignIdx: index("goal_events_campaign_idx").on(t.campaignId),
+    kindIdx: index("goal_events_kind_idx").on(t.kind),
+    tsIdx: index("goal_events_ts_idx").on(t.ts),
+  }),
+);
+
+// --- experiments --------------------------------------------------------------
+// A/B experiment registry (migration 0018). One row per variant_group; the
+// Growth/Experiment sub-agent inserts on creation, propose_winner reads
+// outcomes and sets winner_content_id once threshold is met.
+
+export const experiments = pgTable(
+  "experiments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    variantGroup: uuid("variant_group").notNull(),
+    hypothesis: text("hypothesis").notNull().default(""),
+    metric: text("metric").notNull().default("ctr"),
+    thresholdJson: jsonb("threshold_json")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    status: experimentStatusEnum("status").notNull().default("running"),
+    winnerContentId: uuid("winner_content_id").references(
+      () => contentItems.id,
+      { onDelete: "set null" },
+    ),
+    sampleSize: integer("sample_size").notNull().default(0),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    variantGroupUq: uniqueIndex("experiments_variant_group_uq").on(t.variantGroup),
+    campaignIdx: index("experiments_campaign_idx").on(t.campaignId),
+    statusIdx: index("experiments_status_idx").on(t.status),
+  }),
+);
+
+// --- lifecycle_sequences / lifecycle_steps ------------------------------------
+// Multi-step email/lifecycle journeys (migration 0019). Each step references
+// a content_items row; goal-loop schedules step k+1 by inserting a
+// publish_jobs row with sequence_id + sequence_step_index after step k
+// publishes.
+
+export const lifecycleSequences = pgTable(
+  "lifecycle_sequences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    channel: channelEnum("channel").notNull(),
+    audienceSegment: text("audience_segment"),
+    status: lifecycleStatusEnum("status").notNull().default("draft"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    campaignIdx: index("lifecycle_sequences_campaign_idx").on(t.campaignId),
+    statusIdx: index("lifecycle_sequences_status_idx").on(t.status),
+  }),
+);
+
+export const lifecycleSteps = pgTable(
+  "lifecycle_steps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sequenceId: uuid("sequence_id")
+      .notNull()
+      .references(() => lifecycleSequences.id, { onDelete: "cascade" }),
+    stepIndex: integer("step_index").notNull(),
+    contentId: uuid("content_id").references(() => contentItems.id, {
+      onDelete: "set null",
+    }),
+    delayHours: integer("delay_hours").notNull().default(0),
+    triggerEvent: text("trigger_event").notNull().default("previous_published"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    sequenceIndexUq: uniqueIndex("lifecycle_steps_sequence_index_uq").on(
+      t.sequenceId,
+      t.stepIndex,
+    ),
+    contentIdx: index("lifecycle_steps_content_idx").on(t.contentId),
+  }),
 );
 
 // --- Inferred row types -------------------------------------------------------
@@ -418,13 +1134,38 @@ export type Asset = typeof assets.$inferSelect;
 export type Metric = typeof metrics.$inferSelect;
 export type AuditEntry = typeof auditLog.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
+export type BrandMemoryRow = typeof brandMemory.$inferSelect;
+export type NewBrandMemoryRow = typeof brandMemory.$inferInsert;
+export type BrandDesignSystemRow = typeof brandDesignSystem.$inferSelect;
+export type NewBrandDesignSystemRow = typeof brandDesignSystem.$inferInsert;
 export type AgentFeedback = typeof agentFeedback.$inferSelect;
 export type NewAgentFeedback = typeof agentFeedback.$inferInsert;
 export type Outcome = typeof outcomes.$inferSelect;
 export type NewOutcome = typeof outcomes.$inferInsert;
-export type ContentEmbedding = typeof contentEmbeddings.$inferSelect;
 export type Embedding = typeof embeddings.$inferSelect;
 export type NewEmbedding = typeof embeddings.$inferInsert;
+export type GenerationJob = typeof generationJobs.$inferSelect;
+export type NewGenerationJob = typeof generationJobs.$inferInsert;
+export type GenerationJobStep = typeof generationJobSteps.$inferSelect;
+export type NewGenerationJobStep = typeof generationJobSteps.$inferInsert;
+export type WorkflowRun = typeof workflowRuns.$inferSelect;
+export type NewWorkflowRun = typeof workflowRuns.$inferInsert;
+export type LlmUsage = typeof llmUsage.$inferSelect;
+export type NewLlmUsage = typeof llmUsage.$inferInsert;
+export type KbCollection = typeof kbCollections.$inferSelect;
+export type NewKbCollection = typeof kbCollections.$inferInsert;
+export type KbDocument = typeof kbDocuments.$inferSelect;
+export type NewKbDocument = typeof kbDocuments.$inferInsert;
+export type KbChunk = typeof kbChunks.$inferSelect;
+export type NewKbChunk = typeof kbChunks.$inferInsert;
+export type GoalEvent = typeof goalEvents.$inferSelect;
+export type NewGoalEvent = typeof goalEvents.$inferInsert;
+export type Experiment = typeof experiments.$inferSelect;
+export type NewExperiment = typeof experiments.$inferInsert;
+export type LifecycleSequence = typeof lifecycleSequences.$inferSelect;
+export type NewLifecycleSequence = typeof lifecycleSequences.$inferInsert;
+export type LifecycleStep = typeof lifecycleSteps.$inferSelect;
+export type NewLifecycleStep = typeof lifecycleSteps.$inferInsert;
 
 // Re-export enum type unions so callers don't need a second import.
 export {

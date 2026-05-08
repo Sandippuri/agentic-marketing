@@ -1,26 +1,25 @@
 /**
- * Lightweight wrapper that sends a content ID to the Distributor's
- * embedding BullMQ queue via a Control-Plane-to-Distributor HTTP call.
+ * Embedding pipeline entrypoints. Phase 4 cutover: the Distributor HTTP
+ * fallback is gone. Both calls always start the matching Vercel Workflow.
  *
- * Falls back silently if DISTRIBUTOR_BASE_URL is not set (dev/CI).
+ * Failures are wrapped so the caller (typically /api/approvals) doesn't
+ * block on a transient embed-pipeline error.
  */
 
-const DISTRIBUTOR_BASE_URL = process.env.DISTRIBUTOR_BASE_URL ?? "";
-const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN ?? "";
-
 export async function enqueueEmbedding(contentId: string): Promise<void> {
-  if (!DISTRIBUTOR_BASE_URL) return;
+  const { start } = await import("workflow/api");
+  const { embedContentWorkflow } = await import("@/workflows/embed");
+  await start(embedContentWorkflow, [{ contentId }]);
+}
 
-  const res = await fetch(`${DISTRIBUTOR_BASE_URL}/embed`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Internal-Token": INTERNAL_API_TOKEN,
-    },
-    body: JSON.stringify({ contentId }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Embedding enqueue failed: ${res.status} ${await res.text()}`);
-  }
+/**
+ * Enqueue an embedding job for a rejected / changes_requested agent_feedback row
+ * so the Content sub-agent's findCommonMistakes tool can later surface it.
+ */
+export async function enqueueRejectedDraftEmbedding(
+  feedbackId: string,
+): Promise<void> {
+  const { start } = await import("workflow/api");
+  const { embedRejectedDraftWorkflow } = await import("@/workflows/embed");
+  await start(embedRejectedDraftWorkflow, [{ feedbackId }]);
 }

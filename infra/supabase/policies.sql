@@ -18,9 +18,11 @@ alter table settings           enable row level security;
 -- Phase 11 tables
 alter table agent_feedback     enable row level security;
 alter table outcomes           enable row level security;
-alter table content_embeddings enable row level security;
--- Phase 11.1 generic embeddings table
+-- Phase 11.1 generic embeddings table (includes content vectors; legacy content_embeddings removed)
 alter table embeddings         enable row level security;
+-- NOTE: brand_memory RLS is bundled into migration 0004_brand_memory.sql.
+-- Tables added after 0003 ship their RLS inside the migration (idempotent
+-- via DROP POLICY IF EXISTS) so upgrades only need to apply migrations.
 
 -- ---------------------------------------------------------------------------
 -- 2. Authenticated team members can read everything.
@@ -39,8 +41,8 @@ create policy "team_read_settings"           on settings           for select to
 -- Phase 11
 create policy "team_read_agent_feedback"     on agent_feedback     for select to authenticated using (true);
 create policy "team_read_outcomes"           on outcomes           for select to authenticated using (true);
-create policy "team_read_content_embeddings" on content_embeddings for select to authenticated using (true);
 create policy "team_read_embeddings"         on embeddings         for select to authenticated using (true);
+-- brand_memory read policy lives in migration 0004_brand_memory.sql.
 
 -- ---------------------------------------------------------------------------
 -- 3. Editable tables — authenticated team members can write subject to the
@@ -54,7 +56,7 @@ create policy "team_write_content_revisions"  on content_revisions  for all to a
 create policy "team_write_approvals"          on approvals          for all to authenticated using (true) with check (true);
 create policy "team_write_assets"             on assets             for all to authenticated using (true) with check (true);
 
--- audit_log, publish_jobs, settings, agent_feedback, outcomes, content_embeddings, embeddings:
+-- audit_log, publish_jobs, settings, agent_feedback, outcomes, embeddings:
 -- NO insert/update/delete policy for authenticated. Only the service role can mutate them.
 
 -- ---------------------------------------------------------------------------

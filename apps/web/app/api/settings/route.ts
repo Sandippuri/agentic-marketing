@@ -5,8 +5,17 @@ import { isInternal } from "@/lib/internal-auth";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
-import { CHANNELS } from "@marketing/shared-types";
+import {
+  CHANNELS,
+  IMAGE_MODELS,
+  LLM_MODELS,
+  SUB_AGENT_KINDS,
+  WORKFLOW_ENGINES,
+} from "@marketing/shared-types";
 import type { SettingsShape } from "@marketing/shared-types";
+
+const IMAGE_MODEL_IDS = IMAGE_MODELS.map((m) => m.id) as [string, ...string[]];
+const LLM_MODEL_IDS = LLM_MODELS.map((m) => m.id) as [string, ...string[]];
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +41,15 @@ const PatchSettings = z.object({
       mode: z.enum(["single", "two_approver"]),
       channels: z.array(z.enum(CHANNELS)).optional(),
     })
+    .optional(),
+  image_model: z.enum(IMAGE_MODEL_IDS).optional(),
+  workflow_engine: z.enum(WORKFLOW_ENGINES).optional(),
+  workflow_model: z.enum(LLM_MODEL_IDS).optional(),
+  brand_extract_model: z.enum(LLM_MODEL_IDS).optional(),
+  // Per-sub-agent overrides. Send `null` for a kind to clear it (drops the
+  // entry server-side); send a model id to pin that kind.
+  sub_agent_models: z
+    .record(z.enum(SUB_AGENT_KINDS), z.enum(LLM_MODEL_IDS).nullable())
     .optional(),
 });
 
@@ -59,7 +77,27 @@ export async function PATCH(request: Request) {
         return Object.fromEntries(rows.map((r) => [r.key, r.value]));
       },
       async () => {
-        for (const [key, value] of entries) {
+        for (const [key, rawValue] of entries) {
+          let value: unknown = rawValue;
+          // sub_agent_models is the only key that needs merge semantics:
+          // callers send a partial patch (e.g. { content: "claude-opus-4-7" }
+          // or { content: null } to clear). We merge into the existing row
+          // so other kinds keep their pinned models.
+          if (key === "sub_agent_models") {
+            const [existing] = await db
+              .select()
+              .from(schema.settings)
+              .where(eq(schema.settings.key, "sub_agent_models"))
+              .limit(1);
+            const current = (existing?.value as Record<string, string> | null) ?? {};
+            const patch = rawValue as Record<string, string | null>;
+            const next: Record<string, string> = { ...current };
+            for (const [k, v] of Object.entries(patch)) {
+              if (v === null) delete next[k];
+              else next[k] = v;
+            }
+            value = next;
+          }
           await db
             .insert(schema.settings)
             .values({ key, value, updatedBy: actor.id ?? null })

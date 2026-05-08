@@ -14,6 +14,9 @@ const CreateAsset = z.object({
   storagePath: z.string().min(1),
   templateId: z.string().optional(),
   promptUsed: z.string().optional(),
+  // Required for video assets; cards key off mime_type to pick <img> vs <video>.
+  mimeType: z.string().optional(),
+  durationSec: z.number().int().positive().optional(),
 });
 
 // POST /api/assets — create a new asset record.
@@ -37,6 +40,8 @@ export async function POST(request: Request) {
             storagePath: input.storagePath,
             templateId: input.templateId ?? null,
             promptUsed: input.promptUsed ?? null,
+            mimeType: input.mimeType ?? null,
+            durationSec: input.durationSec ?? null,
             status: "draft",
           })
           .returning();

@@ -14,7 +14,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "apply-sql": "tsx scripts/apply-sql.ts",
+    "migrate:0004": "tsx scripts/apply-sql.ts drizzle/0004_brand_memory.sql"
   },
   "dependencies": {
     "@marketing/shared-types": "workspace:*",

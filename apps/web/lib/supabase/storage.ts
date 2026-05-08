@@ -55,3 +55,55 @@ export async function deleteAsset(storagePath: string): Promise<void> {
   const { error } = await supabase.storage.from(BUCKET).remove([storagePath]);
   if (error) throw new Error(`Asset delete failed: ${error.message}`);
 }
+
+// --- Brand documents ------------------------------------------------------
+// Brand-doc uploads (PDF, DOCX, MD, TXT) live in the same `assets` bucket
+// under a `brand-docs/` prefix so we don't need a second bucket. Signed-URL
+// helper is identical, but kept named-separately to make call-sites readable.
+
+const BRAND_DOC_PREFIX = "brand-docs";
+
+/** Build the canonical storage path for a brand-doc upload. */
+export function brandDocStoragePath(docId: string, filename: string): string {
+  // Strip path separators from the filename to keep it inside the prefix.
+  const safe = filename.replace(/[\\/]+/g, "_");
+  return `${BRAND_DOC_PREFIX}/${docId}/${safe}`;
+}
+
+/** Path for the parsed plaintext sidecar of a brand doc. */
+export function brandDocParsedTextPath(docId: string): string {
+  return `${BRAND_DOC_PREFIX}/${docId}/parsed.txt`;
+}
+
+export async function uploadBrandDoc(
+  storagePath: string,
+  buffer: Buffer,
+  contentType: string,
+): Promise<string> {
+  const supabase = getServiceClient();
+  const { error } = await supabase.storage
+    .from(BUCKET)
+    .upload(storagePath, buffer, { contentType, upsert: true });
+  if (error) throw new Error(`Brand-doc upload failed: ${error.message}`);
+  return storagePath;
+}
+
+export async function downloadBrandDoc(storagePath: string): Promise<Buffer> {
+  const supabase = getServiceClient();
+  const { data, error } = await supabase.storage.from(BUCKET).download(storagePath);
+  if (error || !data) {
+    throw new Error(`Brand-doc download failed: ${error?.message ?? "unknown"}`);
+  }
+  return Buffer.from(await data.arrayBuffer());
+}
+
+export async function deleteBrandDoc(storagePath: string): Promise<void> {
+  const supabase = getServiceClient();
+  const { error } = await supabase.storage.from(BUCKET).remove([storagePath]);
+  if (error) throw new Error(`Brand-doc delete failed: ${error.message}`);
+}
+
+export async function getSignedBrandDocUrl(storagePath: string): Promise<string> {
+  // Reuse the assets bucket; same signing path.
+  return getSignedAssetUrl(storagePath);
+}

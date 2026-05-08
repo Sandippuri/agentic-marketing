@@ -6,7 +6,7 @@
     "noEmit": true,
     "jsx": "preserve",
     "incremental": true,
-    "plugins": [{ "name": "next" }],
+    "plugins": [{ "name": "next" }, { "name": "workflow" }],
     "paths": {
       "@/*": ["./*"]
     }

@@ -1,8 +1,10 @@
-import { eq, isNull } from "drizzle-orm";
+import { eq, isNull, and, isNotNull, desc, lt } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
-import { ApprovalRow, type PendingApproval } from "./approval-row";
-import { BatchApproveButton } from "./batch-approve-button";
+import { type PendingApproval } from "./approval-row";
+import { ApprovalsShell } from "./approvals-shell";
+import { StuckWorkflowRow, type StuckWorkflow } from "./stuck-workflow-row";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
+import { PageHeader, EmptyState, Badge } from "../ui";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +29,7 @@ export default async function ApprovalsPage() {
       contentType: schema.contentItems.type,
       contentStage: schema.contentItems.stage,
       contentBodyMd: schema.contentItems.bodyMd,
+      contentNeedsImages: schema.contentItems.needsImages,
       campaignId: schema.contentItems.campaignId,
       campaignName: schema.campaigns.name,
     })
@@ -37,21 +40,41 @@ export default async function ApprovalsPage() {
     // Oldest first so stale items surface at the top.
     .orderBy(schema.approvals.requestedAt);
 
-  // For each content item, look up the most recent draft asset (best-effort).
-  const assetsByContent = new Map<string, string | null>();
+  // For each content item, look up all asset variants so the reviewer can
+  // pick one. The sub-agent generates ~3 per post; signing URLs in parallel
+  // keeps the page fast even at higher fanout.
+  type AssetOption = {
+    id: string;
+    signedUrl: string | null;
+    status: string;
+    kind: string;
+    mimeType: string | null;
+  };
+  const assetsByContent = new Map<string, AssetOption[]>();
   for (const r of rows) {
     if (!assetsByContent.has(r.contentId)) {
-      const [asset] = await db
-        .select({ id: schema.assets.id, storagePath: schema.assets.storagePath })
+      const found = await db
+        .select({
+          id: schema.assets.id,
+          storagePath: schema.assets.storagePath,
+          status: schema.assets.status,
+          kind: schema.assets.kind,
+          mimeType: schema.assets.mimeType,
+          createdAt: schema.assets.createdAt,
+        })
         .from(schema.assets)
         .where(eq(schema.assets.contentId, r.contentId))
-        .limit(1);
-      if (asset) {
-        const signedUrl = await getSignedAssetUrl(asset.storagePath).catch(() => null);
-        assetsByContent.set(r.contentId, signedUrl);
-      } else {
-        assetsByContent.set(r.contentId, null);
-      }
+        .orderBy(schema.assets.createdAt);
+      const signed = await Promise.all(
+        found.map(async (a) => ({
+          id: a.id,
+          status: a.status,
+          kind: a.kind,
+          mimeType: a.mimeType,
+          signedUrl: await getSignedAssetUrl(a.storagePath).catch(() => null),
+        })),
+      );
+      assetsByContent.set(r.contentId, signed);
     }
   }
 
@@ -69,52 +92,156 @@ export default async function ApprovalsPage() {
       contentStage: r.contentStage,
       requestedAt: r.requestedAt.toISOString(),
       ageLabel: ageLabel(r.requestedAt),
-      assetSignedUrl: assetsByContent.get(r.contentId) ?? null,
+      assets: assetsByContent.get(r.contentId) ?? [],
       bodyMd: r.contentBodyMd ?? null,
+      needsImages: r.contentNeedsImages,
     });
   }
 
   const total = rows.length;
 
+  // Stuck workflows: workflow_runs still status='running' for kind='single_post'
+  // whose latest approval is already decided. These are workflows where the
+  // decide route persisted the decision but approvalHook.resume() failed —
+  // surface them so the operator can manually re-fire the hook.
+  // Grace period: the decide route persists the decision before the workflow's
+  // finishWorkflowRunStep flips workflow_runs to 'completed', so a freshly
+  // decided approval would briefly look stuck. Only flag rows where the
+  // decision has had ≥30s to propagate.
+  const STUCK_GRACE_MS = 30_000;
+  const stuckCutoff = new Date(Date.now() - STUCK_GRACE_MS);
+  const stuckRows = await db
+    .select({
+      approvalId: schema.approvals.id,
+      contentId: schema.approvals.contentId,
+      decision: schema.approvals.decision,
+      decidedAt: schema.approvals.decidedAt,
+      reason: schema.approvals.reason,
+      contentTitle: schema.contentItems.title,
+      contentType: schema.contentItems.type,
+      campaignName: schema.campaigns.name,
+      workflowRunId: schema.workflowRuns.id,
+      engineRunRef: schema.workflowRuns.engineRunRef,
+    })
+    .from(schema.workflowRuns)
+    .innerJoin(
+      schema.contentItems,
+      eq(schema.workflowRuns.contentId, schema.contentItems.id),
+    )
+    .innerJoin(
+      schema.approvals,
+      eq(schema.approvals.contentId, schema.contentItems.id),
+    )
+    .innerJoin(
+      schema.campaigns,
+      eq(schema.contentItems.campaignId, schema.campaigns.id),
+    )
+    .where(
+      and(
+        eq(schema.workflowRuns.status, "running"),
+        eq(schema.workflowRuns.kind, "single_post"),
+        isNotNull(schema.workflowRuns.contentId),
+        isNotNull(schema.approvals.decision),
+        lt(schema.approvals.decidedAt, stuckCutoff),
+      ),
+    )
+    .orderBy(desc(schema.approvals.decidedAt));
+
+  // De-dupe by workflowRunId — pick the most recent approval per run.
+  const stuckByRun = new Map<string, StuckWorkflow>();
+  for (const r of stuckRows) {
+    if (stuckByRun.has(r.workflowRunId)) continue;
+    if (!r.decision || !r.decidedAt) continue;
+    stuckByRun.set(r.workflowRunId, {
+      approvalId: r.approvalId,
+      contentId: r.contentId,
+      contentTitle: r.contentTitle,
+      contentType: r.contentType,
+      campaignName: r.campaignName,
+      decision: r.decision,
+      decidedAt: r.decidedAt.toISOString(),
+      reason: r.reason,
+      workflowRunId: r.workflowRunId,
+      engineRunRef: r.engineRunRef,
+      ageLabel: ageLabel(r.decidedAt),
+    });
+  }
+  const stuck = [...stuckByRun.values()];
+
   return (
     <div>
-      <div className="flex items-baseline justify-between mb-6">
-        <h1 className="text-2xl font-semibold">Approvals</h1>
-        {total > 0 && (
-          <span className="text-sm text-zinc-500">
-            {total} pending
-          </span>
-        )}
-      </div>
+      <PageHeader
+        title="Approvals"
+        description="Items waiting on a human decision before they advance through the pipeline."
+        meta={
+          total > 0 || stuck.length > 0 ? (
+            <>
+              {total > 0 && (
+                <Badge tone="warn" dot>
+                  {total} pending
+                </Badge>
+              )}
+              {total > 0 && (
+                <Badge tone="neutral">
+                  {byCampaign.size} {byCampaign.size === 1 ? "campaign" : "campaigns"}
+                </Badge>
+              )}
+              {stuck.length > 0 && (
+                <Badge tone="danger" dot>
+                  {stuck.length} stuck
+                </Badge>
+              )}
+            </>
+          ) : null
+        }
+      />
 
-      {total === 0 ? (
-        <p className="text-zinc-500">Inbox zero. Nothing pending.</p>
-      ) : (
-        <div className="space-y-8">
-          {[...byCampaign.entries()].map(([campaignId, group]) => (
-            <section key={campaignId}>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-medium text-zinc-700 dark:text-zinc-300">
-                  {group.name}
-                  <span className="ml-2 text-xs text-zinc-400">
-                    ({group.approvals.length})
-                  </span>
-                </h2>
-                {group.approvals.length > 1 && (
-                  <BatchApproveButton
-                    approvalIds={group.approvals.map((a) => a.id)}
-                  />
-                )}
-              </div>
-              <ul className="divide-y divide-zinc-200 dark:divide-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-800 px-4">
-                {group.approvals.map((a) => (
-                  <ApprovalRow key={a.id} approval={a} />
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
+      {stuck.length > 0 && (
+        <section className="surface mb-6">
+          <header className="flex items-center justify-between gap-3 px-5 py-3 hairline-b">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="grid place-items-center h-7 w-7 rounded-md bg-[color-mix(in_oklab,var(--danger)_20%,transparent)] text-[var(--danger)] shrink-0">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 8v4" />
+                  <path d="M12 16h.01" />
+                  <circle cx="12" cy="12" r="9" />
+                </svg>
+              </span>
+              <h2 className="text-sm font-semibold text-ink truncate">Stuck workflows</h2>
+              <Badge tone="danger">{stuck.length}</Badge>
+            </div>
+            <span className="text-xs text-mid">
+              Decided in DB but the workflow hook never resumed. Re-fire to unblock.
+            </span>
+          </header>
+          <ul className="divide-y divide-[var(--border)]">
+            {stuck.map((s) => (
+              <StuckWorkflowRow key={s.workflowRunId} run={s} />
+            ))}
+          </ul>
+        </section>
       )}
+
+      {total === 0 && stuck.length === 0 ? (
+        <EmptyState
+          title="Inbox zero"
+          description="Nothing is waiting on you. New items appear here the moment an agent requests review."
+          icon={
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+              <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" />
+            </svg>
+          }
+        />
+      ) : total > 0 ? (
+        <ApprovalsShell
+          groups={[...byCampaign.entries()].map(([campaignId, group]) => ({
+            campaignId,
+            name: group.name,
+            approvals: group.approvals,
+          }))}
+        />
+      ) : null}
     </div>
   );
 }

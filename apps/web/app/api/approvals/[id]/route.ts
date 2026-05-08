@@ -7,7 +7,8 @@ import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { assertContentTransition } from "@/lib/state-machine";
 import { errorResponse, parseJson } from "@/lib/http";
-import { enqueueEmbedding } from "@/lib/embedding-queue";
+import { enqueueEmbedding, enqueueRejectedDraftEmbedding } from "@/lib/embedding-queue";
+import { approvalHook } from "@/workflows/single-post";
 
 const Decide = z.object({
   decision: z.enum(APPROVAL_DECISIONS),
@@ -90,32 +91,62 @@ export async function POST(
         const humanFinalMd =
           input.decision === "approved" ? content.bodyMd : null;
 
-        await db.insert(schema.agentFeedback).values({
-          contentId: approval.contentId,
-          revisionId: content.currentRevisionId ?? null,
-          aiDraftMd,
-          humanFinalMd,
-          decision: input.decision,
-          editDistance:
-            humanFinalMd !== null
-              ? levenshtein(aiDraftMd, humanFinalMd)
-              : null,
-          decidedBy: input.decidedBy ?? actor.id ?? null,
-          decidedAt: new Date(),
-          reason: input.reason ?? null,
-        });
+        const [feedback] = await db
+          .insert(schema.agentFeedback)
+          .values({
+            contentId: approval.contentId,
+            revisionId: content.currentRevisionId ?? null,
+            aiDraftMd,
+            humanFinalMd,
+            decision: input.decision,
+            editDistance:
+              humanFinalMd !== null
+                ? levenshtein(aiDraftMd, humanFinalMd)
+                : null,
+            decidedBy: input.decidedBy ?? actor.id ?? null,
+            decidedAt: new Date(),
+            reason: input.reason ?? null,
+          })
+          .returning({ id: schema.agentFeedback.id });
 
-        // If approved, enqueue embedding so the content is searchable.
         if (input.decision === "approved") {
+          // Approved → embed the content so findSimilarContent can return it.
           await enqueueEmbedding(approval.contentId).catch(() => {
             // Non-critical: embedding can be backfilled later.
+          });
+        } else if (feedback?.id) {
+          // Rejected / changes_requested → embed the AI draft + reason so
+          // findCommonMistakes can later surface this miss.
+          await enqueueRejectedDraftEmbedding(feedback.id).catch(() => {
+            // Non-critical: rejected embeddings can be backfilled later.
           });
         }
 
         return updated!;
       },
     );
-    return Response.json(result);
+
+    // Phase 1 of the Vercel migration: if a single-post workflow is
+    // suspended on this approval's hook token, resume it. No-op when the
+    // approval came from a non-workflow path (e.g. legacy chat flow).
+    // Surface failures so the caller can recover via /approvals' stuck
+    // section instead of silently leaving a hung workflow.
+    let hookResumed = true;
+    let hookError: string | null = null;
+    try {
+      await approvalHook.resume(`approval:${id}`, {
+        decision: input.decision,
+        reason: input.reason ?? null,
+      });
+    } catch (err) {
+      hookResumed = false;
+      hookError = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[approvals.decide] approvalHook.resume failed for ${id}: ${hookError}`,
+      );
+    }
+
+    return Response.json({ ...result, hookResumed, hookError });
   } catch (err) {
     if (err instanceof Error) {
       if (err.message === "not_found") {

@@ -1,13 +1,13 @@
 /**
  * /insights — "What's working" dashboard.
  * Top performers per channel, sortable by CTR / engagement / impressions / clicks.
- * Phase 11 Day 4.
  */
 
 import Link from "next/link";
 import { desc, eq, and, sql } from "drizzle-orm";
 import { getDb, schema, outcomes } from "@marketing/db";
 import { CHANNELS } from "@marketing/shared-types";
+import { PageHeader, Badge, EmptyState } from "../ui";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,20 +15,19 @@ export const revalidate = 0;
 const WINDOWS = ["7d", "30d", "90d"] as const;
 const SORT_OPTIONS = ["ctr", "engagement", "impressions", "clicks"] as const;
 
-/** Must match CHANNELS enum in @marketing/shared-types */
 const CHANNEL_LABEL: Record<(typeof CHANNELS)[number], string> = {
   internal_blog: "Blog",
   linkedin: "LinkedIn",
   x: "X",
-  email_hubspot: "HubSpot email",
+  email_hubspot: "HubSpot",
   email_mailchimp: "Mailchimp",
 };
 
-const STAGE_CHIP: Record<string, string> = {
-  pull: "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
-  explain: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
-  reinforce: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-  push: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+const STAGE_TONE: Record<string, "info" | "violet" | "warn" | "success"> = {
+  pull: "info",
+  explain: "violet",
+  reinforce: "warn",
+  push: "success",
 };
 
 type SortBy = (typeof SORT_OPTIONS)[number];
@@ -90,7 +89,6 @@ export default async function InsightsPage({
     .orderBy(desc(sortCol))
     .limit(limitParam);
 
-  // Summary stats card: median CTR per channel for the selected window.
   const summaryRows = await db
     .select({
       channel: outcomes.channel,
@@ -115,100 +113,63 @@ export default async function InsightsPage({
   };
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
-            Insights
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            Top-performing content — grounding signal for the AI.
-          </p>
-        </div>
+    <div>
+      <PageHeader
+        title="Insights"
+        description="What's working — top-performing content used as grounding signal for the agent."
+        meta={
+          <Badge tone="info">
+            Window: {windowParam}
+          </Badge>
+        }
+      />
 
-        {/* Controls */}
-        <div className="flex items-center gap-3 flex-wrap justify-end">
-          {/* Window filter */}
-          <div className="flex items-center gap-1 rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden text-sm">
-            {WINDOWS.map((w) => (
-              <Link
-                key={w}
-                href={buildUrl({ window: w })}
-                className={`px-3 py-1.5 transition-colors ${
-                  windowParam === w
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium"
-                    : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                }`}
-              >
-                {w}
-              </Link>
-            ))}
-          </div>
-
-          {/* Sort filter — link-based so it works in Server Components */}
-          <div className="flex items-center gap-1 rounded-lg border border-zinc-200 dark:border-zinc-700 overflow-hidden text-sm">
-            {SORT_OPTIONS.map((s) => (
-              <Link
-                key={s}
-                href={buildUrl({ sortBy: s })}
-                className={`px-3 py-1.5 transition-colors capitalize ${
-                  sortBy === s
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium"
-                    : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                }`}
-              >
-                {s === "ctr" ? "CTR" : s === "engagement" ? "Eng." : s}
-              </Link>
-            ))}
-          </div>
-
-          {/* Channel filter */}
-          <div className="flex items-center gap-1 flex-wrap">
-            <Link
-              href={buildUrl({ channel: "" })}
-              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                !channelParam
-                  ? "bg-zinc-900 text-white border-zinc-900 dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100"
-                  : "border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:border-zinc-400"
-              }`}
-            >
-              All
-            </Link>
-            {CHANNELS.map((ch) => (
-              <Link
-                key={ch}
-                href={buildUrl({ channel: ch })}
-                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                  channelParam === ch
-                    ? "bg-zinc-900 text-white border-zinc-900 dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100"
-                    : "border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:border-zinc-400"
-                }`}
-              >
-                {CHANNEL_LABEL[ch] ?? ch}
-              </Link>
-            ))}
-          </div>
-        </div>
+      {/* Toolbar */}
+      <div className="surface mb-5 px-3 py-2.5 flex flex-wrap items-center gap-3">
+        <span className="text-[11px] uppercase tracking-wider text-faint pl-1">Window</span>
+        <Segmented
+          options={WINDOWS.map((w) => ({ value: w, label: w }))}
+          current={windowParam}
+          buildUrl={(v) => buildUrl({ window: v })}
+        />
+        <span className="h-5 w-px bg-[var(--border)] mx-1" />
+        <span className="text-[11px] uppercase tracking-wider text-faint pl-1">Sort</span>
+        <Segmented
+          options={SORT_OPTIONS.map((s) => ({
+            value: s,
+            label: s === "ctr" ? "CTR" : s === "engagement" ? "Eng." : s,
+          }))}
+          current={sortBy}
+          buildUrl={(v) => buildUrl({ sortBy: v })}
+        />
+        <span className="h-5 w-px bg-[var(--border)] mx-1" />
+        <span className="text-[11px] uppercase tracking-wider text-faint pl-1">Channel</span>
+        <Segmented
+          options={[
+            { value: "", label: "All" },
+            ...CHANNELS.map((ch) => ({ value: ch, label: CHANNEL_LABEL[ch] ?? ch })),
+          ]}
+          current={channelParam ?? ""}
+          buildUrl={(v) => buildUrl({ channel: v })}
+        />
       </div>
 
       {/* Channel summary cards */}
       {summaryRows.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 mb-6">
           {summaryRows.map((s) => (
-            <div
-              key={String(s.channel)}
-              className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-1"
-            >
-              <div className="text-xs text-zinc-500 dark:text-zinc-400 font-medium uppercase tracking-wider">
+            <div key={String(s.channel)} className="surface p-4">
+              <div className="section-title">
                 {CHANNEL_LABEL[s.channel ?? ""] ?? s.channel}
               </div>
-              <div className="text-2xl font-bold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                {(parseFloat(s.avgCtr ?? "0") * 100).toFixed(2)}
-                <span className="text-sm font-normal text-zinc-400 ml-0.5">%</span>
+              <div className="mt-1.5 flex items-baseline gap-1.5">
+                <span className="text-2xl font-semibold text-ink tabular-nums">
+                  {(parseFloat(s.avgCtr ?? "0") * 100).toFixed(2)}
+                </span>
+                <span className="text-sm text-faint">%</span>
               </div>
-              <div className="text-xs text-zinc-500">
-                avg CTR · {s.totalPosts} posts
+              <div className="mt-1 text-[11px] text-mid">
+                avg CTR · <span className="tabular-nums">{s.totalPosts}</span> posts
               </div>
             </div>
           ))}
@@ -217,96 +178,71 @@ export default async function InsightsPage({
 
       {/* Top performers table */}
       {rows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-12 text-center">
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            No outcome data yet for the selected filters.
-          </p>
-          <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-600">
-            Outcomes are rolled up nightly after metrics are collected.
-          </p>
-        </div>
+        <EmptyState
+          title="No outcome data yet"
+          description="Outcomes are rolled up nightly after metrics are collected. Try widening the window or removing the channel filter."
+        />
       ) : (
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="table-card overflow-x-auto">
+          <table className="table">
             <thead>
-              <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900">
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500 dark:text-zinc-400 w-8">
-                  #
-                </th>
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500 dark:text-zinc-400">
-                  Title
-                </th>
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500 dark:text-zinc-400">
-                  Channel
-                </th>
-                <th className="px-4 py-2.5 text-left font-medium text-zinc-500 dark:text-zinc-400">
-                  Stage
-                </th>
-                <th className="px-4 py-2.5 text-right font-medium text-zinc-500 dark:text-zinc-400">
-                  Impressions
-                </th>
-                <th className="px-4 py-2.5 text-right font-medium text-zinc-500 dark:text-zinc-400">
-                  Clicks
-                </th>
-                <th className={`px-4 py-2.5 text-right font-medium ${sortBy === "ctr" ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400"}`}>
+              <tr>
+                <th className="w-10 text-right">#</th>
+                <th>Title</th>
+                <th>Channel</th>
+                <th>Stage</th>
+                <th className="text-right">Impressions</th>
+                <th className="text-right">Clicks</th>
+                <th className={`text-right ${sortBy === "ctr" ? "!text-ink" : ""}`}>
                   CTR{sortBy === "ctr" ? " ↓" : ""}
                 </th>
-                <th className={`px-4 py-2.5 text-right font-medium ${sortBy === "engagement" ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400"}`}>
+                <th className={`text-right ${sortBy === "engagement" ? "!text-ink" : ""}`}>
                   Eng.{sortBy === "engagement" ? " ↓" : ""}
                 </th>
-                <th className="px-4 py-2.5 text-right font-medium text-zinc-500 dark:text-zinc-400">
-                  Conv.
-                </th>
+                <th className="text-right">Conv.</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            <tbody>
               {rows.map((row, i) => (
-                <tr
-                  key={`${row.contentId}-${row.channel}`}
-                  className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors"
-                >
-                  <td className="px-4 py-3 text-zinc-400 text-xs tabular-nums">
+                <tr key={`${row.contentId}-${row.channel}`}>
+                  <td className="text-faint text-xs tabular-nums text-right">
                     {i + 1}
                   </td>
-                  <td className="px-4 py-3 text-zinc-900 dark:text-zinc-100 max-w-xs">
+                  <td className="max-w-xs">
                     {row.publishedUrl ? (
                       <a
                         href={row.publishedUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="hover:underline line-clamp-2"
+                        className="text-ink hover:text-[var(--accent)] hover:underline line-clamp-2 transition-colors"
                       >
                         {row.title}
                       </a>
                     ) : (
-                      <span className="line-clamp-2">{row.title}</span>
+                      <span className="text-ink line-clamp-2">{row.title}</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap text-xs">
+                  <td className="text-mid whitespace-nowrap text-xs">
                     {CHANNEL_LABEL[row.channel ?? ""] ?? row.channel}
                   </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        STAGE_CHIP[row.stage] ?? "bg-zinc-100 text-zinc-600"
-                      }`}
-                    >
+                  <td>
+                    <Badge tone={STAGE_TONE[row.stage] ?? "neutral"}>
                       {row.stage}
-                    </span>
+                    </Badge>
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
+                  <td className="text-right tabular-nums text-mid">
                     {row.impressions?.toLocaleString() ?? "—"}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
+                  <td className="text-right tabular-nums text-mid">
                     {row.clicks?.toLocaleString() ?? "—"}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums font-medium text-zinc-900 dark:text-zinc-100">
+                  <td className="text-right tabular-nums font-medium text-ink">
                     {(parseFloat(row.ctr) * 100).toFixed(2)}%
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
+                  <td className="text-right tabular-nums text-mid">
                     {(parseFloat(row.engagementRate) * 100).toFixed(2)}%
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-zinc-600 dark:text-zinc-400">
+                  <td className="text-right tabular-nums text-mid">
                     {row.conversions?.toLocaleString() ?? "—"}
                   </td>
                 </tr>
@@ -316,11 +252,42 @@ export default async function InsightsPage({
         </div>
       )}
 
-      <p className="text-xs text-zinc-400 dark:text-zinc-600">
-        Outcomes are pre-rolled nightly. Values reflect the {windowParam} window.
-        Human-approved playbook updates based on this data are a manual step — see{" "}
-        <code className="font-mono">apps/manager/memory/playbooks/</code>.
+      <p className="mt-4 text-xs text-faint">
+        Outcomes pre-rolled nightly. Values reflect the {windowParam} window. Playbook updates from
+        this data are a manual step — see <code className="mono">apps/manager/memory/playbooks/</code>.
       </p>
+    </div>
+  );
+}
+
+function Segmented({
+  options,
+  current,
+  buildUrl,
+}: {
+  options: { value: string; label: string }[];
+  current: string;
+  buildUrl: (v: string) => string;
+}) {
+  return (
+    <div className="inline-flex items-center rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+      {options.map((opt) => {
+        const active = current === opt.value;
+        return (
+          <Link
+            key={opt.value || "_all"}
+            href={buildUrl(opt.value)}
+            className={[
+              "px-2.5 py-1 text-[12px] rounded transition-colors capitalize",
+              active
+                ? "bg-[var(--bg-elevated)] text-ink shadow-sm"
+                : "text-mid hover:text-ink",
+            ].join(" ")}
+          >
+            {opt.label}
+          </Link>
+        );
+      })}
     </div>
   );
 }

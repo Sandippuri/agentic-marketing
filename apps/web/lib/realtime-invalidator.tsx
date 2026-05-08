@@ -57,6 +57,32 @@ export function RealtimeInvalidator() {
           router.refresh();
         },
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "generation_jobs" },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["generation-jobs"] });
+          // /creation-workflow is server-rendered; a refresh re-runs the
+          // join with steps + signed URLs without a client-side fetch path.
+          router.refresh();
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "generation_job_steps" },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["generation-jobs"] });
+          router.refresh();
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "workflow_runs" },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["workflow-runs"] });
+          router.refresh();
+        },
+      )
       .subscribe();
 
     return () => {

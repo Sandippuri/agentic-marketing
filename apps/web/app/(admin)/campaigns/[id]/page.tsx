@@ -1,31 +1,21 @@
 import Link from "next/link";
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getDb, schema } from "@marketing/db";
+import { DraftCalendarItemButton } from "./draft-button";
+import { RedraftButton } from "./redraft-button";
+import { CampaignChat } from "./campaign-chat";
+import { CampaignTabs } from "./campaign-tabs";
+import { PageHeader, Badge, EmptyState, Card, CardHeader, statusTone } from "../../ui";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const STATUS_BADGE: Record<string, string> = {
-  draft: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
-  in_review: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-  approved: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-  scheduled: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  published: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-  retracted: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-};
 
 const STAGE_DOT: Record<string, string> = {
   pull: "bg-sky-500",
   explain: "bg-violet-500",
   reinforce: "bg-amber-500",
   push: "bg-emerald-500",
-};
-
-const PHASE_BADGE: Record<string, string> = {
-  buildup: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-  launch: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
-  post_launch: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
 };
 
 export default async function CampaignDetail({
@@ -59,6 +49,26 @@ export default async function CampaignDetail({
       .groupBy(schema.contentItems.status),
   ]);
 
+  // Items whose latest review decision was changes_requested / rejected
+  // get a Redraft button. Status alone can't tell these apart from
+  // never-reviewed drafts, so we look at the approvals table.
+  const itemIds = items.map((it) => it.id);
+  const reviseable = new Set<string>();
+  if (itemIds.length > 0) {
+    const decisions = await db
+      .select({
+        contentId: schema.approvals.contentId,
+        decision: schema.approvals.decision,
+      })
+      .from(schema.approvals)
+      .where(inArray(schema.approvals.contentId, itemIds));
+    for (const d of decisions) {
+      if (d.decision === "changes_requested" || d.decision === "rejected") {
+        reviseable.add(d.contentId);
+      }
+    }
+  }
+
   const statusCounts = Object.fromEntries(
     statusSummary.map((r) => [r.status, r.count]),
   );
@@ -73,188 +83,232 @@ export default async function CampaignDetail({
       }>)
     : [];
 
-  return (
-    <div className="space-y-8 max-w-4xl">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Link href="/campaigns" className="text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
-              ← Campaigns
-            </Link>
-          </div>
-          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
-            {campaign.name}
-          </h1>
-          <div className="flex items-center gap-2 mt-2">
-            <span className="text-xs text-zinc-500 font-mono">{campaign.slug}</span>
-            <span
-              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                PHASE_BADGE[campaign.phase] ?? "bg-zinc-100 text-zinc-600"
-              }`}
-            >
-              {campaign.phase.replace("_", " ")}
-            </span>
-            <span className="text-xs text-zinc-400">{campaign.status}</span>
-          </div>
-        </div>
+  const phaseTone =
+    campaign.phase === "buildup"
+      ? "info"
+      : campaign.phase === "launch"
+        ? "warn"
+        : "violet";
 
-        {/* Status summary pills */}
-        <div className="flex gap-2 flex-wrap justify-end">
-          {Object.entries(statusCounts).map(([status, count]) => (
-            <span
-              key={status}
-              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                STATUS_BADGE[status] ?? "bg-zinc-100 text-zinc-600"
-              }`}
-            >
-              {count} {status.replace("_", " ")}
-            </span>
-          ))}
-        </div>
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] xl:gap-8">
+      <div className="min-w-0">
+      {/* Breadcrumb */}
+      <div className="mb-3">
+        <Link
+          href="/campaigns"
+          className="inline-flex items-center gap-1 text-xs text-mid hover:text-ink transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 12H5M12 19l-7-7 7-7" />
+          </svg>
+          Campaigns
+        </Link>
       </div>
 
-      {/* Brief */}
-      {campaign.briefMd && (
-        <section>
-          <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider mb-3">
-            Brief
-          </h2>
-          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-4">
-            <pre className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed font-sans">
-              {campaign.briefMd}
-            </pre>
-          </div>
-        </section>
-      )}
-
-      {/* Calendar */}
-      {calendarItems.length > 0 && (
-        <section>
-          <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider mb-3">
-            Content Calendar ({calendarItems.length} items)
-          </h2>
-          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900">
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Title</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Type</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Stage</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Phase</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Scheduled</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                {calendarItems.map((item, i) => (
-                  <tr key={i} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50">
-                    <td className="px-4 py-2.5 text-zinc-900 dark:text-zinc-100 max-w-xs truncate">
-                      {item.title}
-                    </td>
-                    <td className="px-4 py-2.5 text-zinc-500 text-xs">{item.type}</td>
-                    <td className="px-4 py-2.5">
-                      <span className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
-                        <span
-                          className={`w-2 h-2 rounded-full shrink-0 ${STAGE_DOT[item.stage] ?? "bg-zinc-400"}`}
-                        />
-                        {item.stage}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-zinc-500 text-xs">
-                      {item.phase.replace("_", " ")}
-                    </td>
-                    <td className="px-4 py-2.5 text-zinc-500 text-xs">
-                      {item.scheduledFor
-                        ? new Date(item.scheduledFor).toLocaleDateString()
-                        : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* Content items */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
-            Content Items ({items.length})
-          </h2>
-          <Link
-            href={`/approvals`}
-            className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
-          >
-            View pending approvals →
+      <PageHeader
+        title={campaign.name}
+        meta={
+          <>
+            <span className="mono text-xs text-faint">{campaign.slug}</span>
+            <Badge tone={phaseTone}>{campaign.phase.replace("_", " ")}</Badge>
+            <Badge tone={statusTone(campaign.status)} dot>
+              {campaign.status}
+            </Badge>
+          </>
+        }
+        actions={
+          <Link href="/approvals" className="btn btn-secondary btn-sm">
+            View pending approvals
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 12h14M12 5l7 7-7 7" />
+            </svg>
           </Link>
-        </div>
+        }
+      />
 
-        {items.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-8 text-center text-sm text-zinc-500">
-            No content items yet. Ask the agent to draft some via chat.
-          </div>
-        ) : (
-          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900">
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Title</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Type</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Stage</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Status</th>
-                  <th className="px-4 py-2 text-left font-medium text-zinc-500">Created</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                {items.map((it) => (
-                  <tr
-                    key={it.id}
-                    className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors"
-                  >
-                    <td className="px-4 py-2.5 text-zinc-900 dark:text-zinc-100 max-w-xs">
-                      <span className="truncate block">{it.title}</span>
-                      {it.publishedUrl && (
-                        <a
-                          href={it.publishedUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline truncate block mt-0.5"
-                        >
-                          {it.publishedUrl}
-                        </a>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-zinc-500 text-xs whitespace-nowrap">
-                      {it.type}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
-                        <span
-                          className={`w-2 h-2 rounded-full shrink-0 ${STAGE_DOT[it.stage] ?? "bg-zinc-400"}`}
-                        />
-                        {it.stage}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                          STATUS_BADGE[it.status] ?? "bg-zinc-100 text-zinc-600"
-                        }`}
-                      >
-                        {it.status.replace("_", " ")}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-zinc-500 text-xs whitespace-nowrap">
-                      {new Date(it.createdAt).toLocaleDateString()}
-                    </td>
+      {/* Status summary stats */}
+      {Object.keys(statusCounts).length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-6">
+          {Object.entries(statusCounts).map(([status, count]) => (
+            <Badge key={status} tone={statusTone(status)} dot>
+              {count} {status.replace("_", " ")}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      <CampaignTabs
+        hasBrief={Boolean(campaign.briefMd)}
+        calendarCount={calendarItems.length}
+        contentCount={items.length}
+        brief={
+          campaign.briefMd ? (
+            <Card padded={false}>
+              <div className="px-5 pt-4 pb-2">
+                <CardHeader title="Brief" description="Strategist output and campaign objective." />
+              </div>
+              <div className="border-t border-[var(--border)] px-5 py-4 bg-[var(--surface-2)]">
+                <pre className="text-sm text-mid whitespace-pre-wrap leading-relaxed font-sans">
+                  {campaign.briefMd}
+                </pre>
+              </div>
+            </Card>
+          ) : (
+            <EmptyState
+              title="No brief yet"
+              description="The strategist hasn't produced a brief for this campaign."
+            />
+          )
+        }
+        calendar={
+          calendarItems.length > 0 ? (
+            <div className="table-card overflow-x-auto">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Type</th>
+                    <th>Stage</th>
+                    <th>Phase</th>
+                    <th>Scheduled</th>
+                    <th className="text-right">Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {calendarItems.map((item, i) => (
+                    <tr key={i}>
+                      <td className="font-medium text-ink max-w-xs truncate">{item.title}</td>
+                      <td className="text-mid text-xs">{item.type}</td>
+                      <td>
+                        <span className="inline-flex items-center gap-1.5 text-xs text-mid">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${STAGE_DOT[item.stage] ?? "bg-zinc-400"}`}
+                          />
+                          {item.stage}
+                        </span>
+                      </td>
+                      <td className="text-mid text-xs capitalize">
+                        {item.phase.replace("_", " ")}
+                      </td>
+                      <td className="text-mid text-xs mono">
+                        {item.scheduledFor
+                          ? new Date(item.scheduledFor).toLocaleDateString()
+                          : "—"}
+                      </td>
+                      <td className="text-right">
+                        <DraftCalendarItemButton
+                          campaignId={campaign.id}
+                          itemTitle={item.title}
+                          itemType={item.type}
+                          itemStage={item.stage}
+                          briefSnippet={(campaign.briefMd ?? "").slice(0, 1500)}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyState
+              title="No calendar items"
+              description="The strategist hasn't planned any calendar items yet."
+            />
+          )
+        }
+        content={
+          items.length === 0 ? (
+            <EmptyState
+              title="No content items yet"
+              description="Ask the agent to draft items via campaign chat."
+            />
+          ) : (
+            <div className="table-card overflow-x-auto">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Type</th>
+                    <th>Stage</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th className="text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((it) => (
+                    <tr key={it.id}>
+                      <td className="max-w-xs">
+                        <Link
+                          href={`/campaigns/${campaign.id}/content/${it.id}`}
+                          className="font-medium text-ink hover:text-[var(--accent)] truncate block transition-colors"
+                        >
+                          {it.title}
+                        </Link>
+                        {it.publishedUrl && (
+                          <a
+                            href={it.publishedUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-[var(--accent)] hover:underline truncate block mt-0.5"
+                          >
+                            {it.publishedUrl}
+                          </a>
+                        )}
+                      </td>
+                      <td className="text-mid text-xs whitespace-nowrap">{it.type}</td>
+                      <td>
+                        <span className="inline-flex items-center gap-1.5 text-xs text-mid">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${STAGE_DOT[it.stage] ?? "bg-zinc-400"}`}
+                          />
+                          {it.stage}
+                        </span>
+                      </td>
+                      <td>
+                        <Badge tone={statusTone(it.status)} dot>
+                          {it.status.replace("_", " ")}
+                        </Badge>
+                      </td>
+                      <td className="text-mid text-xs mono whitespace-nowrap">
+                        {new Date(it.createdAt).toLocaleDateString()}
+                      </td>
+                      <td className="text-right">
+                        {reviseable.has(it.id) && it.status === "draft" ? (
+                          <RedraftButton
+                            campaignId={campaign.id}
+                            contentId={it.id}
+                            itemTitle={it.title}
+                            itemType={it.type}
+                          />
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      />
+      </div>
+
+      {/* Campaign-scoped chat — sticky on the right, full-height column */}
+      <aside className="hidden xl:block">
+        <div className="sticky top-7 h-[calc(100dvh-3.5rem)] flex flex-col">
+          <h2 className="section-title mb-3">Campaign chat</h2>
+          <div className="flex-1 min-h-0">
+            <CampaignChat campaignId={campaign.id} campaignName={campaign.name} fill />
           </div>
-        )}
-      </section>
+        </div>
+      </aside>
+
+      {/* Mobile/narrow fallback: chat below content */}
+      <div className="xl:hidden mt-6">
+        <h2 className="section-title mb-3">Campaign chat</h2>
+        <CampaignChat campaignId={campaign.id} campaignName={campaign.name} />
+      </div>
     </div>
   );
 }

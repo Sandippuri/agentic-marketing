@@ -3,3 +3,7 @@ export { STRATEGIST_PROMPT } from "./strategist";
 export { CONTENT_PROMPT } from "./content";
 export { ANALYST_PROMPT } from "./analyst";
 export { ASSET_PROMPT } from "./asset";
+export { RESEARCHER_PROMPT } from "./researcher";
+export { SEO_PROMPT } from "./seo";
+export { EXPERIMENT_PROMPT } from "./experiment";
+export { LIFECYCLE_PROMPT } from "./lifecycle";

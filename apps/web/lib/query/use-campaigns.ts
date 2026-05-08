@@ -50,3 +50,44 @@ export function useCreateCampaign() {
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
   });
 }
+
+export type UpdateCampaignInput = {
+  name?: string;
+  phase?: "buildup" | "launch" | "post_launch";
+  status?: "draft" | "active" | "paused" | "completed" | "archived";
+  briefMd?: string;
+};
+
+export function useUpdateCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...input }: { id: string } & UpdateCampaignInput) => {
+      const res = await fetch(`/api/campaigns/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `PATCH /api/campaigns/${id} -> ${res.status}`);
+      }
+      return (await res.json()) as Campaign;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+  });
+}
+
+export function useDeleteCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/campaigns/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `DELETE /api/campaigns/${id} -> ${res.status}`);
+      }
+      return id;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+  });
+}

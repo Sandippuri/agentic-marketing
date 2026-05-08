@@ -1,9 +1,17 @@
 "use client";
 
-import { useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useDecideApproval } from "@/lib/query/use-approvals";
-import { parseRationale } from "@marketing/shared-types";
+import { isVideoAsset } from "@/lib/asset-media";
+
+export type AssetOption = {
+  id: string;
+  signedUrl: string | null;
+  status: string;
+  kind: string;
+  mimeType: string | null;
+};
 
 export type PendingApproval = {
   id: string;
@@ -13,161 +21,161 @@ export type PendingApproval = {
   contentStage: string;
   requestedAt: string;
   ageLabel?: string;
-  /** Signed URL for the associated visual asset, if any */
-  assetSignedUrl?: string | null;
+  /** Visual variants generated for this post; admin picks one */
+  assets: AssetOption[];
   /** Markdown body preview */
   bodyMd?: string | null;
+  /** Whether image generation is enabled for this post */
+  needsImages: boolean;
 };
 
-export function ApprovalRow({ approval }: { approval: PendingApproval }) {
+export function ApprovalRow({
+  approval,
+  isSelected,
+  onOpen,
+}: {
+  approval: PendingApproval;
+  isSelected: boolean;
+  onOpen: () => void;
+}) {
+  const router = useRouter();
   const decide = useDecideApproval();
-  const [reason, setReason] = useState("");
-  const [showReason, setShowReason] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const [rationaleExpanded, setRationaleExpanded] = useState(false);
 
-  const { rationale, bodyCopy } = parseRationale(approval.bodyMd ?? "");
+  const renderable = approval.assets.filter((a) => a.signedUrl);
+  const selected =
+    renderable.find((a) => a.status === "approved") ?? renderable[0] ?? null;
+  const isStale = approval.ageLabel?.includes("d");
 
-  const meta = (
-    <div className="text-xs text-zinc-500 mt-1 flex items-center gap-2 flex-wrap">
-      <span>{approval.contentType}</span>
-      <span>·</span>
-      <span className="capitalize">{approval.contentStage}</span>
-      <span>·</span>
-      <span
-        className={
-          approval.ageLabel?.includes("d")
-            ? "text-amber-600 dark:text-amber-400 font-medium"
-            : ""
-        }
-      >
-        {approval.ageLabel ?? new Date(approval.requestedAt).toLocaleString()}
-      </span>
-    </div>
-  );
+  function handleApprove() {
+    decide.mutate(
+      { approvalId: approval.id, decision: "approved" },
+      { onSuccess: () => router.refresh() },
+    );
+  }
 
-  const rationalePreview = rationale ? (
-    <div className="mt-1.5">
-      <button
-        onClick={() => setRationaleExpanded((s) => !s)}
-        className="text-xs text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1"
-      >
-        🧠 {rationaleExpanded ? "Hide AI rationale ↑" : "Show AI rationale ↓"}
-      </button>
-      {rationaleExpanded && (
-        <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 italic leading-relaxed bg-violet-50 dark:bg-violet-900/20 rounded p-2 border border-violet-200 dark:border-violet-800">
-          {rationale}
-        </p>
-      )}
-    </div>
-  ) : null;
-
-  const copyPreview = bodyCopy ? (
-    <div className="mt-1">
-      <button
-        onClick={() => setExpanded((s) => !s)}
-        className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
-      >
-        {expanded ? "Hide copy ↑" : "Preview copy ↓"}
-      </button>
-      {expanded && (
-        <pre className="mt-1 text-xs whitespace-pre-wrap leading-relaxed bg-zinc-50 dark:bg-zinc-800/60 rounded p-2 max-h-48 overflow-y-auto border border-zinc-200 dark:border-zinc-700">
-          {bodyCopy}
-        </pre>
-      )}
-    </div>
-  ) : null;
-
-  const actions = (
-    <div className="flex gap-2 flex-wrap mt-2">
-      <button
-        onClick={() => decide.mutate({ approvalId: approval.id, decision: "approved" })}
-        disabled={decide.isPending}
-        className="rounded bg-emerald-600 text-white px-3 py-1 text-sm font-medium disabled:opacity-50"
-      >
-        Approve
-      </button>
-      <button
-        onClick={() => setShowReason((s) => !s)}
-        className="rounded border border-zinc-300 dark:border-zinc-700 px-3 py-1 text-sm"
-      >
-        Request changes
-      </button>
-      <button
-        onClick={() =>
-          decide.mutate({
-            approvalId: approval.id,
-            decision: "rejected",
-            reason: reason || undefined,
-          })
-        }
-        disabled={decide.isPending}
-        className="rounded bg-red-600 text-white px-3 py-1 text-sm font-medium disabled:opacity-50"
-      >
-        Reject
-      </button>
-    </div>
-  );
+  function handleKey(e: React.KeyboardEvent<HTMLLIElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onOpen();
+    }
+  }
 
   return (
-    <li className="py-3">
-      {approval.assetSignedUrl ? (
-        /* Side-by-side layout when a visual asset is attached */
-        <div className="flex gap-4">
-          <div className="shrink-0 w-40 h-40 rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800">
-            <Image
-              src={approval.assetSignedUrl}
-              alt="Asset preview"
-              width={160}
-              height={160}
-              className="object-cover w-full h-full"
-            />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium truncate">{approval.contentTitle}</div>
-            {meta}
-            {rationalePreview}
-            {copyPreview}
-            {actions}
-          </div>
-        </div>
-      ) : (
-        /* Text-only layout */
-        <div>
-          <div className="text-sm font-medium">{approval.contentTitle}</div>
-          {meta}
-          {rationalePreview}
-          {copyPreview}
-          {actions}
-        </div>
-      )}
+    <li
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={handleKey}
+      aria-label={`Open ${approval.contentTitle} for review`}
+      className={`group flex items-center gap-4 px-5 py-3 cursor-pointer transition-colors outline-none focus-visible:bg-[var(--surface-2)] ${
+        isSelected ? "bg-[var(--surface-2)]" : "hover:bg-[var(--surface-2)]"
+      }`}
+    >
+      {/* THUMBNAIL */}
+      <div className="shrink-0 relative w-16 h-16 rounded-lg overflow-hidden border border-[var(--border)] bg-[var(--surface-2)] grid place-items-center">
+        {!approval.needsImages ? (
+          <svg className="text-faint" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Images disabled">
+            <path d="M3 3l18 18" />
+            <path d="M21 16V5a2 2 0 00-2-2H7" />
+            <path d="M3 7v12a2 2 0 002 2h12" />
+          </svg>
+        ) : selected?.signedUrl ? (
+          <>
+            {isVideoAsset(selected) ? (
+              <video
+                src={selected.signedUrl}
+                muted
+                playsInline
+                preload="metadata"
+                className="h-full w-full object-cover bg-black"
+              />
+            ) : (
+              <Image
+                src={selected.signedUrl}
+                alt=""
+                fill
+                sizes="64px"
+                className="object-cover"
+              />
+            )}
+            {renderable.length > 1 && (
+              <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded-full bg-black/60 text-white text-[9px] font-medium leading-none">
+                +{renderable.length - 1}
+              </span>
+            )}
+          </>
+        ) : (
+          <svg className="text-[var(--warn)]" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Images pending">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="9" cy="9" r="2" />
+            <path d="M21 15l-5-5L5 21" />
+          </svg>
+        )}
+      </div>
 
-      {showReason && (
-        <div className="mt-3 flex gap-2">
-          <input
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="What needs to change?"
-            className="flex-1 rounded border border-zinc-300 dark:border-zinc-700 px-3 py-1 text-sm bg-transparent"
-          />
-          <button
-            onClick={() =>
-              decide.mutate({
-                approvalId: approval.id,
-                decision: "changes_requested",
-                reason,
-              })
-            }
-            disabled={!reason || decide.isPending}
-            className="rounded bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-3 py-1 text-sm font-medium disabled:opacity-50"
-          >
-            Send
-          </button>
+      {/* BODY */}
+      <div className="flex-1 min-w-0">
+        <div className="text-[14px] font-medium text-ink truncate">
+          {approval.contentTitle}
         </div>
-      )}
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="badge badge-neutral">{approval.contentType}</span>
+          <span className="badge badge-info capitalize">{approval.contentStage}</span>
+          <span
+            className={`badge ${isStale ? "badge-warn" : "badge-neutral"}`}
+            title={new Date(approval.requestedAt).toLocaleString()}
+          >
+            {approval.ageLabel ?? new Date(approval.requestedAt).toLocaleString()}
+          </span>
+          {!approval.needsImages ? (
+            <span className="text-[11px] text-faint">images off</span>
+          ) : renderable.length === 0 ? (
+            <span className="text-[11px] text-[var(--warn)]">images pending</span>
+          ) : (
+            <span className="text-[11px] text-faint">
+              {renderable.length} {renderable.length === 1 ? "variant" : "variants"}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ACTIONS — stop propagation so button clicks don't open the panel */}
+      <div
+        className="shrink-0 flex items-center gap-2"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={handleApprove}
+          disabled={decide.isPending}
+          className="btn btn-primary btn-sm"
+          style={{ background: "var(--success)", borderColor: "var(--success)" }}
+          title="Approve without opening details"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20 6L9 17l-5-5" />
+          </svg>
+          Approve
+        </button>
+        <button
+          type="button"
+          onClick={onOpen}
+          className="btn btn-secondary btn-sm"
+          aria-label="Open details"
+          title="Review details"
+        >
+          Review
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
+      </div>
 
       {decide.isError && (
-        <p className="mt-2 text-xs text-red-600">{(decide.error as Error).message}</p>
+        <span className="ml-2 text-xs text-[var(--danger)]" onClick={(e) => e.stopPropagation()}>
+          {(decide.error as Error).message}
+        </span>
       )}
     </li>
   );

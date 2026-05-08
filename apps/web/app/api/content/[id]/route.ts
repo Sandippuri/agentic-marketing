@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
@@ -6,11 +7,13 @@ import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { assertContentTransition } from "@/lib/state-machine";
 import { errorResponse, parseJson } from "@/lib/http";
+import { generateAssetVariants } from "@/lib/asset-variants";
 
 const PatchContent = z.object({
   title: z.string().min(1).max(300).optional(),
   bodyMd: z.string().optional(),
   changeNote: z.string().optional(),
+  needsImages: z.boolean().optional(),
 });
 
 export async function GET(
@@ -56,6 +59,9 @@ export async function PATCH(
           .set({
             ...(input.title !== undefined ? { title: input.title } : {}),
             ...(input.bodyMd !== undefined ? { bodyMd: input.bodyMd } : {}),
+            ...(input.needsImages !== undefined
+              ? { needsImages: input.needsImages }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(schema.contentItems.id, id))
@@ -69,6 +75,35 @@ export async function PATCH(
             authorKind: actor.kind,
           });
         }
+
+        // If the reviewer just turned imagery on (false -> true) and no assets
+        // have been generated yet, kick off generation in the background. The
+        // submit-time hook only fires once at submit; this covers the case
+        // where the post was submitted with the flag off and is being opted
+        // in later.
+        if (
+          input.needsImages === true &&
+          before.needsImages === false
+        ) {
+          const [existing] = await db
+            .select({ id: schema.assets.id })
+            .from(schema.assets)
+            .where(eq(schema.assets.contentId, id))
+            .limit(1);
+          if (!existing) {
+            after(async () => {
+              try {
+                await generateAssetVariants({ contentId: id });
+              } catch (err) {
+                console.warn(
+                  `[content.update] background asset generation failed for ${id}`,
+                  err,
+                );
+              }
+            });
+          }
+        }
+
         return row!;
       },
     );

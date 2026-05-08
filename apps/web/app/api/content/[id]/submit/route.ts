@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { withAudit } from "@/lib/audit";
@@ -5,6 +6,7 @@ import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { assertContentTransition } from "@/lib/state-machine";
 import { errorResponse } from "@/lib/http";
+import { generateAssetVariants } from "@/lib/asset-variants";
 
 // Submit a content_item for review. Creates an open `approvals` row.
 export async function POST(
@@ -47,6 +49,24 @@ export async function POST(
         return updated!;
       },
     );
+
+    // Generate image variants in the background unless the post opted out.
+    // The reviewer can flip the toggle on /approvals and the PATCH route will
+    // re-trigger generation. On Vercel, after() defers to waitUntil so the
+    // work survives the response returning.
+    if (result.needsImages !== false) {
+      after(async () => {
+        try {
+          await generateAssetVariants({ contentId: id });
+        } catch (err) {
+          console.warn(
+            `[content.submit] background asset generation failed for ${id}`,
+            err,
+          );
+        }
+      });
+    }
+
     return Response.json(result);
   } catch (err) {
     if (err instanceof Error && err.message === "not_found") {

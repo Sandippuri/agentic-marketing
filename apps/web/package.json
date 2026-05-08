@@ -11,13 +11,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@marketing/agents": "workspace:*",
     "@marketing/cp-client": "workspace:*",
     "@marketing/db": "workspace:*",
+    "@marketing/prompts": "workspace:*",
     "@marketing/shared-types": "workspace:*",
     "@supabase/ssr": "^0.5.0",
     "@supabase/supabase-js": "^2.45.0",
     "@tanstack/react-query": "^5.0.0",
     "@tanstack/react-table": "^8.0.0",
+    "ai": "^4.3.19",
     "bullmq": "^5.0.0",
     "drizzle-orm": "^0.36.0",
     "ioredis": "^5.4.0",
@@ -25,6 +28,8 @@
     "pino": "^9.0.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "sonner": "^2.0.7",
+    "workflow": "^4.2.4",
     "zod": "^3.23.0",
     "zustand": "^5.0.0"
   },

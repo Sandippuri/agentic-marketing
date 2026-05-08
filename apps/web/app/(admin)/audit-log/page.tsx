@@ -1,6 +1,7 @@
 import { desc, eq, and, gte, lte, type SQL } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { AuditLogTable } from "./audit-log-table";
+import { PageHeader } from "../ui";
 
 export const dynamic = "force-dynamic";
 
@@ -48,7 +49,10 @@ export default async function AuditLogPage({ searchParams }: { searchParams: Sea
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold mb-6">Audit log</h1>
+      <PageHeader
+        title="Audit log"
+        description="Every state-changing action across the control plane — humans, agents, and system jobs."
+      />
       <AuditLogTable
         rows={rows.map((r) => ({
           id: r.id,

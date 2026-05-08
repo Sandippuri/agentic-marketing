@@ -51,7 +51,9 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Run on everything except _next assets, static files, and favicon.
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)).*)",
+    // Run on everything except _next assets, static files, favicon, and
+    // Workflow SDK internal paths (workflow webhook/hook resume endpoints
+    // live under /.well-known/workflow/* and must not be intercepted).
+    "/((?!_next/static|_next/image|favicon.ico|\\.well-known/workflow/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)).*)",
   ],
 };

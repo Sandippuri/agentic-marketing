@@ -23,11 +23,45 @@ export function errorResponse(err: unknown): Response {
   if (err instanceof PublishGateError) {
     return Response.json({ error: "publish_gate", reason: err.message }, { status: 409 });
   }
+  if (err instanceof LlmPreflightError) {
+    return Response.json(
+      {
+        error: "llm_preflight_failed",
+        provider: err.provider,
+        model: err.model,
+        reason: err.kind,
+        message: err.message,
+      },
+      { status: 503 },
+    );
+  }
   console.error("[api] unhandled", err);
   return Response.json({ error: "internal" }, { status: 500 });
 }
 
 export class PublishGateError extends Error {}
+
+// Thrown by the dispatcher when the chosen LLM fails a 1-token preflight
+// (quota exhausted / bad key / provider down). Surfaces as 503 so the UI
+// can show a clear "switch model or top up" message instead of waiting
+// for a workflow to fail mid-flight.
+export class LlmPreflightError extends Error {
+  readonly provider: string;
+  readonly model: string;
+  readonly kind: "quota" | "auth" | "other";
+  constructor(args: {
+    provider: string;
+    model: string;
+    kind: "quota" | "auth" | "other";
+    message: string;
+  }) {
+    super(args.message);
+    this.name = "LlmPreflightError";
+    this.provider = args.provider;
+    this.model = args.model;
+    this.kind = args.kind;
+  }
+}
 
 export async function parseJson<T>(
   request: Request,

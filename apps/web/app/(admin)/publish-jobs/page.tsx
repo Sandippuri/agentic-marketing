@@ -1,16 +1,10 @@
-import { desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
+import { PageHeader, Badge, EmptyState, statusTone } from "../ui";
+import { PublishJobFilters } from "./filters";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const STATUS_BADGE: Record<string, string> = {
-  queued:    "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-  running:   "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  succeeded: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-  failed:    "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-  cancelled: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
-};
 
 export default async function PublishJobsPage({
   searchParams,
@@ -23,7 +17,6 @@ export default async function PublishJobsPage({
   const pageSize = 50;
   const offset = (page - 1) * pageSize;
 
-  // Filter by channel / status if provided.
   const conditions = [];
   if (params.channel) conditions.push(eq(schema.publishJobs.channel, params.channel as never));
   if (params.status) conditions.push(eq(schema.publishJobs.status, params.status as never));
@@ -57,129 +50,177 @@ export default async function PublishJobsPage({
       .where(conditions.length ? conditions.reduce((a, b) => sql`${a} AND ${b}`) : undefined),
   ]);
 
-  // Today's counts per channel.
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const todayCounts = await db
     .select({ channel: schema.publishJobs.channel, count: sql<number>`count(*)::int` })
     .from(schema.publishJobs)
     .where(
-      sql`${schema.publishJobs.status} = 'succeeded' AND ${schema.publishJobs.createdAt} >= ${todayStart}`,
+      and(
+        eq(schema.publishJobs.status, "succeeded"),
+        gte(schema.publishJobs.createdAt, todayStart),
+      ),
     )
     .groupBy(schema.publishJobs.channel);
 
   const total = countResult[0]?.total ?? 0;
-  const totalPages = Math.ceil(total / pageSize);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // Channels & statuses are inferred from the rows for the filter dropdowns.
+  const channels = ["internal_blog", "linkedin", "x", "email_hubspot", "email_mailchimp"];
+  const statuses = ["queued", "running", "succeeded", "failed", "cancelled"];
+
+  const pageUrl = (n: number) => {
+    const p = new URLSearchParams({
+      ...(params.channel ? { channel: params.channel } : {}),
+      ...(params.status ? { status: params.status } : {}),
+      page: String(n),
+    });
+    return `?${p.toString()}`;
+  };
 
   return (
     <div>
-      <div className="flex items-baseline justify-between mb-6">
-        <h1 className="text-2xl font-semibold">Publish Jobs</h1>
-        <span className="text-sm text-zinc-500">{total} total</span>
-      </div>
+      <PageHeader
+        title="Publish jobs"
+        description="Outbound posts the publisher has queued, attempted, or completed."
+        meta={
+          <>
+            <Badge tone="neutral">{total} total</Badge>
+            {todayCounts.length > 0 && (
+              <Badge tone="success" dot>
+                {todayCounts.reduce((s, c) => s + c.count, 0)} published today
+              </Badge>
+            )}
+          </>
+        }
+      />
 
-      {/* Today's channel counts */}
+      {/* Today by channel */}
       {todayCounts.length > 0 && (
-        <div className="mb-6 flex flex-wrap gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
           {todayCounts.map((c) => (
-            <div
-              key={c.channel}
-              className="flex items-center gap-2 rounded-full bg-zinc-100 dark:bg-zinc-800 px-3 py-1 text-xs font-medium"
-            >
-              <span className="text-zinc-500">today</span>
-              <span className="font-semibold">{c.channel}</span>
-              <span className="text-emerald-600 dark:text-emerald-400">{c.count}</span>
+            <div key={c.channel} className="surface px-4 py-3">
+              <div className="section-title">{prettyChannel(c.channel)}</div>
+              <div className="mt-1.5 flex items-baseline gap-1.5">
+                <span className="text-xl font-semibold tabular-nums text-ink">
+                  {c.count}
+                </span>
+                <span className="text-[11px] text-faint">today</span>
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
-        <table className="w-full text-sm">
-          <thead className="text-xs uppercase text-zinc-500 border-b border-zinc-200 dark:border-zinc-800">
-            <tr>
-              <th className="text-left px-4 py-3">Content</th>
-              <th className="text-left px-4 py-3">Channel</th>
-              <th className="text-left px-4 py-3">Status</th>
-              <th className="text-left px-4 py-3">Scheduled</th>
-              <th className="text-left px-4 py-3">Updated</th>
-              <th className="text-left px-4 py-3">Link / Error</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-            {rows.map((job) => (
-              <tr key={job.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
-                <td className="px-4 py-3">
-                  <div className="font-medium max-w-xs truncate">{job.contentTitle ?? job.contentId.slice(0, 8)}</div>
-                  {job.campaignName && (
-                    <div className="text-xs text-zinc-400 truncate">{job.campaignName}</div>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{job.channel}</td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[job.status] ?? ""}`}>
-                    {job.status}
-                    {(job.attempts ?? 0) > 1 && (
-                      <span className="ml-1 opacity-60">×{job.attempts}</span>
-                    )}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-xs text-zinc-500">
-                  {job.scheduledAt
-                    ? new Date(job.scheduledAt).toLocaleString()
-                    : "immediate"}
-                </td>
-                <td className="px-4 py-3 text-xs text-zinc-500">
-                  {new Date(job.updatedAt).toLocaleString()}
-                </td>
-                <td className="px-4 py-3 text-xs max-w-xs">
-                  {job.externalUrl ? (
-                    <a
-                      href={job.externalUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-indigo-600 dark:text-indigo-400 hover:underline truncate block"
-                    >
-                      {job.externalUrl}
-                    </a>
-                  ) : job.error ? (
-                    <span className="text-red-600 dark:text-red-400 truncate block" title={job.error}>
-                      {job.error.slice(0, 80)}
-                    </span>
-                  ) : (
-                    <span className="text-zinc-400">—</span>
-                  )}
-                </td>
+      <PublishJobFilters
+        channel={params.channel ?? ""}
+        status={params.status ?? ""}
+        channels={channels}
+        statuses={statuses}
+      />
+
+      {/* Table */}
+      {rows.length === 0 ? (
+        <EmptyState
+          title="No publish jobs"
+          description="Queued and completed publishes will show up here."
+        />
+      ) : (
+        <div className="table-card overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Content</th>
+                <th>Channel</th>
+                <th>Status</th>
+                <th>Scheduled</th>
+                <th>Updated</th>
+                <th>Link / error</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {rows.map((job) => (
+                <tr key={job.id}>
+                  <td>
+                    <div className="font-medium text-ink max-w-xs truncate">
+                      {job.contentTitle ?? job.contentId.slice(0, 8)}
+                    </div>
+                    {job.campaignName && (
+                      <div className="text-xs text-faint truncate">{job.campaignName}</div>
+                    )}
+                  </td>
+                  <td className="text-mid">{prettyChannel(job.channel)}</td>
+                  <td>
+                    <Badge tone={statusTone(job.status)} dot>
+                      {job.status}
+                      {(job.attempts ?? 0) > 1 && (
+                        <span className="opacity-60 ml-1">×{job.attempts}</span>
+                      )}
+                    </Badge>
+                  </td>
+                  <td className="text-xs text-mid mono whitespace-nowrap">
+                    {job.scheduledAt
+                      ? new Date(job.scheduledAt).toLocaleString()
+                      : "immediate"}
+                  </td>
+                  <td className="text-xs text-mid mono whitespace-nowrap">
+                    {new Date(job.updatedAt).toLocaleString()}
+                  </td>
+                  <td className="text-xs max-w-xs">
+                    {job.externalUrl ? (
+                      <a
+                        href={job.externalUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[var(--accent)] hover:underline truncate block"
+                      >
+                        {job.externalUrl}
+                      </a>
+                    ) : job.error ? (
+                      <span
+                        className="text-[var(--danger)] truncate block"
+                        title={job.error}
+                      >
+                        {job.error.slice(0, 80)}
+                      </span>
+                    ) : (
+                      <span className="text-faint">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-between text-sm text-zinc-500">
-          <span>Page {page} of {totalPages}</span>
+        <div className="mt-4 flex items-center justify-between text-sm">
+          <span className="text-mid">
+            Page <span className="text-ink font-medium">{page}</span> of {totalPages}
+          </span>
           <div className="flex gap-2">
-            {page > 1 && (
-              <a
-                href={`?page=${page - 1}${params.channel ? `&channel=${params.channel}` : ""}${params.status ? `&status=${params.status}` : ""}`}
-                className="rounded border border-zinc-200 dark:border-zinc-700 px-3 py-1 hover:bg-zinc-50 dark:hover:bg-zinc-800"
-              >
-                ← Prev
-              </a>
-            )}
-            {page < totalPages && (
-              <a
-                href={`?page=${page + 1}${params.channel ? `&channel=${params.channel}` : ""}${params.status ? `&status=${params.status}` : ""}`}
-                className="rounded border border-zinc-200 dark:border-zinc-700 px-3 py-1 hover:bg-zinc-50 dark:hover:bg-zinc-800"
-              >
-                Next →
-              </a>
-            )}
+            <a
+              href={pageUrl(Math.max(1, page - 1))}
+              className={`btn btn-secondary btn-sm ${page <= 1 ? "pointer-events-none opacity-50" : ""}`}
+            >
+              ← Previous
+            </a>
+            <a
+              href={pageUrl(Math.min(totalPages, page + 1))}
+              className={`btn btn-secondary btn-sm ${page >= totalPages ? "pointer-events-none opacity-50" : ""}`}
+            >
+              Next →
+            </a>
           </div>
         </div>
       )}
     </div>
   );
+}
+
+function prettyChannel(c: string) {
+  return c.replace(/_/g, " ");
 }

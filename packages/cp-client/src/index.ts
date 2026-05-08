@@ -54,6 +54,7 @@ export type PublishJobDto = {
   externalUrl: string | null;
   error: string | null;
   threadRef: ThreadRef | null;
+  mode: "live" | "test";
 };
 
 export type ApprovalDto = {
@@ -217,6 +218,7 @@ export class CpClient {
     channel: Channel;
     scheduledAt?: string;
     threadRef?: ThreadRef;
+    mode?: "live" | "test";
   }) {
     return this.req<PublishJobDto>("POST", "/api/publish-jobs", input);
   }
@@ -239,6 +241,10 @@ export class CpClient {
     storagePath: string;
     templateId?: string;
     promptUsed?: string;
+    /** Required for video assets so cards know to render <video>. */
+    mimeType?: string;
+    /** Whole seconds — only relevant to video assets. */
+    durationSec?: number;
   }) {
     return this.req<{
       id: string;
@@ -246,14 +252,19 @@ export class CpClient {
       kind: string;
       storagePath: string;
       status: string;
+      mimeType?: string | null;
+      durationSec?: number | null;
       signedUrl?: string | null;
     }>("POST", "/api/assets", input);
   }
   getAsset(id: string) {
-    return this.req<{ id: string; storagePath: string; signedUrl: string | null }>(
-      "GET",
-      `/api/assets/${id}`,
-    );
+    return this.req<{
+      id: string;
+      storagePath: string;
+      mimeType: string | null;
+      durationSec: number | null;
+      signedUrl: string | null;
+    }>("GET", `/api/assets/${id}`);
   }
 
   // --- metrics ------------------------------------------------------------
@@ -283,8 +294,62 @@ export class CpClient {
   }
 
   // --- thread-notify ------------------------------------------------------
-  notifyThread(input: { threadRef: ThreadRef; message: string }) {
+  notifyThread(input: { threadRef: ThreadRef; message?: string; card?: unknown }) {
     return this.req<{ ok: true }>("POST", "/api/thread-notify", input);
+  }
+
+  // --- generation jobs (workflow tracking) --------------------------------
+  // Used by the orchestrator to surface step-by-step progress on the
+  // /creation-workflow admin page. Pure observability writes.
+  createGenerationJob(input: {
+    threadRef?: string;
+    userId?: string;
+    userMessage: string;
+    kind?: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "other";
+  }) {
+    return this.req<{ id: string }>("POST", "/api/generation-jobs", input);
+  }
+  patchGenerationJob(
+    id: string,
+    input: Partial<{
+      status: "running" | "completed" | "failed";
+      kind: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "other";
+      currentStep: "strategist" | "content" | "asset" | "analyst" | "distributor" | null;
+      campaignId: string | null;
+      contentId: string | null;
+      error: string | null;
+      completedAt: string | null;
+    }>,
+  ) {
+    return this.req<{ ok: true }>("PATCH", `/api/generation-jobs/${id}`, input);
+  }
+  startGenerationStep(
+    jobId: string,
+    input: {
+      name: "strategist" | "content" | "asset" | "analyst" | "distributor";
+      input?: unknown;
+    },
+  ) {
+    return this.req<{ id: string }>(
+      "POST",
+      `/api/generation-jobs/${jobId}/steps`,
+      input,
+    );
+  }
+  finishGenerationStep(
+    jobId: string,
+    stepId: string,
+    input: {
+      status: "succeeded" | "failed";
+      output?: unknown;
+      error?: string | null;
+    },
+  ) {
+    return this.req<{ ok: true }>(
+      "PATCH",
+      `/api/generation-jobs/${jobId}/steps/${stepId}`,
+      input,
+    );
   }
 
   // --- settings -----------------------------------------------------------

@@ -27,37 +27,37 @@ export function NewCampaignForm() {
   return (
     <form
       onSubmit={onSubmit}
-      className="mb-8 grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-end"
+      className="grid grid-cols-[1fr_1fr_auto_auto] gap-3 items-end"
     >
-      <label className="text-sm flex flex-col gap-1">
-        <span className="text-zinc-500">Slug</span>
+      <label className="text-sm flex flex-col gap-1.5">
+        <span className="text-xs text-mid uppercase tracking-wider">Slug</span>
         <input
           required
           pattern="[a-z0-9-]+"
           value={slug}
           onChange={(e) => setSlug(e.target.value)}
           placeholder="q3-launch"
-          className="rounded border border-zinc-300 dark:border-zinc-700 px-3 py-2 bg-transparent"
+          className="field"
         />
       </label>
-      <label className="text-sm flex flex-col gap-1">
-        <span className="text-zinc-500">Name</span>
+      <label className="text-sm flex flex-col gap-1.5">
+        <span className="text-xs text-mid uppercase tracking-wider">Name</span>
         <input
           required
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Q3 launch"
-          className="rounded border border-zinc-300 dark:border-zinc-700 px-3 py-2 bg-transparent"
+          className="field"
         />
       </label>
-      <label className="text-sm flex flex-col gap-1">
-        <span className="text-zinc-500">Phase</span>
+      <label className="text-sm flex flex-col gap-1.5">
+        <span className="text-xs text-mid uppercase tracking-wider">Phase</span>
         <select
           value={phase}
           onChange={(e) =>
             setPhase(e.target.value as "buildup" | "launch" | "post_launch")
           }
-          className="rounded border border-zinc-300 dark:border-zinc-700 px-3 py-2 bg-transparent"
+          className="field"
         >
           <option value="buildup">buildup</option>
           <option value="launch">launch</option>
@@ -67,12 +67,12 @@ export function NewCampaignForm() {
       <button
         type="submit"
         disabled={create.isPending}
-        className="h-[38px] rounded bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-4 text-sm font-medium disabled:opacity-50"
+        className="btn btn-primary"
       >
-        {create.isPending ? "Creating…" : "Create"}
+        {create.isPending ? "Creating…" : "Create campaign"}
       </button>
       {create.isError && (
-        <p className="col-span-4 text-sm text-red-600">
+        <p className="col-span-4 text-sm text-[var(--danger)]">
           {(create.error as Error).message}
         </p>
       )}

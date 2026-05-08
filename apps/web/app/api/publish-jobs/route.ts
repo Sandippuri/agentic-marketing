@@ -65,6 +65,10 @@ const Enqueue = z.object({
   channel: z.enum(CHANNELS),
   scheduledAt: z.string().datetime().optional(),
   threadRef: z.string().optional(),
+  // Test-mode publishes flow through the queue but the distributor short-circuits
+  // them — no real LinkedIn / X / email API calls. Driven by the admin test-chat.
+  // Also auto-set when threadRef starts with `web:`.
+  mode: z.enum(["live", "test"]).optional(),
 });
 
 // The Phase 1 invariant: this handler refuses to enqueue a publish job for
@@ -118,6 +122,8 @@ export async function POST(request: Request) {
       { db, actor, action: "publish_job.create", entityType: "publish_jobs" },
       async () => null,
       async () => {
+        const mode =
+          input.mode ?? (input.threadRef?.startsWith("web:") ? "test" : "live");
         const [row] = await db
           .insert(schema.publishJobs)
           .values({
@@ -125,6 +131,7 @@ export async function POST(request: Request) {
             channel: input.channel,
             scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
             threadRef: input.threadRef ?? null,
+            mode,
             requestedBy: actor.id ?? null,
           })
           .returning();
@@ -153,6 +160,7 @@ export async function POST(request: Request) {
         contentId: created.contentId,
         channel: created.channel,
         threadRef: created.threadRef ?? undefined,
+        mode: created.mode,
       },
       input.scheduledAt
         ? { delayMs: Math.max(0, new Date(input.scheduledAt).getTime() - Date.now()) }
