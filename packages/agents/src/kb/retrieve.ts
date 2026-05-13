@@ -23,7 +23,7 @@ import {
   kbDocuments,
   kbCollections,
 } from "@marketing/db";
-import { embedText, vectorLiteral } from "./embed-client";
+import { embedText, getEmbeddingConfig, vectorLiteral } from "./embed-client";
 import type { CollectionKind } from "./store";
 import { rerank, resolveReranker } from "./rerank";
 
@@ -178,14 +178,19 @@ async function runVector(
   filters: Filters,
 ): Promise<RankedRow[]> {
   let vector: number[];
+  let model: string;
   try {
     vector = await embedText(query);
+    model = (await getEmbeddingConfig()).model;
   } catch (err) {
     log.warn({ err: (err as Error).message }, "kb embed failed; vector path empty");
     return [];
   }
   const lit = vectorLiteral(vector);
   const db = getDb();
+  // Filter to vectors produced by the *current* model. Mixing across providers
+  // gives garbage similarity (different geometries). Old rows become invisible
+  // until re-embedded via the backfill route.
   const rows = await db
     .select({
       chunkId: kbChunks.id,
@@ -198,7 +203,13 @@ async function runVector(
     )
     .innerJoin(kbDocuments, eq(kbChunks.documentId, kbDocuments.id))
     .innerJoin(kbCollections, eq(kbDocuments.collectionId, kbCollections.id))
-    .where(and(eq(schema.embeddings.sourceType, "kb_chunk"), ...filters))
+    .where(
+      and(
+        eq(schema.embeddings.sourceType, "kb_chunk"),
+        eq(schema.embeddings.model, model),
+        ...filters,
+      ),
+    )
     .orderBy(
       sql`(${schema.embeddings.embedding} <=> ${sql.raw(`'${lit}'::vector`)})`,
     )

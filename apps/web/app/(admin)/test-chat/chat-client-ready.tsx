@@ -158,10 +158,10 @@ export default function ChatClientReady() {
     return () => es.close();
   }, [activeThread.threadRef]);
 
-  // Auto-scroll on new messages.
+  // Auto-scroll on new messages or when the typing indicator toggles.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages]);
+  }, [messages, busy]);
 
   const newThread = () => {
     const fresh = mintThread();
@@ -226,35 +226,34 @@ export default function ChatClientReady() {
     }
 
     try {
-      const res = await fetch("/api/test-chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      await streamReply({
+        body: {
           text,
           threadRef: activeThread.threadRef,
           sessionId,
           ...(model ? { model } : {}),
-        }),
+        },
+        onDelta: (delta) => {
+          setBusy(false);
+          setMessages((prev) => appendDelta(prev, delta));
+        },
+        onWorkflowStarted: (message) => {
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: "assistant", text: message },
+          ]);
+        },
+        onError: (message) => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "system",
+              text: `Error: ${message}`,
+            },
+          ]);
+        },
       });
-      const body = (await res.json()) as { reply?: string; error?: string };
-      if (!res.ok || body.error) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: "system",
-            text: `Error: ${body.error ?? res.statusText}`,
-          },
-        ]);
-        return;
-      }
-      if (body.reply) {
-        setMessages((prev) => dedupeAppend(prev, {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text: body.reply!,
-        }));
-      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -364,6 +363,7 @@ export default function ChatClientReady() {
           {messages.map((m) => (
             <MessageRow key={m.id} message={m} />
           ))}
+          {busy && <TypingIndicator />}
         </div>
         <div className="border-t border-zinc-200 dark:border-zinc-800 p-3 space-y-2">
           <ModelPicker
@@ -422,6 +422,85 @@ function dedupeAppend(prev: ChatMessage[], next: ChatMessage): ChatMessage[] {
     return prev;
   }
   return [...prev, next];
+}
+
+// Append a streaming delta to the trailing assistant bubble. If the last
+// message isn't a streaming assistant bubble yet, mint a new one. We tag the
+// streaming bubble id with a `stream:` prefix so we can find it on later
+// deltas without scanning by content.
+function appendDelta(prev: ChatMessage[], delta: string): ChatMessage[] {
+  const last = prev[prev.length - 1];
+  if (last && last.role === "assistant" && last.id.startsWith("stream:")) {
+    const updated: ChatMessage = { ...last, text: last.text + delta };
+    return [...prev.slice(0, -1), updated];
+  }
+  return [
+    ...prev,
+    {
+      id: `stream:${crypto.randomUUID()}`,
+      role: "assistant",
+      text: delta,
+    },
+  ];
+}
+
+type StreamReplyEvent =
+  | { kind: "meta"; threadRef: string }
+  | { kind: "delta"; text: string }
+  | { kind: "workflow_started"; jobId: string; message: string }
+  | { kind: "done"; finalText: string }
+  | { kind: "error"; message: string };
+
+async function streamReply(opts: {
+  body: Record<string, unknown>;
+  onDelta: (text: string) => void;
+  onWorkflowStarted: (message: string) => void;
+  onError: (message: string) => void;
+}): Promise<void> {
+  const res = await fetch("/api/test-chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "text/event-stream",
+    },
+    body: JSON.stringify(opts.body),
+  });
+  if (!res.ok || !res.body) {
+    const fallback = await res.text().catch(() => res.statusText);
+    opts.onError(fallback || res.statusText);
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE frames are separated by a blank line.
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const line = frame.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue;
+      const payload = line.slice(6);
+      let event: StreamReplyEvent;
+      try {
+        event = JSON.parse(payload) as StreamReplyEvent;
+      } catch {
+        continue;
+      }
+      if (event.kind === "delta") opts.onDelta(event.text);
+      else if (event.kind === "workflow_started") {
+        opts.onWorkflowStarted(event.message);
+      } else if (event.kind === "error") {
+        opts.onError(event.message);
+      }
+      // `meta` and `done` need no client action — the stream closing is the
+      // signal that we're finished.
+    }
+  }
 }
 
 function ModelPicker({
@@ -514,6 +593,32 @@ function Sidebar({
         ))}
       </ul>
     </aside>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div className="flex flex-col items-start">
+      <div
+        className="rounded-2xl bg-zinc-100 dark:bg-zinc-800 px-3 py-2.5 text-sm"
+        aria-label="Assistant is typing"
+      >
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="h-1.5 w-1.5 rounded-full bg-zinc-500 dark:bg-zinc-400 animate-bounce"
+            style={{ animationDelay: "0ms", animationDuration: "1s" }}
+          />
+          <span
+            className="h-1.5 w-1.5 rounded-full bg-zinc-500 dark:bg-zinc-400 animate-bounce"
+            style={{ animationDelay: "150ms", animationDuration: "1s" }}
+          />
+          <span
+            className="h-1.5 w-1.5 rounded-full bg-zinc-500 dark:bg-zinc-400 animate-bounce"
+            style={{ animationDelay: "300ms", animationDuration: "1s" }}
+          />
+        </span>
+      </div>
+    </div>
   );
 }
 

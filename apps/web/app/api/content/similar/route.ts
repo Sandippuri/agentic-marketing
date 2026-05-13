@@ -18,8 +18,14 @@ import { errorResponse, parseJson } from "@/lib/http";
 import { CHANNELS } from "@marketing/shared-types";
 
 const SimilarRequest = z.object({
-  /** Pre-embedded query vector (text-embedding-3-small, 1536 dims). */
+  /** Pre-embedded query vector (1536 dims; provider-agnostic). */
   vector: z.array(z.number()).length(1536),
+  /**
+   * Embedding model id that produced the vector. When set, the query filters
+   * `embeddings.model = <model>` so only same-provider rows are compared.
+   * Optional for back-compat with older callers; recommended for correctness.
+   */
+  model: z.string().optional(),
   channel: z.enum(CHANNELS).optional(),
   minCTR: z.number().min(0).max(1).optional(),
   minEngagement: z.number().min(0).max(1).optional(),
@@ -79,6 +85,7 @@ export async function POST(request: Request) {
       )
       .where(
         and(
+          input.model ? eq(embeddings.model, input.model) : sql`true`,
           input.minCTR !== undefined
             ? gte(outcomes.ctr, String(input.minCTR))
             : sql`true`,

@@ -171,6 +171,7 @@ export const SUB_AGENT_KINDS = [
   "content",
   "asset",
   "analyst",
+  "researcher",
 ] as const;
 export type SubAgentKind = (typeof SUB_AGENT_KINDS)[number];
 
@@ -179,6 +180,7 @@ export const SUB_AGENT_LABELS: Record<SubAgentKind, string> = {
   content: "Content",
   asset: "Asset",
   analyst: "Analyst",
+  researcher: "Researcher",
 };
 
 export type SubAgentModelOverrides = Partial<Record<SubAgentKind, LlmModel>>;
@@ -461,9 +463,14 @@ export type ImageModelInfo = {
 
 export const IMAGE_MODELS: readonly ImageModelInfo[] = [
   {
+    // Note: id retained for backward compatibility (DEFAULT_IMAGE_MODEL,
+    // existing Settings rows). The model behind this id is actually
+    // "Nano Banana Pro" — the flagship slow/high-quality variant. The
+    // separately-released "Nano Banana 2" is gemini-3.1-flash-image-preview
+    // and is registered as `nano-banana-2-flash` below.
     id: "nano-banana-2",
-    label: "Nano Banana 2 (Gemini 3 Pro Image)",
-    description: "Google's flagship image model via the native Gemini API. Best text-in-image, 2K-grade output, multi-image composition. Uses GEMINI_API_KEY.",
+    label: "Nano Banana Pro (Gemini 3 Pro Image)",
+    description: "Google's flagship image model via the native Gemini API. 'Thinking' mode for complex compositions, best in-image text rendering, multi-image composition. Slower/pricier than the Flash variants. Uses GEMINI_API_KEY.",
     provider: "google",
     modelRef: "gemini-3-pro-image-preview",
     inputShape: "google-image",
@@ -471,11 +478,21 @@ export const IMAGE_MODELS: readonly ImageModelInfo[] = [
     supportsImageInput: true,
   },
   {
-    id: "nano-banana-native",
-    label: "Nano Banana (Gemini 2.5 Flash Image, native API)",
-    description: "Lower-latency Google image model via the native Gemini API. Uses GEMINI_API_KEY.",
+    id: "nano-banana-2-flash",
+    label: "Nano Banana 2 (Gemini 3.1 Flash Image)",
+    description: "Released Feb 2026. High-efficiency counterpart to Nano Banana Pro — 4K output, optimized for speed and high-volume use. Uses GEMINI_API_KEY.",
     provider: "google",
-    modelRef: "gemini-2.5-flash-image-preview",
+    modelRef: "gemini-3.1-flash-image-preview",
+    inputShape: "google-image",
+    supportsNegativePrompt: false,
+    supportsImageInput: true,
+  },
+  {
+    id: "nano-banana-native",
+    label: "Nano Banana (Gemini 2.5 Flash Image)",
+    description: "Original Nano Banana via the native Gemini API. Lower-latency legacy fast model. Uses GEMINI_API_KEY.",
+    provider: "google",
+    modelRef: "gemini-2.5-flash-image",
     inputShape: "google-image",
     supportsNegativePrompt: false,
     supportsImageInput: true,
@@ -511,11 +528,41 @@ export const IMAGE_MODELS: readonly ImageModelInfo[] = [
     supportsImageInput: false,
   },
   {
+    id: "gpt-image-2",
+    label: "GPT Image 2 (ChatGPT Images 2.0)",
+    description: "OpenAI's flagship image model (released Apr 2026). Best legible in-image text on any provider, up to 4K output, any-resolution support. Slower + pricier than Gemini, but the right choice when the model itself must render headlines or marketing copy. Uses OPENAI_API_KEY.",
+    provider: "openai",
+    modelRef: "gpt-image-2",
+    inputShape: "openai-image",
+    supportsNegativePrompt: false,
+    supportsImageInput: false,
+  },
+  {
+    id: "gpt-image-1-5",
+    label: "GPT Image 1.5",
+    description: "Mid-tier OpenAI image model. Step between gpt-image-1 and gpt-image-2 on quality and price. Uses OPENAI_API_KEY.",
+    provider: "openai",
+    modelRef: "gpt-image-1.5",
+    inputShape: "openai-image",
+    supportsNegativePrompt: false,
+    supportsImageInput: false,
+  },
+  {
     id: "gpt-image-1",
-    label: "GPT Image 1 (ChatGPT)",
-    description: "OpenAI's image model used by ChatGPT. Strong prompt adherence and crisp in-image text rendering. Slower and pricier than Nano Banana, but the most reliable choice when posters need legible copy. Uses OPENAI_API_KEY.",
+    label: "GPT Image 1 (legacy)",
+    description: "OpenAI's first widely-available image model. Strong prompt adherence and good in-image text rendering. Kept for compatibility — gpt-image-2 is the newer/better choice. Uses OPENAI_API_KEY.",
     provider: "openai",
     modelRef: "gpt-image-1",
+    inputShape: "openai-image",
+    supportsNegativePrompt: false,
+    supportsImageInput: false,
+  },
+  {
+    id: "gpt-image-1-mini",
+    label: "GPT Image 1 mini",
+    description: "Cheap/fast OpenAI image variant. Lower fidelity than gpt-image-1 but cost-efficient for high-volume / draft use. Uses OPENAI_API_KEY.",
+    provider: "openai",
+    modelRef: "gpt-image-1-mini",
     inputShape: "openai-image",
     supportsNegativePrompt: false,
     supportsImageInput: false,
@@ -628,6 +675,119 @@ export function resolveWorkflowEngine(input: unknown): WorkflowEngineId {
 
 export type ChannelCaps = Partial<Record<Channel, number>>;
 
+// Daily-research search providers. Both are external HTTP APIs gated by an
+// env-supplied key. Toggle in Settings → Research.
+export const RESEARCH_SEARCH_PROVIDERS = ["tavily", "brave"] as const;
+export type ResearchSearchProvider = (typeof RESEARCH_SEARCH_PROVIDERS)[number];
+export const DEFAULT_RESEARCH_SEARCH_PROVIDER: ResearchSearchProvider = "tavily";
+
+export function resolveResearchSearchProvider(input: unknown): ResearchSearchProvider {
+  return typeof input === "string" &&
+    (RESEARCH_SEARCH_PROVIDERS as readonly string[]).includes(input)
+    ? (input as ResearchSearchProvider)
+    : DEFAULT_RESEARCH_SEARCH_PROVIDER;
+}
+
+// --- Embedding providers --------------------------------------------------
+// Provider-agnostic embedding contract. The `embeddings.embedding` column is
+// fixed at 1536 dims (see packages/db schema), so only providers/models that
+// can output 1536 dims are wired today. Voyage's natural dim is 1024 — it
+// stays in the catalog as a `wired: false` placeholder until the schema is
+// generalized to hold a per-row dim.
+//
+// Read by packages/agents/src/kb/embed-client.ts at call time; the resolved
+// model id is also written into `embeddings.model` so the read side can
+// filter to vectors produced by the *current* provider (different geometry
+// across providers => garbage similarity if mixed).
+
+export const EMBEDDING_PROVIDERS = ["gemini", "openai", "voyage"] as const;
+export type EmbeddingProvider = (typeof EMBEDDING_PROVIDERS)[number];
+
+export type EmbeddingModelInfo = {
+  id: string;
+  label: string;
+  provider: EmbeddingProvider;
+  /** Native output dimensions before any reduction. */
+  nativeDims: number;
+  /** Whether the provider can deliver 1536 dims (native or reduced). */
+  fits1536: boolean;
+  /** False = catalogued for the UI but not implemented in embed-client yet. */
+  wired: boolean;
+};
+
+export const EMBEDDING_MODELS: readonly EmbeddingModelInfo[] = [
+  {
+    id: "gemini-embedding-001",
+    label: "Gemini Embedding 001 (1536d, reduced)",
+    provider: "gemini",
+    nativeDims: 3072,
+    fits1536: true,
+    wired: true,
+  },
+  {
+    id: "text-embedding-3-small",
+    label: "OpenAI text-embedding-3-small (1536d)",
+    provider: "openai",
+    nativeDims: 1536,
+    fits1536: true,
+    wired: true,
+  },
+  {
+    id: "text-embedding-3-large",
+    label: "OpenAI text-embedding-3-large (1536d, reduced)",
+    provider: "openai",
+    nativeDims: 3072,
+    fits1536: true,
+    wired: true,
+  },
+  {
+    id: "voyage-3-large",
+    label: "Voyage 3 Large (1024d — needs DB migration)",
+    provider: "voyage",
+    nativeDims: 1024,
+    fits1536: false,
+    wired: false,
+  },
+];
+
+export const DEFAULT_EMBEDDING_PROVIDER: EmbeddingProvider = "gemini";
+export const DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001";
+
+export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProvider, string> = {
+  gemini: "Google Gemini",
+  openai: "OpenAI",
+  voyage: "Voyage AI",
+};
+
+export type EmbeddingConfig = {
+  provider: EmbeddingProvider;
+  model: string;
+};
+
+export function resolveEmbeddingConfig(input: {
+  provider?: unknown;
+  model?: unknown;
+}): EmbeddingConfig {
+  const provider =
+    typeof input.provider === "string" &&
+    (EMBEDDING_PROVIDERS as readonly string[]).includes(input.provider)
+      ? (input.provider as EmbeddingProvider)
+      : DEFAULT_EMBEDDING_PROVIDER;
+
+  const candidate =
+    typeof input.model === "string"
+      ? EMBEDDING_MODELS.find((m) => m.id === input.model)
+      : undefined;
+
+  const model =
+    candidate && candidate.provider === provider && candidate.fits1536
+      ? candidate.id
+      : (EMBEDDING_MODELS.find((m) => m.provider === provider && m.fits1536)?.id ??
+        DEFAULT_EMBEDDING_MODEL);
+
+  return { provider, model };
+}
+
 export type SettingsShape = {
   kill_switch: boolean;
   channel_caps: ChannelCaps;
@@ -655,4 +815,20 @@ export type SettingsShape = {
    * read PDF file parts (Anthropic Claude or Google Gemini today).
    */
   brand_extract_model: LlmModel;
+  /**
+   * Keywords scanned by the daily research cron. Each keyword produces one
+   * Researcher run + one KB finding. Empty list disables the cron.
+   */
+  research_keywords: string[];
+  /** Which external search API the Researcher uses for the daily scan. */
+  research_search_provider: ResearchSearchProvider;
+  /**
+   * Provider used to embed text for the KB + similarity tools. Different
+   * providers produce vectors of different geometries — the read side
+   * filters `embeddings.model` to the active model so old vectors don't
+   * pollute search results until they're re-embedded.
+   */
+  embedding_provider: EmbeddingProvider;
+  /** Embedding model id within the chosen provider. */
+  embedding_model: string;
 };

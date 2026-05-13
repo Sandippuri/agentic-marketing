@@ -21,6 +21,8 @@ import { errorResponse, parseJson } from "@/lib/http";
 
 const CommonMistakesRequest = z.object({
   vector: z.array(z.number()).length(1536),
+  /** Embedding model id; filters embeddings.model when set. See similar/route.ts. */
+  model: z.string().optional(),
   limit: z.number().int().min(1).max(20).optional().default(5),
 });
 
@@ -63,7 +65,10 @@ export async function POST(request: Request) {
         ),
       )
       .where(
-        inArray(schema.agentFeedback.decision, ["rejected", "changes_requested"]),
+        and(
+          inArray(schema.agentFeedback.decision, ["rejected", "changes_requested"]),
+          input.model ? eq(embeddings.model, input.model) : sql`true`,
+        ),
       )
       .orderBy(
         sql`(${embeddings.embedding} <=> ${sql.raw(`'${vectorLiteral}'::vector`)})`,

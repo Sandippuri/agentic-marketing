@@ -34,7 +34,9 @@
     "./concept-to-prompt": "./src/concept-to-prompt.ts",
     "./asset-judge": "./src/asset-judge.ts",
     "./template-render": "./src/template-render.ts",
-    "./design-system-store": "./src/design-system-store.ts"
+    "./design-system-store": "./src/design-system-store.ts",
+    "./asset-templates": "./src/asset-templates/index.ts",
+    "./asset-templates/tokens": "./src/asset-templates/tokens.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -10,12 +10,21 @@ import { errorResponse, parseJson } from "@/lib/http";
 import { enqueueEmbedding, enqueueRejectedDraftEmbedding } from "@/lib/embedding-queue";
 import { approvalHook } from "@/workflows/single-post";
 
-const Decide = z.object({
-  decision: z.enum(APPROVAL_DECISIONS),
-  reason: z.string().max(2000).optional(),
-  // For chat-driven approvals the Manager forwards the human's user id.
-  decidedBy: z.string().uuid().optional(),
-});
+// Reason is required for any non-approval decision so the learning loop has
+// something to embed — a bare "rejected" with no explanation produces a
+// rejected_draft embedding keyed on `null`, which findCommonMistakes can't
+// use to steer future drafts away from the same miss.
+const Decide = z
+  .object({
+    decision: z.enum(APPROVAL_DECISIONS),
+    reason: z.string().trim().min(1).max(2000).optional(),
+    // For chat-driven approvals the Manager forwards the human's user id.
+    decidedBy: z.string().uuid().optional(),
+  })
+  .refine((v) => v.decision === "approved" || !!v.reason, {
+    message: "reason is required when decision is not 'approved'",
+    path: ["reason"],
+  });
 
 export async function POST(
   request: Request,

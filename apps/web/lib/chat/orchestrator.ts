@@ -1,8 +1,15 @@
-import { generateText, tool } from "ai";
+import { generateText, streamText, tool } from "ai";
 import { z } from "zod";
 import pino from "pino";
+import { eq } from "drizzle-orm";
 import type { CpClient } from "@marketing/cp-client";
-import { resolveLlmModel, type LlmModel, type ThreadRef } from "@marketing/shared-types";
+import {
+  resolveLlmModel,
+  resolveResearchSearchProvider,
+  type LlmModel,
+  type ThreadRef,
+} from "@marketing/shared-types";
+import { getDb, schema } from "@marketing/db";
 import { getLanguageModel } from "@marketing/agents/llm-registry";
 import { recordLlmUsage } from "@marketing/agents/usage";
 import { ORCHESTRATOR_PROMPT } from "@marketing/prompts";
@@ -10,6 +17,10 @@ import { runStrategist } from "@marketing/agents/sub-agents/strategist";
 import { runContent } from "@marketing/agents/sub-agents/content";
 import { runAnalyst } from "@marketing/agents/sub-agents/analyst";
 import { runAsset } from "@marketing/agents/sub-agents/asset";
+import { runResearcher } from "@marketing/agents/sub-agents/researcher";
+import { buildKbTools } from "@marketing/agents/tools/kb-tools";
+import { ensureCollection, upsertDocument } from "@marketing/agents/kb";
+import { chunkAndEmbed } from "@marketing/agents/kb";
 import {
   getWorkflowModelConfig,
   pickSubAgentModel,
@@ -26,20 +37,7 @@ export type OrchestratorInput = {
   history: Array<{ role: string; content: string }>;
   cp: CpClient;
   model?: LlmModel;
-  /**
-   * Optional progress tracker. When provided, each sub-agent invocation is
-   * recorded as a step in the generation_jobs table so the
-   * /creation-workflow admin page can show step-by-step progress. The
-   * orchestrator never reads back from the tracker — it's pure write-only
-   * observability.
-   */
   tracker?: GenerationTracker;
-  /**
-   * Optional extra system text appended after ORCHESTRATOR_PROMPT. Used to
-   * scope a chat to a specific campaign (campaign brief + content items
-   * snapshot) so tool calls default to that campaign without the user
-   * restating it every turn.
-   */
   systemContext?: string;
 };
 
@@ -49,7 +47,7 @@ export function runOrchestrator(input: OrchestratorInput): Promise<string> {
   );
 }
 
-async function _runOrchestrator({
+async function buildOrchestratorCall({
   text,
   userId,
   threadRef,
@@ -58,20 +56,20 @@ async function _runOrchestrator({
   model,
   tracker,
   systemContext,
-}: OrchestratorInput): Promise<string> {
-  // Top-level orchestrator model: caller override wins, then the global
-  // workflow_model setting, then DEFAULT_LLM_MODEL via resolveLlmModel.
+}: OrchestratorInput) {
   const { workflowModel, subAgentModels } = await getWorkflowModelConfig();
   const resolvedModel = model ? resolveLlmModel(model) : workflowModel;
-  const modelFor = (kind: "strategist" | "content" | "asset" | "analyst") =>
+  const modelFor = (
+    kind: "strategist" | "content" | "asset" | "analyst" | "researcher",
+  ) =>
     pickSubAgentModel({
       kind,
-      // Only inherit the orchestrator's per-call override; don't double-apply
-      // the workflow_model fallback (already baked into workflowModel).
       override: model,
       workflowModel,
       subAgentModels,
     });
+
+  const researchProvider = await loadResearchProvider();
   log.info(
     { userId, threadRef, msgLen: text.length, model: resolvedModel, subAgentModels },
     "orchestrator start",
@@ -98,12 +96,146 @@ async function _runOrchestrator({
     ? `${ORCHESTRATOR_PROMPT}\n\n---\n\n${systemContext}`
     : ORCHESTRATOR_PROMPT;
 
-  const { text: response, steps, usage, experimental_providerMetadata } = await generateText({
-    model: getLanguageModel(resolvedModel),
-    system: systemPrompt,
-    prompt: `${historyContext}User (${userId}): ${text}`,
-    maxSteps: 10,
-    tools: {
+  // Knowledge-base tools (read-only subset) — give the chat direct semantic
+  // access to brand/persona/competitor/SOP/playbook docs without needing to
+  // spin up the researcher sub-agent.
+  const kbTools = buildKbTools({ actorId: userId });
+  const { kb_search, kb_read_document, kb_list } = kbTools;
+
+  return {
+    resolvedModel,
+    callArgs: {
+      model: getLanguageModel(resolvedModel),
+      system: systemPrompt,
+      prompt: `${historyContext}User (${userId}): ${text}`,
+      maxSteps: 10,
+      tools: {
+      // ── Flow: Lookups (cheap, read-only Control Plane state) ───────────
+      list_campaigns: tool({
+        description:
+          "List all campaigns from the Control Plane. Use this to find a campaign ID " +
+          "before routing to run_strategist or run_content.",
+        parameters: z.object({}),
+        execute: async () => {
+          const campaigns = await cp.listCampaigns();
+          return campaigns.map((c) => ({
+            id: c.id,
+            slug: c.slug,
+            name: c.name,
+            phase: c.phase,
+            status: c.status,
+          }));
+        },
+      }),
+
+      get_pending_approvals: tool({
+        description:
+          "List all content items currently waiting for human approval, oldest first.",
+        parameters: z.object({
+          limit: z.number().int().min(1).max(20).optional().default(10),
+        }),
+        execute: async ({ limit }) => {
+          return cp.getPendingApprovals(limit);
+        },
+      }),
+
+      check_publish_job: tool({
+        description:
+          "Check the current status of a publish job by ID, or list recent jobs for a content item.",
+        parameters: z.object({
+          publishJobId: z.string().optional().describe("Specific publish job UUID"),
+          contentId: z.string().optional().describe("List all jobs for this content item"),
+        }),
+        execute: async ({ publishJobId, contentId }) => {
+          if (publishJobId) return cp.getPublishJob(publishJobId);
+          if (contentId) return cp.listPublishJobs({ contentId, limit: 5 });
+          return { error: "provide publishJobId or contentId" };
+        },
+      }),
+
+      // ── Flow: Knowledge Base (semantic memory across past chats + docs) ─
+      kb_search,
+      kb_read_document,
+      kb_list,
+
+      remember_insight: tool({
+        description:
+          "Save a durable user-stated preference, brand voice rule, recurring need, or fact " +
+          "as a playbook document in the Knowledge Base so future chats and sub-agents can use it. " +
+          "Only call this when the user has clearly stated something worth remembering across sessions " +
+          "(e.g. 'always cite a customer quote', 'our ICP is mid-market FinTech CISOs'). " +
+          "Do NOT call this for one-off task details or transient context. " +
+          "Set scope='team' for org-wide rules (brand voice, ICP, process); " +
+          "scope='personal' when it only applies to this user's own workflow.",
+        parameters: z.object({
+          title: z.string().describe("Short human-readable title for the insight"),
+          slug: z
+            .string()
+            .regex(/^[a-z0-9-]+$/)
+            .describe(
+              "kebab-case slug. For personal scope, the system namespaces it per user — do NOT include the user id.",
+            ),
+          body_md: z
+            .string()
+            .describe(
+              "Markdown body. Lead with the rule/fact, then a short Why and How-to-apply.",
+            ),
+          scope: z.enum(["team", "personal"]).optional().default("team"),
+          tags: z.array(z.string()).optional(),
+        }),
+        execute: async ({ title, slug, body_md, scope, tags }) => {
+          return persistChatInsight({
+            title,
+            slug,
+            body_md,
+            tags,
+            scope: scope ?? "team",
+            userId,
+          });
+        },
+      }),
+
+      // ── Flow: Research (web + KB ingestion) ────────────────────────────
+      run_researcher: tool({
+        description:
+          "Run the Researcher sub-agent for audience, persona, competitor, market, or daily-news research. " +
+          "Searches the public web with the configured provider (Tavily or Brave), fetches primary sources, " +
+          "and writes findings into the Knowledge Base. Prefer kb_search for facts we may already have. " +
+          "Pass a focused question — one topic per run.",
+        parameters: z.object({
+          request: z
+            .string()
+            .describe(
+              "Natural-language research instruction. For daily news, phrase it like 'Daily news scan for <keyword>'.",
+            ),
+          campaignId: z
+            .string()
+            .optional()
+            .describe(
+              "When set, KB findings are scoped to this campaign instead of the global collection.",
+            ),
+        }),
+        execute: async ({ request, campaignId }) => {
+          return withSpan(
+            "sub-agent.researcher",
+            { campaignId: campaignId ?? "" },
+            () => {
+              log.info({ campaignId }, "invoking researcher sub-agent");
+              return runResearcher({
+                request,
+                campaignId,
+                cp,
+                model: modelFor("researcher"),
+                threadRef,
+                jobId: tracker?.getJobId() ?? null,
+                searchProvider: researchProvider,
+              });
+            },
+          );
+        },
+      }),
+
+      // ── Flow: Planning ─────────────────────────────────────────────────
       run_strategist: tool({
         description: "Run the Strategist sub-agent for campaign planning, briefs, and calendars",
         parameters: z.object({
@@ -127,6 +259,7 @@ async function _runOrchestrator({
         },
       }),
 
+      // ── Flow: Content ──────────────────────────────────────────────────
       run_content: tool({
         description: "Run the Content sub-agent to draft or revise a piece of content",
         parameters: z.object({
@@ -173,6 +306,32 @@ async function _runOrchestrator({
         },
       }),
 
+      // ── Flow: Visual ───────────────────────────────────────────────────
+      run_asset: tool({
+        description: "Run the Asset sub-agent to generate a visual asset for content",
+        parameters: z.object({
+          request: z.string(),
+          contentId: z.string().optional(),
+        }),
+        execute: async ({ request, contentId }) => {
+          return recordStep("asset", { request, contentId }, () =>
+            withSpan("sub-agent.asset", { contentId: contentId ?? "" }, async () => {
+              log.info({ contentId }, "invoking asset sub-agent");
+              if (tracker && contentId) await tracker.link({ contentId });
+              return runAsset({
+                request,
+                contentId,
+                cp,
+                model: modelFor("asset"),
+                threadRef,
+                jobId: tracker?.getJobId() ?? null,
+              });
+            }),
+          );
+        },
+      }),
+
+      // ── Flow: Analysis & Learning ──────────────────────────────────────
       run_analyst: tool({
         description: "Run the Analyst sub-agent for performance reports and learnings",
         parameters: z.object({
@@ -196,6 +355,7 @@ async function _runOrchestrator({
         },
       }),
 
+      // ── Flow: Distribution ─────────────────────────────────────────────
       run_distributor: tool({
         description: "Schedule an approved content item for publishing on a channel",
         parameters: z.object({
@@ -227,72 +387,7 @@ async function _runOrchestrator({
         },
       }),
 
-      run_asset: tool({
-        description: "Run the Asset sub-agent to generate a visual asset for content",
-        parameters: z.object({
-          request: z.string(),
-          contentId: z.string().optional(),
-        }),
-        execute: async ({ request, contentId }) => {
-          return recordStep("asset", { request, contentId }, () =>
-            withSpan("sub-agent.asset", { contentId: contentId ?? "" }, async () => {
-              log.info({ contentId }, "invoking asset sub-agent");
-              if (tracker && contentId) await tracker.link({ contentId });
-              return runAsset({
-                request,
-                contentId,
-                cp,
-                model: modelFor("asset"),
-                threadRef,
-                jobId: tracker?.getJobId() ?? null,
-              });
-            }),
-          );
-        },
-      }),
-
-      list_campaigns: tool({
-        description:
-          "List all campaigns from the Control Plane. Use this to find a campaign ID " +
-          "before routing to run_strategist or run_content.",
-        parameters: z.object({}),
-        execute: async () => {
-          const campaigns = await cp.listCampaigns();
-          return campaigns.map((c) => ({
-            id: c.id,
-            slug: c.slug,
-            name: c.name,
-            phase: c.phase,
-            status: c.status,
-          }));
-        },
-      }),
-
-      get_pending_approvals: tool({
-        description:
-          "List all content items currently waiting for human approval, oldest first.",
-        parameters: z.object({
-          limit: z.number().int().min(1).max(20).optional().default(10),
-        }),
-        execute: async ({ limit }) => {
-          return cp.getPendingApprovals(limit);
-        },
-      }),
-
-      check_publish_job: tool({
-        description:
-          "Check the current status of a publish job by ID, or list recent jobs for a content item.",
-        parameters: z.object({
-          publishJobId: z.string().optional().describe("Specific publish job UUID"),
-          contentId: z.string().optional().describe("List all jobs for this content item"),
-        }),
-        execute: async ({ publishJobId, contentId }) => {
-          if (publishJobId) return cp.getPublishJob(publishJobId);
-          if (contentId) return cp.listPublishJobs({ contentId, limit: 5 });
-          return { error: "provide publishJobId or contentId" };
-        },
-      }),
-
+      // ── Flow: Meta ─────────────────────────────────────────────────────
       clarify: tool({
         description: "Ask the user a single clarifying question when the intent is ambiguous",
         parameters: z.object({
@@ -301,16 +396,166 @@ async function _runOrchestrator({
         execute: async ({ question }) => question,
       }),
     },
-  });
+    } as const,
+  };
+}
 
+async function _runOrchestrator(input: OrchestratorInput): Promise<string> {
+  const { resolvedModel, callArgs } = await buildOrchestratorCall(input);
+  const {
+    text: response,
+    steps,
+    usage,
+    experimental_providerMetadata,
+  } = await generateText(callArgs);
   log.info({ steps: steps.length }, "orchestrator finished");
   await recordLlmUsage({
     agent: "orchestrator",
     model: resolvedModel,
-    threadRef,
-    jobId: tracker?.getJobId() ?? null,
+    threadRef: input.threadRef,
+    jobId: input.tracker?.getJobId() ?? null,
     usage,
     providerMetadata: experimental_providerMetadata,
   });
   return response;
+}
+
+export type StreamOrchestratorOpts = {
+  /** Fired for every text delta the orchestrator emits. */
+  onDelta: (text: string) => void;
+};
+
+/**
+ * Streaming counterpart of `runOrchestrator`. Mirrors the same tools, system
+ * prompt, and history wiring — only the LLM call differs (`streamText`).
+ *
+ * We always drive the underlying stream to completion in the background and
+ * fire deltas via `onDelta`. The returned promise resolves with the full
+ * accumulated text once the orchestrator finishes — so callers that bail
+ * early (e.g. on workflow detach) can still persist the final answer when
+ * the orchestrator catches up.
+ */
+export function streamOrchestrator(
+  input: OrchestratorInput,
+  opts: StreamOrchestratorOpts,
+): Promise<string> {
+  return withSpan(
+    "orchestrator.stream",
+    { userId: input.userId, threadRef: input.threadRef },
+    () => _streamOrchestrator(input, opts),
+  );
+}
+
+async function _streamOrchestrator(
+  input: OrchestratorInput,
+  opts: StreamOrchestratorOpts,
+): Promise<string> {
+  const { resolvedModel, callArgs } = await buildOrchestratorCall(input);
+  const result = streamText(callArgs);
+
+  let accumulated = "";
+  for await (const delta of result.textStream) {
+    accumulated += delta;
+    try {
+      opts.onDelta(delta);
+    } catch (err) {
+      // A throwing consumer must not prevent the orchestrator from finishing —
+      // log and keep draining. Callers signal "stop forwarding" by ignoring
+      // further calls, not by throwing.
+      log.warn({ err: (err as Error).message }, "stream onDelta callback threw");
+    }
+  }
+
+  const usage = await result.usage;
+  const providerMetadata = await result.experimental_providerMetadata;
+  const steps = await result.steps;
+  log.info({ steps: steps.length }, "orchestrator stream finished");
+  await recordLlmUsage({
+    agent: "orchestrator",
+    model: resolvedModel,
+    threadRef: input.threadRef,
+    jobId: input.tracker?.getJobId() ?? null,
+    usage,
+    providerMetadata,
+  });
+  return accumulated;
+}
+
+async function loadResearchProvider() {
+  try {
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.settings)
+      .where(eq(schema.settings.key, "research_search_provider"))
+      .limit(1);
+    return resolveResearchSearchProvider(row?.value);
+  } catch {
+    return resolveResearchSearchProvider(undefined);
+  }
+}
+
+const CHAT_INSIGHTS_COLLECTION = {
+  slug: "chat-insights",
+  name: "Chat Insights",
+  kind: "playbook" as const,
+};
+
+async function persistChatInsight(opts: {
+  title: string;
+  slug: string;
+  body_md: string;
+  tags?: string[];
+  scope: "team" | "personal";
+  userId: string;
+}): Promise<{ documentId: string; status: string; warning?: string }> {
+  if (!process.env.OPENAI_API_KEY) {
+    log.warn(
+      "OPENAI_API_KEY not set — insight would not be searchable. Skipping write.",
+    );
+    return {
+      documentId: "",
+      status: "skipped",
+      warning:
+        "OPENAI_API_KEY not set: insights cannot be embedded for retrieval. Set the key in env to enable remember_insight.",
+    };
+  }
+  const collectionId = await ensureCollection({
+    slug: CHAT_INSIGHTS_COLLECTION.slug,
+    name: CHAT_INSIGHTS_COLLECTION.name,
+    kind: CHAT_INSIGHTS_COLLECTION.kind,
+    scope: "global",
+    campaignId: null,
+  });
+  const persistedSlug =
+    opts.scope === "personal" ? `${opts.slug}-u-${shortUserHash(opts.userId)}` : opts.slug;
+  const doc = await upsertDocument({
+    collectionId,
+    slug: persistedSlug,
+    title: opts.title,
+    source: "agent",
+    bodyMd: opts.body_md,
+    metadata: {
+      capturedBy: opts.userId,
+      userId: opts.userId,
+      tags: opts.tags ?? [],
+      scope: opts.scope,
+      origin: "chat",
+    },
+    status: "active",
+    createdBy: opts.userId,
+    bumpVersion: true,
+  });
+  await chunkAndEmbed(doc.id).catch((err) =>
+    log.warn({ err: (err as Error).message, docId: doc.id }, "chat insight embed failed"),
+  );
+  return { documentId: doc.id, status: doc.status };
+}
+
+function shortUserHash(input: string): string {
+  let h = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    h = (h * 31 + input.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36).slice(0, 6);
 }

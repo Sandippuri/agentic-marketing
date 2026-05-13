@@ -7,11 +7,9 @@
  */
 
 import pino from "pino";
+import { embedText, getEmbeddingConfig } from "./kb/embed-client";
 
 const log = pino({ name: "find-similar" });
-
-const OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings";
-const MODEL = "text-embedding-3-small";
 
 export type SimilarContentResult = {
   content_id: string;
@@ -37,29 +35,6 @@ export type FindSimilarOptions = {
   limit?: number;
 };
 
-async function embedText(text: string): Promise<number[]> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY not set");
-
-  const res = await fetch(OPENAI_EMBED_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ model: MODEL, input: text.slice(0, 8_000) }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`OpenAI embed failed: ${res.status} ${await res.text()}`);
-  }
-
-  const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
-  const embedding = json.data[0]?.embedding;
-  if (!embedding?.length) throw new Error("empty embedding returned");
-  return embedding;
-}
-
 export async function findSimilarContent(
   opts: FindSimilarOptions,
 ): Promise<SimilarContentResult[]> {
@@ -67,8 +42,10 @@ export async function findSimilarContent(
   const token = process.env.INTERNAL_API_TOKEN ?? "";
 
   let vector: number[];
+  let model: string;
   try {
     vector = await embedText(opts.topic);
+    model = (await getEmbeddingConfig()).model;
   } catch (err) {
     log.warn({ err: (err as Error).message }, "embed failed; returning empty");
     return [];
@@ -82,6 +59,7 @@ export async function findSimilarContent(
     },
     body: JSON.stringify({
       vector,
+      model,
       channel: opts.channel,
       minCTR: opts.minCTR,
       minEngagement: opts.minEngagement,

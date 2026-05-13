@@ -13,10 +13,11 @@
 import pino from "pino";
 import type { CpClient } from "@marketing/cp-client";
 import type { LlmModel, ThreadRef } from "@marketing/shared-types";
-import { runOrchestrator } from "./orchestrator";
+import { runOrchestrator, streamOrchestrator } from "./orchestrator";
 import { createGenerationTracker } from "./generation-tracker";
 import { getHistoryStore, type ChatTurn } from "./history-store";
 import { publishWebThreadEvent } from "./web-bus";
+import { learnFromConversation } from "./learn-from-conversation";
 
 const log = pino({ name: "chat-handler" });
 
@@ -97,6 +98,13 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
       history.push({ role: "assistant", content: winner.outcome.text });
       await store.set(threadRef, history);
       replyToThread(threadRef, winner.outcome.text);
+      learnFromConversation({
+        threadRef,
+        userId,
+        userMessage: text,
+        assistantMessage: winner.outcome.text,
+        history,
+      });
       return winner.outcome.text;
     }
     log.error({ err: winner.outcome.err }, "orchestrator error (sync)");
@@ -119,6 +127,14 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
         await tracker.complete();
         await appendAssistantTurn(threadRef, outcome.text);
         replyToThread(threadRef, outcome.text);
+        const finalHistory = await getHistoryStore().get(threadRef);
+        learnFromConversation({
+          threadRef,
+          userId,
+          userMessage: text,
+          assistantMessage: outcome.text,
+          history: finalHistory,
+        });
       } else {
         log.error({ err: outcome.err }, "orchestrator error (detached)");
         await tracker.fail(outcome.err);
@@ -139,6 +155,170 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
   });
 
   return startMessage;
+}
+
+export type ChatStreamEvent =
+  | { kind: "delta"; text: string }
+  | { kind: "workflow_started"; jobId: string; message: string }
+  | { kind: "done"; finalText: string }
+  | { kind: "error"; message: string };
+
+export type HandleChatStreamParams = HandleChatParams & {
+  onEvent: (event: ChatStreamEvent) => void;
+};
+
+/**
+ * Streaming variant of `handleChat`. Same detach semantics: if a sub-agent
+ * tool fires before the orchestrator finishes, we emit `workflow_started`
+ * and let the orchestrator run on in the background — its final result
+ * will reach the client via the SSE thread bus once ready.
+ *
+ * The `/goal` mode router falls through to the non-streaming `handleChat`
+ * because its work is a single POST + immediate stub reply, with nothing
+ * to stream.
+ */
+export async function handleChatStream(
+  params: HandleChatStreamParams,
+): Promise<void> {
+  const { text, userId, threadRef, cp, model, campaignId, onEvent } = params;
+  log.info({ userId, threadRef, text, model, campaignId }, "chat stream received");
+
+  const mode = parseModeFromMessage(text);
+  if (mode.kind === "goal") {
+    const reply = await handleGoalMode({ ...params, parsed: mode });
+    onEvent({ kind: "delta", text: reply });
+    onEvent({ kind: "done", finalText: reply });
+    return;
+  }
+
+  const systemContext = campaignId
+    ? await (await import("./campaign-context")).buildCampaignContext(campaignId)
+    : undefined;
+
+  const store = getHistoryStore();
+  const history: ChatTurn[] = await store.get(threadRef);
+  history.push({ role: "user", content: text });
+
+  let firstStepResolve: ((jobId: string) => void) | null = null;
+  const firstStep = new Promise<string>((res) => {
+    firstStepResolve = res;
+  });
+
+  const tracker = createGenerationTracker({
+    cp,
+    threadRef,
+    userId,
+    userMessage: text,
+    onFirstStep: (jobId) => firstStepResolve?.(jobId),
+  });
+
+  // Once detach fires we stop forwarding deltas — the client switches into
+  // workflow-tracking mode and the orchestrator's final answer will arrive
+  // over the thread SSE bus.
+  let detached = false;
+
+  const orchestratorOutcome: Promise<
+    { ok: true; text: string } | { ok: false; err: unknown }
+  > = streamOrchestrator(
+    {
+      text,
+      userId,
+      threadRef,
+      history,
+      cp,
+      model,
+      tracker,
+      systemContext,
+    },
+    {
+      onDelta: (delta) => {
+        if (detached) return;
+        onEvent({ kind: "delta", text: delta });
+      },
+    },
+  ).then(
+    (out) => ({ ok: true as const, text: out }),
+    (err) => ({ ok: false as const, err }),
+  );
+
+  const winner = await Promise.race([
+    firstStep.then((jobId) => ({ kind: "workflow" as const, jobId })),
+    orchestratorOutcome.then((outcome) => ({
+      kind: "sync" as const,
+      outcome,
+    })),
+  ]);
+
+  if (winner.kind === "sync") {
+    if (winner.outcome.ok) {
+      history.push({ role: "assistant", content: winner.outcome.text });
+      await store.set(threadRef, history);
+      // Skip the SSE thread-bus echo — the streaming client already has the
+      // full text. Other subscribers to this thread are out of scope for the
+      // test-chat UI.
+      learnFromConversation({
+        threadRef,
+        userId,
+        userMessage: text,
+        assistantMessage: winner.outcome.text,
+        history,
+      });
+      onEvent({ kind: "done", finalText: winner.outcome.text });
+      return;
+    }
+    log.error({ err: winner.outcome.err }, "orchestrator error (stream sync)");
+    onEvent({
+      kind: "error",
+      message: "Something went wrong. Try again or check the admin UI.",
+    });
+    return;
+  }
+
+  detached = true;
+  const startMessage =
+    `Workflow started (job ${winner.jobId}). ` +
+    `Track step-by-step progress at /creation-workflow. ` +
+    `I'll post the result back here when it's ready.`;
+  history.push({ role: "assistant", content: startMessage });
+  await store.set(threadRef, history);
+  onEvent({ kind: "workflow_started", jobId: winner.jobId, message: startMessage });
+
+  // Mirror the sync handler: replyToThread so other subscribers see the stub,
+  // then finalize the background outcome onto the thread SSE bus.
+  replyToThread(threadRef, startMessage);
+
+  void orchestratorOutcome.then(async (outcome) => {
+    try {
+      if (outcome.ok) {
+        await tracker.complete();
+        await appendAssistantTurn(threadRef, outcome.text);
+        replyToThread(threadRef, outcome.text);
+        const finalHistory = await getHistoryStore().get(threadRef);
+        learnFromConversation({
+          threadRef,
+          userId,
+          userMessage: text,
+          assistantMessage: outcome.text,
+          history: finalHistory,
+        });
+      } else {
+        log.error({ err: outcome.err }, "orchestrator error (stream detached)");
+        await tracker.fail(outcome.err);
+        const errMessage =
+          outcome.err instanceof Error ? outcome.err.message : "unknown error";
+        const failureNote =
+          `Workflow failed (job ${winner.jobId}): ${errMessage}. ` +
+          `See /creation-workflow for the step that broke.`;
+        await appendAssistantTurn(threadRef, failureNote);
+        replyToThread(threadRef, failureNote);
+      }
+    } catch (err) {
+      log.error(
+        { err: (err as Error).message },
+        "background stream chat finalisation failed",
+      );
+    }
+  });
 }
 
 function replyToThread(threadRef: ThreadRef, message: string): void {
@@ -182,9 +362,25 @@ function parseModeFromMessage(text: string): ParsedMode {
 }
 
 async function handleGoalMode(params: HandleChatParams & { parsed: ParsedGoal }): Promise<string> {
-  const { threadRef, parsed } = params;
+  const { threadRef, userId, text, parsed } = params;
   // Hit the in-process API route through fetch so we share validation +
   // workflow start logic with the public surface.
+  const finish = async (reply: string) => {
+    replyToThread(threadRef, reply);
+    const store = getHistoryStore();
+    const history = await store.get(threadRef);
+    history.push({ role: "user", content: text });
+    history.push({ role: "assistant", content: reply });
+    await store.set(threadRef, history);
+    learnFromConversation({
+      threadRef,
+      userId,
+      userMessage: text,
+      assistantMessage: reply,
+      history,
+    });
+    return reply;
+  };
   try {
     const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
     const internalToken = process.env.INTERNAL_API_TOKEN ?? "";
@@ -197,20 +393,15 @@ async function handleGoalMode(params: HandleChatParams & { parsed: ParsedGoal })
       body: JSON.stringify({ summary: parsed.summary }),
     });
     if (!res.ok) {
-      const reply = `Goal start failed: ${res.status} ${await res.text()}`;
-      replyToThread(threadRef, reply);
-      return reply;
+      return finish(`Goal start failed: ${res.status} ${await res.text()}`);
     }
     const json = (await res.json()) as { campaignId: string; runId: string };
-    const reply =
+    return finish(
       `Goal accepted. Campaign ${json.campaignId.slice(0, 8)} created; ` +
-      `goal-loop run ${json.runId.slice(0, 8)} started. ` +
-      `Watch progress at /admin/campaigns/${json.campaignId} or /api/goals/${json.campaignId}.`;
-    replyToThread(threadRef, reply);
-    return reply;
+        `goal-loop run ${json.runId.slice(0, 8)} started. ` +
+        `Watch progress at /admin/campaigns/${json.campaignId} or /api/goals/${json.campaignId}.`,
+    );
   } catch (err) {
-    const reply = `Goal start failed: ${(err as Error).message}`;
-    replyToThread(threadRef, reply);
-    return reply;
+    return finish(`Goal start failed: ${(err as Error).message}`);
   }
 }

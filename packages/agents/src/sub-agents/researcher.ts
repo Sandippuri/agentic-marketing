@@ -11,11 +11,13 @@ import { z } from "zod";
 import { tool } from "ai";
 import pino from "pino";
 import type { CpClient } from "@marketing/cp-client";
-import type { LlmModel } from "@marketing/shared-types";
+import type { LlmModel, ResearchSearchProvider } from "@marketing/shared-types";
+import { DEFAULT_RESEARCH_SEARCH_PROVIDER } from "@marketing/shared-types";
 import { RESEARCHER_PROMPT } from "@marketing/prompts";
 import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 import { buildKbTools } from "../tools/kb-tools";
+import { buildWebSearchTool } from "../tools/web-search";
 
 const log = pino({ name: "researcher" });
 
@@ -27,6 +29,11 @@ export type ResearcherInput = {
   threadRef?: string | null;
   jobId?: string | null;
   workflowRunId?: string | null;
+  /**
+   * External search backend for `web_search`. Defaults to the project-wide
+   * setting; callers that already resolved it can pass the chosen provider.
+   */
+  searchProvider?: ResearchSearchProvider;
 };
 
 export async function runResearcher({
@@ -36,8 +43,12 @@ export async function runResearcher({
   threadRef,
   jobId,
   workflowRunId,
+  searchProvider,
 }: ResearcherInput): Promise<string> {
   const kbTools = buildKbTools({ campaignId });
+  const webSearch = buildWebSearchTool({
+    provider: searchProvider ?? DEFAULT_RESEARCH_SEARCH_PROVIDER,
+  });
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
@@ -46,6 +57,7 @@ export async function runResearcher({
     maxSteps: 8,
     tools: {
       ...kbTools,
+      ...webSearch,
       web_fetch: tool({
         description:
           "Fetch a public URL and return its readable text (truncated to ~10k chars). Use sparingly — prefer kb_search for things we already know. Returns {status, contentType, text, url}.",

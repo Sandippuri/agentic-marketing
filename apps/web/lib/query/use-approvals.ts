@@ -39,9 +39,22 @@ export function useResumeStuckHook() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? `POST -> ${res.status}`);
+        // Server returns { error, name?, message? } for workflow-runtime
+        // failures — prefer the underlying message so the operator sees the
+        // real cause (e.g. "HookNotFoundError: Hook not found") instead of
+        // a generic code.
+        const label =
+          [err.name, err.message].filter(Boolean).join(": ") ||
+          err.error ||
+          `POST -> ${res.status}`;
+        throw new Error(label);
       }
-      return res.json() as Promise<{ ok: true; decision: string }>;
+      return res.json() as Promise<{
+        ok: true;
+        decision: string;
+        reconciled?: boolean;
+        terminalStatus?: "completed" | "cancelled";
+      }>;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["approvals"] });

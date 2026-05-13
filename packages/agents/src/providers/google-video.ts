@@ -84,7 +84,12 @@ export async function generateGoogleVideo(
       // Only send generateAudio when the caller explicitly opts in — preview
       // models reject the parameter outright with INVALID_ARGUMENT.
       ...(wantsAudio ? { generateAudio: true } : {}),
-      personGeneration: "allow_adult",
+      // Google's API currently returns INVALID_ARGUMENT for "allow_adult" on
+      // most projects/regions ("allow_adult for personGeneration is
+      // currently not supported"). Falling back to the only universally
+      // accepted value; the API also accepts omitting it entirely, but
+      // explicit is clearer and matches what most regions allow.
+      personGeneration: "dont_allow",
       sampleCount: 1,
     },
   };

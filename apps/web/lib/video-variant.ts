@@ -12,6 +12,7 @@ import { getDb, schema } from "@marketing/db";
 import { generateVideo } from "@marketing/agents/video-gen";
 import { uploadAssetBytes } from "@marketing/agents/asset-uploader";
 import { buildBrandPromptPrefix } from "@marketing/agents/brand-prompt";
+import type { VisualConceptBrief } from "@marketing/agents/sub-agents/art-director";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
 import {
   contentTypeWantsVideo,
@@ -61,6 +62,26 @@ async function readVideoSettings(): Promise<{
   }
 }
 
+async function loadVisualBrief(
+  contentId: string,
+): Promise<VisualConceptBrief | null> {
+  try {
+    const db = getDb();
+    const [row] = await db
+      .select({ visualBrief: schema.contentItems.visualBrief })
+      .from(schema.contentItems)
+      .where(eq(schema.contentItems.id, contentId))
+      .limit(1);
+    return (row?.visualBrief as VisualConceptBrief | null) ?? null;
+  } catch (err) {
+    console.warn(
+      `[video-variant] failed to load visual brief for ${contentId}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 // Pick the most recent still image attached to the content item, if any, so
 // Veo can use it as the first frame (image-to-video). Returns null if no
 // still has been uploaded yet.
@@ -80,6 +101,74 @@ async function findFirstFrameUrl(contentId: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Build a Veo prompt that EXPLAINS the post's concept through motion. When a
+ * persisted Art Director brief is available, its motion fields drive each
+ * beat (the brief was authored against the same content the image generator
+ * just illustrated, so still + clip reinforce one another). When no brief is
+ * present — older content rows, or runs where the AD step failed — we fall
+ * back to a generic 3-beat scaffold seeded from the subject + image marker.
+ */
+function buildVeoPrompt(args: {
+  subject: string;
+  marker: string | null;
+  hasFirstFrame: boolean;
+  brandPrefix: string;
+  brief: VisualConceptBrief | null;
+}): string {
+  const subject = args.subject.slice(0, 200).trim();
+  const anchor = args.hasFirstFrame
+    ? `Begin from the provided first frame and animate FROM that exact composition — preserve the existing color, lighting, and element placement; do not re-stage the scene.`
+    : `Open on a clean establishing composition that mirrors a poster still.`;
+
+  const motion = args.brief?.motion;
+  const hasMotion = Boolean(
+    motion && (motion.opening_state || motion.reveal_beat || motion.settling_state),
+  );
+
+  const beats = hasMotion
+    ? [
+        `Beat 1 (0–2s): ${motion!.opening_state || "the scene settles; key elements animate in subtly."}`,
+        `Beat 2 (2–6s): ${motion!.reveal_beat || "the core idea is revealed through motion — make the concept legible through movement, not decoration."}`,
+        `Beat 3 (6–8s): ${motion!.settling_state || "motion eases out; the frame settles on a clean final composition."}`,
+        `Camera: ${motion!.camera || "a single intentional move — no jump cuts, no rapid pans, no shaky-cam."}`,
+      ]
+    : [
+        `Beat 1 (0–2s): the scene settles; the key elements animate in subtly (lines glow, tokens nudge into place, layers fade up — pick what fits the concept).`,
+        `Beat 2 (2–6s): the core idea is revealed through motion — flows converge, paths branch, layers stack, or before/after toggles. MAKE IT LEGIBLE through movement, not decoration.`,
+        `Beat 3 (6–8s): motion eases out and the frame settles on a clean final composition that could be the post's hero still.`,
+        `Camera: a single, intentional move (gentle push-in, slow orbit, or smooth parallax) — no jump cuts, no rapid pans, no shaky-cam.`,
+      ];
+
+  const concept = args.brief?.concept_summary
+    ? args.brief.concept_summary.slice(0, 320)
+    : (args.marker ?? args.subject).slice(0, 320).trim();
+
+  const stylePieces: string[] = [];
+  if (args.brief?.style_notes) stylePieces.push(args.brief.style_notes.slice(0, 200));
+  stylePieces.push(
+    "Brand-clean palette, subtle film grain, soft volumetric light. No on-screen text, no logos, no captions, no watermarks, no UI chrome.",
+  );
+
+  const bannedExtras = args.brief?.banned_elements?.length
+    ? args.brief.banned_elements.slice(0, 8).join(", ")
+    : "";
+  const bannedLine = bannedExtras
+    ? `Avoid: generic particle drifts, abstract glowing blobs, anonymous floating cubes, rainbow gradients, wireframe globes, arches on pedestals, lone abstract objects, ${bannedExtras}.`
+    : `Avoid: generic particle drifts, abstract glowing blobs, anonymous floating cubes, rainbow gradients, wireframe globes, arches on pedestals, lone abstract objects.`;
+
+  const lines = [
+    `An ~8 second concept-explainer clip that visualizes: ${subject}.`,
+    `Visual concept the clip must make clear: ${concept}.`,
+    anchor,
+    ...beats,
+    `Style: ${stylePieces.join(" ")}`,
+    bannedLine,
+  ];
+  const body = lines.join(" ");
+  return args.brandPrefix ? `${args.brandPrefix}${body}` : body;
 }
 
 export type GenerateVideoVariantInput = {
@@ -114,32 +203,24 @@ export async function generateVideoVariant(
   }
 
   const aspect = ASPECT_BY_TYPE[input.contentType] ?? "16:9";
-
-  // Veo prompt: lean on the inline IMAGE marker when present (richer creative
-  // direction) and otherwise riff on the post subject. Keep it under 500 chars
-  // — Veo prefers concrete, motion-aware prompts.
-  const motion = input.firstImageMarker
-    ? input.firstImageMarker.slice(0, 320)
-    : input.subject.slice(0, 240);
-  const basePrompt = [
-    `A short cinematic promotional clip (~8 seconds) for: ${input.subject.slice(0, 200)}.`,
-    `Visual direction: ${motion}.`,
-    `Smooth camera motion. Brand-clean palette, subtle grain.`,
-    `No on-screen text, no logos, no captions, no watermarks.`,
-  ].join(" ");
-
-  // Inject brand context server-side so Veo follows the same palette / mood
-  // rules as still images. Falls through silently when no brand docs exist.
-  const { prefix: brandPrefix } = await buildBrandPromptPrefix({
-    medium: "video",
-    campaignId: input.campaignId ?? null,
+  const [imageUrl, brief, brandCtx] = await Promise.all([
+    findFirstFrameUrl(input.contentId),
+    loadVisualBrief(input.contentId),
+    buildBrandPromptPrefix({
+      medium: "video",
+      campaignId: input.campaignId ?? null,
+    }),
+  ]);
+  const prompt = buildVeoPrompt({
+    subject: input.subject,
+    marker: input.firstImageMarker ?? null,
+    hasFirstFrame: Boolean(imageUrl),
+    brandPrefix: brandCtx.prefix,
+    brief,
   });
-  const prompt = brandPrefix ? `${brandPrefix}${basePrompt}` : basePrompt;
-
-  const imageUrl = await findFirstFrameUrl(input.contentId);
 
   console.log(
-    `[video-variant] generating Veo clip for ${input.contentId} type=${input.contentType} aspect=${aspect} model=${model} i2v=${Boolean(imageUrl)} brandPrefixChars=${brandPrefix.length}`,
+    `[video-variant] generating Veo clip for ${input.contentId} type=${input.contentType} aspect=${aspect} model=${model} i2v=${Boolean(imageUrl)} brandPrefixChars=${brandCtx.prefix.length} brief=${brief ? "yes" : "no"}`,
   );
 
   let result;

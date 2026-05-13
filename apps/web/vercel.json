@@ -12,6 +12,14 @@
     {
       "path": "/api/cron/weekly-analyst",
       "schedule": "15 3 * * 1"
+    },
+    {
+      "path": "/api/cron/research",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/asset-promotion",
+      "schedule": "30 4 * * *"
     }
   ]
 }

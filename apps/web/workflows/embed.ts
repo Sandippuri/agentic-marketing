@@ -1,13 +1,14 @@
 import { eq } from "drizzle-orm";
 import { getDb, schema, embeddings } from "@marketing/db";
+import { embedText, getEmbeddingConfig } from "@marketing/agents/kb";
 
 // Phase 2 mirror of apps/distributor/src/embed-worker.ts. Each kind of embed
 // is its own workflow run for clean retry semantics + observability. The
 // existing /api/approvals route keeps calling enqueueEmbedding(...) — that
 // helper now branches on WORKFLOW_EMBED to call start(...) instead of BullMQ.
-
-const OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings";
-const MODEL = "text-embedding-3-small";
+//
+// Embedding provider/model is sourced from settings via embed-client; the
+// model id is captured per call so each row gets tagged with the producer.
 
 export type EmbedContentInput = { contentId: string };
 export type EmbedRejectedDraftInput = { feedbackId: string };
@@ -22,11 +23,12 @@ export async function embedContentWorkflow(
   if (!loaded.found) {
     return { embedded: false, reason: "not_found" };
   }
-  const vector = await openaiEmbedStep(loaded.text);
+  const embed = await providerEmbedStep(loaded.text);
   await upsertContentEmbeddingStep({
     contentId: input.contentId,
     text: loaded.text,
-    vector,
+    vector: embed.vector,
+    model: embed.model,
   });
   return { embedded: true };
 }
@@ -55,6 +57,7 @@ async function upsertContentEmbeddingStep(payload: {
   contentId: string;
   text: string;
   vector: number[];
+  model: string;
 }): Promise<void> {
   "use step";
   const db = getDb();
@@ -67,7 +70,7 @@ async function upsertContentEmbeddingStep(payload: {
       text: payload.text.slice(0, 2_000),
       embedding: payload.vector,
       metadata: { contentId: payload.contentId },
-      model: MODEL,
+      model: payload.model,
     })
     .onConflictDoUpdate({
       target: [embeddings.sourceType, embeddings.sourceId, embeddings.chunkIndex],
@@ -75,7 +78,7 @@ async function upsertContentEmbeddingStep(payload: {
         text: payload.text.slice(0, 2_000),
         embedding: payload.vector,
         embeddedAt: new Date(),
-        model: MODEL,
+        model: payload.model,
       },
     });
 }
@@ -90,13 +93,14 @@ export async function embedRejectedDraftWorkflow(
   if (!loaded.found) {
     return { embedded: false, reason: loaded.reason };
   }
-  const vector = await openaiEmbedStep(loaded.text);
+  const embed = await providerEmbedStep(loaded.text);
   await upsertRejectedEmbeddingStep({
     feedbackId: input.feedbackId,
     contentId: loaded.contentId,
     decision: loaded.decision,
     text: loaded.text,
-    vector,
+    vector: embed.vector,
+    model: embed.model,
   });
   return { embedded: true };
 }
@@ -143,6 +147,7 @@ async function upsertRejectedEmbeddingStep(payload: {
   decision: string;
   text: string;
   vector: number[];
+  model: string;
 }): Promise<void> {
   "use step";
   const db = getDb();
@@ -159,7 +164,7 @@ async function upsertRejectedEmbeddingStep(payload: {
         contentId: payload.contentId,
         decision: payload.decision,
       },
-      model: MODEL,
+      model: payload.model,
     })
     .onConflictDoUpdate({
       target: [embeddings.sourceType, embeddings.sourceId, embeddings.chunkIndex],
@@ -167,32 +172,20 @@ async function upsertRejectedEmbeddingStep(payload: {
         text: payload.text.slice(0, 2_000),
         embedding: payload.vector,
         embeddedAt: new Date(),
-        model: MODEL,
+        model: payload.model,
       },
     });
 }
 
-// --- shared OpenAI step -----------------------------------------------------
+// --- shared embed step ------------------------------------------------------
+// Calls the provider-agnostic embed-client, which dispatches to whichever
+// provider is configured in settings (OpenAI / Gemini today).
 
-async function openaiEmbedStep(text: string): Promise<number[]> {
+async function providerEmbedStep(
+  text: string,
+): Promise<{ vector: number[]; model: string }> {
   "use step";
-  const apiKey = process.env.OPENAI_API_KEY ?? "";
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY not set");
-  }
-  const res = await fetch(OPENAI_EMBED_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ model: MODEL, input: text }),
-  });
-  if (!res.ok) {
-    throw new Error(`OpenAI embed failed: ${res.status} ${await res.text()}`);
-  }
-  const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
-  const vector = json.data[0]?.embedding;
-  if (!vector?.length) throw new Error("empty embedding returned");
-  return vector;
+  const vector = await embedText(text);
+  const { model } = await getEmbeddingConfig();
+  return { vector, model };
 }

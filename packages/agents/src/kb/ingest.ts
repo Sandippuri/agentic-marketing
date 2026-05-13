@@ -14,7 +14,7 @@
  */
 import pino from "pino";
 import { getDb, kbChunks, schema, type KbDocument } from "@marketing/db";
-import { embedBatch } from "./embed-client";
+import { embedBatch, getEmbeddingConfig } from "./embed-client";
 import { deleteChunksFor, getDocument } from "./store";
 
 const log = pino({ name: "kb-ingest" });
@@ -69,6 +69,7 @@ export async function chunkAndEmbed(
       `embed mismatch: ${vectors.length} vectors for ${inserted.length} chunks`,
     );
   }
+  const { model } = await getEmbeddingConfig();
   await db.insert(schema.embeddings).values(
     inserted.map((c, i) => {
       const vec = vectors[i];
@@ -85,7 +86,7 @@ export async function chunkAndEmbed(
           documentTitle: doc.title,
           collectionId: doc.collectionId,
         },
-        model: "text-embedding-3-small",
+        model,
       };
     }),
   );

@@ -387,6 +387,96 @@ textarea:focus {
   font-feature-settings: normal;
 }
 
+/* Markdown content typography (used by research reports, etc.) */
+.md-content {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+}
+.md-content > * + * { margin-top: 0.85em; }
+.md-content h1,
+.md-content h2,
+.md-content h3,
+.md-content h4 {
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
+}
+.md-content h1 { font-size: 1.15rem; margin-top: 1.4em; }
+.md-content h2 { font-size: 1.05rem; margin-top: 1.3em; }
+.md-content h3 { font-size: 0.95rem; margin-top: 1.2em; color: var(--text-muted); }
+.md-content h4 { font-size: 0.9rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.md-content p { margin: 0; }
+.md-content strong { color: var(--text); font-weight: 600; }
+.md-content em { color: var(--text-muted); font-style: italic; }
+.md-content a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 2px;
+}
+.md-content a:hover { text-decoration-color: var(--accent); }
+.md-content code {
+  font-family: var(--font-geist-mono), ui-monospace, "SF Mono", monospace;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 0.5px 5px;
+  border-radius: 4px;
+  font-size: 0.86em;
+  color: var(--text);
+}
+.md-content pre {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.md-content pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.md-content ul,
+.md-content ol {
+  padding-left: 1.25rem;
+  margin: 0;
+}
+.md-content ul { list-style: disc; }
+.md-content ol { list-style: decimal; }
+.md-content li { margin: 0.25em 0; }
+.md-content li::marker { color: var(--text-faint); }
+.md-content blockquote {
+  border-left: 2px solid var(--border-strong);
+  padding: 0.1em 0 0.1em 0.85em;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.md-content hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.25em 0;
+}
+.md-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.md-content th,
+.md-content td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+.md-content th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
 /* Animations */
 @keyframes pulse-ring {
   0% { box-shadow: 0 0 0 0 var(--accent-ring); }

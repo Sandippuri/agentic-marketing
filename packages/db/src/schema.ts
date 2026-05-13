@@ -265,6 +265,11 @@ export const contentItems = pgTable(
     variantIndex: integer("variant_index"),
     experimentId: uuid("experiment_id"),
     seoMeta: jsonb("seo_meta"),
+    // Structured visual concept brief emitted by the Art Director and reused
+    // by every downstream modality (image, video, future carousel/slide
+    // generators). Schema lives in art-director.ts as VisualConceptBrief —
+    // free-form jsonb here so the brief shape can evolve without migrations.
+    visualBrief: jsonb("visual_brief"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -386,6 +391,12 @@ export const assets = pgTable(
     mimeType: text("mime_type"),
     // Duration in whole seconds for video assets. Null for stills.
     durationSec: integer("duration_sec"),
+    // Asset Judge's structured score (axes + verdict + reason). Free-form
+    // jsonb so the score shape can evolve. judgeTotal is the denormalized
+    // scalar used by the learning loop's "high-scoring assets" queries.
+    judgeScore: jsonb("judge_score"),
+    judgeTotal: numeric("judge_total", { precision: 5, scale: 2 }),
+    judgeVerdict: text("judge_verdict"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -395,6 +406,7 @@ export const assets = pgTable(
   },
   (t) => ({
     contentIdx: index("assets_content_idx").on(t.contentId),
+    judgeTotalIdx: index("assets_judge_total_idx").on(t.judgeTotal),
   }),
 );
 

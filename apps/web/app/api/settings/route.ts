@@ -7,8 +7,11 @@ import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
 import {
   CHANNELS,
+  EMBEDDING_MODELS,
+  EMBEDDING_PROVIDERS,
   IMAGE_MODELS,
   LLM_MODELS,
+  RESEARCH_SEARCH_PROVIDERS,
   SUB_AGENT_KINDS,
   WORKFLOW_ENGINES,
 } from "@marketing/shared-types";
@@ -16,6 +19,9 @@ import type { SettingsShape } from "@marketing/shared-types";
 
 const IMAGE_MODEL_IDS = IMAGE_MODELS.map((m) => m.id) as [string, ...string[]];
 const LLM_MODEL_IDS = LLM_MODELS.map((m) => m.id) as [string, ...string[]];
+const EMBEDDING_MODEL_IDS = EMBEDDING_MODELS.filter((m) => m.wired).map(
+  (m) => m.id,
+) as [string, ...string[]];
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +57,13 @@ const PatchSettings = z.object({
   sub_agent_models: z
     .record(z.enum(SUB_AGENT_KINDS), z.enum(LLM_MODEL_IDS).nullable())
     .optional(),
+  research_keywords: z
+    .array(z.string().trim().min(1).max(120))
+    .max(50)
+    .optional(),
+  research_search_provider: z.enum(RESEARCH_SEARCH_PROVIDERS).optional(),
+  embedding_provider: z.enum(EMBEDDING_PROVIDERS).optional(),
+  embedding_model: z.enum(EMBEDDING_MODEL_IDS).optional(),
 });
 
 // PATCH /api/settings — upsert one or more settings keys.

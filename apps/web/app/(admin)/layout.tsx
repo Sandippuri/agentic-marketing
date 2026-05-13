@@ -37,6 +37,7 @@ export default async function AdminLayout({
         { href: "/gallery", label: "Gallery", icon: "gallery" },
         { href: "/insights", label: "Insights", icon: "insights" },
         { href: "/learning", label: "Learning loop", icon: "insights" },
+        { href: "/research", label: "Research", icon: "insights" },
         { href: "/audit-log", label: "Audit log", icon: "audit" },
       ],
     },

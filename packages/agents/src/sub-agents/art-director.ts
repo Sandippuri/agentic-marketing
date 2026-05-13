@@ -42,6 +42,39 @@ export type ArtDirectorInput = {
   workflowRunId?: string | null;
 };
 
+/**
+ * Motion direction the brief carries forward to video generation. Each beat
+ * names a concrete state, not vague vibes — Veo follows time-coded direction
+ * far more reliably than "smooth cinematic camera".
+ */
+export type VisualMotionBrief = {
+  /** What the scene looks like in beat 1 (0–2s). The still as a starting point. */
+  opening_state: string;
+  /** The transformation in beat 2 (2–6s) — the visual idea revealed through motion. */
+  reveal_beat: string;
+  /** Where it lands in beat 3 (6–8s) — a clean final composition. */
+  settling_state: string;
+  /** One intentional move: "slow push-in", "gentle orbit", "smooth parallax". */
+  camera: string;
+};
+
+/**
+ * Structured text slots an asset template renders deterministically (instead
+ * of letting the image model embed text inside the generated picture). The
+ * AD authors poster-length copy here — the raw content title is often
+ * blog-length and not suitable as a headline.
+ */
+export type VisualTextSlots = {
+  /** Small uppercase kicker — a category, product, or theme tag. ≤24 chars. */
+  eyebrow: string;
+  /** Poster-length headline (≤8 words / ~50 chars) that reads in 2 seconds. */
+  headline: string;
+  /** Optional dek / subline that contextualizes the headline. ≤120 chars. */
+  subline: string;
+  /** Optional one-line call to action ("Read more", "Try it free"). ≤24 chars. */
+  cta: string;
+};
+
 export type VisualConceptBrief = {
   /** One-sentence summary the LLM judge can compare candidates against. */
   concept_summary: string;
@@ -57,6 +90,10 @@ export type VisualConceptBrief = {
   style_notes: string;
   /** What this image must NOT be — fed to negative prompts. */
   banned_elements: string[];
+  /** Time-coded motion direction consumed by the video generator. */
+  motion: VisualMotionBrief;
+  /** Deterministic text slots an asset template renders onto the canvas. */
+  slots: VisualTextSlots;
   /** Provenance — for debugging + the asset-judge's tie-back to KB. */
   references_from_kb: Array<{
     documentId: string;
@@ -82,6 +119,20 @@ export const DEFAULT_BANNED_AESTHETICS = [
   "matrix code rain",
 ];
 
+const MotionSchema = z.object({
+  opening_state: z.string().default(""),
+  reveal_beat: z.string().default(""),
+  settling_state: z.string().default(""),
+  camera: z.string().default(""),
+});
+
+const SlotsSchema = z.object({
+  eyebrow: z.string().max(40).default(""),
+  headline: z.string().max(80).default(""),
+  subline: z.string().max(160).default(""),
+  cta: z.string().max(40).default(""),
+});
+
 const ConceptSchema = z.object({
   concept_summary: z.string().min(8),
   composition: z.string().min(4),
@@ -90,6 +141,18 @@ const ConceptSchema = z.object({
   reference_image_urls: z.array(z.string().url()).default([]),
   style_notes: z.string().default(""),
   banned_elements: z.array(z.string()).default([]),
+  motion: MotionSchema.default({
+    opening_state: "",
+    reveal_beat: "",
+    settling_state: "",
+    camera: "",
+  }),
+  slots: SlotsSchema.default({
+    eyebrow: "",
+    headline: "",
+    subline: "",
+    cta: "",
+  }),
 });
 
 const ART_DIRECTOR_PROMPT = `You are the Art Director for a product-driven marketing team.
@@ -110,6 +173,16 @@ Rules of the road:
 - Banned elements MUST include the failure modes you'd reject if this
   came back from a designer — the things that would make this look like
   every other AI-generated post.
+- Motion: describe a concrete 8-second arc that EXPLAINS the concept
+  through movement, not decoration. opening_state mirrors the still;
+  reveal_beat is what changes (flows converge, layers stack, paths
+  branch, before/after toggles); settling_state is the final hero
+  composition. camera is ONE intentional move — never multiple cuts.
+- Slots: author POSTER-LENGTH copy here. The raw content title is often
+  blog-length; condense it. headline is ≤8 words / ≤50 chars and reads
+  in 2 seconds. eyebrow is a short category/product tag (≤24 chars).
+  subline is optional dek that adds context (≤120 chars). cta is
+  optional (≤24 chars). Leave empty strings rather than padding.
 - Output ONLY valid JSON. No markdown fence, no commentary.`;
 
 export async function runArtDirector(
@@ -193,6 +266,8 @@ export async function runArtDirector(
     reference_image_urls: uniq([...parsed.reference_image_urls, ...referenceUrls]),
     style_notes: parsed.style_notes,
     banned_elements: banned,
+    motion: parsed.motion,
+    slots: parsed.slots,
     references_from_kb: visualHits.map((h) => ({
       documentId: h.documentId,
       title: h.documentTitle,
@@ -261,7 +336,19 @@ Return JSON matching:
   "real_subjects": ["..."],
   "reference_image_urls": ["..."],
   "style_notes": "...",
-  "banned_elements": ["..."]
+  "banned_elements": ["..."],
+  "motion": {
+    "opening_state": "the scene at 0–2s, mirroring the still",
+    "reveal_beat": "what transforms at 2–6s — the visual idea revealed through motion",
+    "settling_state": "the clean hero composition at 6–8s",
+    "camera": "one intentional move (e.g. slow push-in, gentle orbit, smooth parallax)"
+  },
+  "slots": {
+    "eyebrow": "short kicker, ≤24 chars (or empty)",
+    "headline": "poster-length headline, ≤8 words, reads in 2s",
+    "subline": "optional dek that adds context, ≤120 chars (or empty)",
+    "cta": "optional CTA, ≤24 chars (or empty)"
+  }
 }`;
 }
 
@@ -289,6 +376,18 @@ function fallbackBrief(request: string): z.infer<typeof ConceptSchema> {
     reference_image_urls: [],
     style_notes: "clean editorial, restrained palette, soft cool light",
     banned_elements: [],
+    motion: {
+      opening_state: "",
+      reveal_beat: "",
+      settling_state: "",
+      camera: "",
+    },
+    slots: {
+      eyebrow: "",
+      headline: "",
+      subline: "",
+      cta: "",
+    },
   };
 }
 

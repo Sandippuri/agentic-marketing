@@ -1,0 +1,24 @@
+import { start } from "workflow/api";
+import { researchWorkflow } from "@/workflows/research";
+import { errorResponse } from "@/lib/http";
+
+// Vercel Cron target — runs daily at 02:00 UTC (07:45 Asia/Kathmandu).
+// Schedule lives in apps/web/vercel.json: `0 2 * * *`.
+
+export const dynamic = "force-dynamic";
+
+export async function GET(request: Request) {
+  try {
+    const secret = process.env.CRON_SECRET;
+    if (secret) {
+      const auth = request.headers.get("authorization");
+      if (auth !== `Bearer ${secret}`) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+    }
+    const run = await start(researchWorkflow, [{}]);
+    return Response.json({ runId: run.runId, status: "started" });
+  } catch (err) {
+    return errorResponse(err);
+  }
+}

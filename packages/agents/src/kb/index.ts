@@ -41,6 +41,9 @@ export {
   embedText,
   embedBatch,
   vectorLiteral,
-  EMBED_MODEL,
   EMBED_DIMS,
+  getEmbeddingConfig,
+  invalidateEmbedConfigCache,
+  DEFAULT_EMBEDDING_PROVIDER,
+  DEFAULT_EMBEDDING_MODEL,
 } from "./embed-client";

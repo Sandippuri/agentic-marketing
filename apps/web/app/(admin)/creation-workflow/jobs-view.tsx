@@ -578,7 +578,7 @@ function JobCard({ job }: { job: JobView }) {
 type ExternalPhase = {
   key: string;
   label: string;
-  status: "succeeded" | "running" | "failed" | "pending";
+  status: "succeeded" | "running" | "failed" | "needs_revision" | "pending";
   hint: string;
 };
 
@@ -671,19 +671,23 @@ function inferExternalPhases(job: JobView): ExternalPhase[] {
         label: "Approval",
         status: approved
           ? "succeeded"
-          : rejected || changesRequested || timedOut
+          : rejected || timedOut
             ? "failed"
-            : !hasAssets
-              ? "pending"
-              : inReview && isRunning
-                ? "running"
-                : "pending",
+            : changesRequested
+              ? "needs_revision"
+              : !hasAssets
+                ? "pending"
+                : inReview && isRunning
+                  ? "running"
+                  : "pending",
         hint: timedOut
           ? "Approval timed out"
           : rejected
             ? "Reviewer rejected the draft"
             : changesRequested
-              ? "Reviewer requested changes"
+              ? isRunning
+                ? "Reviewer requested changes — revising"
+                : "Reviewer requested changes — max revisions reached"
               : "Awaiting human review",
       },
       {
@@ -722,6 +726,7 @@ function ExternalEngineStatus({ job }: { job: JobView }) {
   const renderableAssets = job.contentAssets.filter((a) => a.signedUrl);
   const currentPhase = phases.find((p) => p.status === "running");
   const failedPhase = phases.find((p) => p.status === "failed");
+  const revisionPhase = phases.find((p) => p.status === "needs_revision");
 
   let footnote: { tone: "info" | "success" | "warn" | "danger"; text: string } | null = null;
   if (failedPhase) {
@@ -729,6 +734,10 @@ function ExternalEngineStatus({ job }: { job: JobView }) {
       tone: "danger",
       text: job.error ?? `${failedPhase.label} failed`,
     };
+  } else if (revisionPhase) {
+    // Distinct from failed: changes_requested is a normal outcome that loops
+    // back into a revision pass (or terminates with "max revisions reached").
+    footnote = { tone: "warn", text: revisionPhase.hint };
   } else if (currentPhase) {
     footnote = { tone: "info", text: currentPhase.hint };
   } else if (job.status === "completed") {
@@ -774,7 +783,9 @@ function ExternalPhasePill({ phase }: { phase: ExternalPhase }) {
         ? "border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
         : phase.status === "failed"
           ? "border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"
-          : "border-zinc-200 dark:border-zinc-800 text-zinc-400";
+          : phase.status === "needs_revision"
+            ? "border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+            : "border-zinc-200 dark:border-zinc-800 text-zinc-400";
   return (
     <span
       title={phase.hint}
@@ -1132,7 +1143,7 @@ function StepDot({
   status,
   pulsing,
 }: {
-  status: StepView["status"] | "pending";
+  status: StepView["status"] | "pending" | "needs_revision";
   pulsing?: boolean;
 }) {
   const color =
@@ -1142,7 +1153,9 @@ function StepDot({
         ? "bg-red-500"
         : status === "running"
           ? "bg-blue-500"
-          : "bg-zinc-300 dark:bg-zinc-700";
+          : status === "needs_revision"
+            ? "bg-amber-500"
+            : "bg-zinc-300 dark:bg-zinc-700";
   return (
     <span className={`relative inline-block h-2 w-2 rounded-full ${color}`}>
       {pulsing && (

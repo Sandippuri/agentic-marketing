@@ -2,19 +2,28 @@
 
 import { useState, useTransition, type ReactNode } from "react";
 import {
+  DEFAULT_EMBEDDING_MODEL,
+  DEFAULT_EMBEDDING_PROVIDER,
   DEFAULT_IMAGE_MODEL,
   DEFAULT_LLM_MODEL,
+  DEFAULT_RESEARCH_SEARCH_PROVIDER,
   DEFAULT_WORKFLOW_ENGINE,
+  EMBEDDING_MODELS,
+  EMBEDDING_PROVIDERS,
+  EMBEDDING_PROVIDER_LABELS,
   IMAGE_MODELS,
   LLM_MODELS,
   LLM_PROVIDERS,
   PROVIDER_LABELS,
+  RESEARCH_SEARCH_PROVIDERS,
   SUB_AGENT_KINDS,
   SUB_AGENT_LABELS,
   type Channel,
+  type EmbeddingProvider,
   type ImageModel,
   type LlmModel,
   type LlmProvider,
+  type ResearchSearchProvider,
   type SettingsShape,
   type SubAgentKind,
   type SubAgentModelOverrides,
@@ -38,7 +47,17 @@ const CHANNEL_LABELS: Record<Channel, string> = {
   email_mailchimp: "Email (Mailchimp)",
 };
 
-type TabKey = "publishing" | "models" | "usage";
+type TabKey = "publishing" | "models" | "research" | "usage";
+
+const RESEARCH_PROVIDER_LABELS: Record<ResearchSearchProvider, string> = {
+  tavily: "Tavily",
+  brave: "Brave Search",
+};
+
+const RESEARCH_PROVIDER_HINTS: Record<ResearchSearchProvider, string> = {
+  tavily: "LLM-tuned search. Returns answers + extracted page content. Requires TAVILY_API_KEY.",
+  brave: "Independent web index. Returns ranked links + snippets. Requires BRAVE_SEARCH_API_KEY.",
+};
 type ModelsTabKey = "image" | "engine" | "workflow" | "overrides";
 
 type Props = {
@@ -57,6 +76,19 @@ type Props = {
 // server — the rest of the patch shape mirrors SettingsShape.
 type PatchBody = Omit<Partial<SettingsShape>, "sub_agent_models"> & {
   sub_agent_models?: Partial<Record<SubAgentKind, LlmModel | null>>;
+  research_keywords?: string[];
+  research_search_provider?: ResearchSearchProvider;
+  embedding_provider?: EmbeddingProvider;
+  embedding_model?: string;
+};
+
+const EMBEDDING_PROVIDER_HINTS: Record<EmbeddingProvider, string> = {
+  gemini:
+    "Google Gemini Embedding 001, reduced to 1536d. Free tier covers most workloads. Requires GEMINI_API_KEY.",
+  openai:
+    "OpenAI text-embedding-3 family, native 1536d (or reduced from 3072). Requires OPENAI_API_KEY + active billing.",
+  voyage:
+    "Voyage AI — catalogued for the future. The DB column needs a 1024d migration before Voyage can be selected.",
 };
 
 async function patchSettings(body: PatchBody) {
@@ -209,6 +241,112 @@ export function SettingsForm({
     });
   }
 
+  const researchKeywords: string[] = Array.isArray(settings.research_keywords)
+    ? settings.research_keywords
+    : [];
+  const researchProvider: ResearchSearchProvider =
+    settings.research_search_provider ?? DEFAULT_RESEARCH_SEARCH_PROVIDER;
+  const [keywordDraft, setKeywordDraft] = useState("");
+
+  async function saveResearchKeywords(next: string[]) {
+    setError(null);
+    setSaved(false);
+    startTransition(async () => {
+      try {
+        const updated = await patchSettings({ research_keywords: next });
+        setSettings((s) => ({ ...s, ...updated }));
+        setSaved(true);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
+  }
+
+  async function addKeyword() {
+    const trimmed = keywordDraft.trim();
+    if (!trimmed) return;
+    if (researchKeywords.some((k) => k.toLowerCase() === trimmed.toLowerCase())) {
+      setKeywordDraft("");
+      return;
+    }
+    const next = [...researchKeywords, trimmed].slice(0, 50);
+    setKeywordDraft("");
+    await saveResearchKeywords(next);
+  }
+
+  async function removeKeyword(kw: string) {
+    const next = researchKeywords.filter((k) => k !== kw);
+    await saveResearchKeywords(next);
+  }
+
+  async function setResearchProvider(id: ResearchSearchProvider) {
+    if (id === researchProvider) return;
+    setError(null);
+    setSaved(false);
+    startTransition(async () => {
+      try {
+        const next = await patchSettings({ research_search_provider: id });
+        setSettings((s) => ({ ...s, ...next }));
+        setSaved(true);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
+  }
+
+  const embeddingProvider: EmbeddingProvider =
+    (settings.embedding_provider as EmbeddingProvider | undefined) ??
+    DEFAULT_EMBEDDING_PROVIDER;
+  const embeddingModel: string =
+    settings.embedding_model ??
+    (EMBEDDING_MODELS.find(
+      (m) => m.provider === embeddingProvider && m.fits1536,
+    )?.id ?? DEFAULT_EMBEDDING_MODEL);
+  const embeddingModelsForProvider = EMBEDDING_MODELS.filter(
+    (m) => m.provider === embeddingProvider,
+  );
+
+  async function setEmbeddingProvider(id: EmbeddingProvider) {
+    if (id === embeddingProvider) return;
+    const fallback =
+      EMBEDDING_MODELS.find((m) => m.provider === id && m.fits1536)?.id;
+    if (!fallback) {
+      setError(
+        `No wired embedding model for provider "${id}". Pick another provider.`,
+      );
+      return;
+    }
+    setError(null);
+    setSaved(false);
+    startTransition(async () => {
+      try {
+        const next = await patchSettings({
+          embedding_provider: id,
+          embedding_model: fallback,
+        });
+        setSettings((s) => ({ ...s, ...next }));
+        setSaved(true);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
+  }
+
+  async function setEmbeddingModel(modelId: string) {
+    if (modelId === embeddingModel) return;
+    setError(null);
+    setSaved(false);
+    startTransition(async () => {
+      try {
+        const next = await patchSettings({ embedding_model: modelId });
+        setSettings((s) => ({ ...s, ...next }));
+        setSaved(true);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
+  }
+
   // Sending null clears the override on the server (route.ts merges into
   // the existing row). Sending a model id pins that kind. The undefined
   // branch in the body type is just so TS is happy with the patch shape.
@@ -231,6 +369,7 @@ export function SettingsForm({
   const tabs: { key: TabKey; label: string; available: boolean }[] = [
     { key: "publishing", label: "Publishing", available: true },
     { key: "models", label: "Models", available: true },
+    { key: "research", label: "Research", available: true },
     { key: "usage", label: "Usage", available: !!usagePanel },
   ];
 
@@ -748,6 +887,217 @@ export function SettingsForm({
             </div>
           </section>
         )}
+      </div>
+
+      <div
+        role="tabpanel"
+        id="settings-tabpanel-research"
+        aria-labelledby="settings-tab-research"
+        hidden={active !== "research"}
+        className="space-y-5"
+      >
+        <section className="surface p-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-ink">
+              Daily research keywords
+            </h2>
+            <p className="mt-0.5 text-sm text-mid">
+              The Researcher scans these every day at 07:45 Kathmandu (02:00 UTC),
+              fetches the latest news and updates per keyword, writes findings
+              into the Knowledge Base, and posts the combined report at{" "}
+              <a className="underline hover:text-ink" href="/research">
+                /research
+              </a>
+              . Leave empty to disable the cron.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={keywordDraft}
+              onChange={(e) => setKeywordDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void addKeyword();
+                }
+              }}
+              placeholder="e.g. zero-knowledge proofs, Aleo network, Algorand DeFi"
+              maxLength={120}
+              className="field flex-1"
+            />
+            <button
+              type="button"
+              onClick={() => void addKeyword()}
+              disabled={isPending || keywordDraft.trim().length === 0}
+              className="btn btn-primary btn-sm"
+            >
+              Add keyword
+            </button>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {researchKeywords.length === 0 ? (
+              <p className="text-sm text-mid">
+                No keywords yet. Add one above to start the daily scan.
+              </p>
+            ) : (
+              researchKeywords.map((kw) => (
+                <span
+                  key={kw}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-sm text-ink"
+                >
+                  {kw}
+                  <button
+                    type="button"
+                    onClick={() => void removeKeyword(kw)}
+                    disabled={isPending}
+                    aria-label={`Remove ${kw}`}
+                    className="text-mid hover:text-danger transition-colors"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))
+            )}
+          </div>
+          {researchKeywords.length >= 50 && (
+            <p className="mt-2 text-xs text-mid">
+              50-keyword cap reached. Remove one before adding more.
+            </p>
+          )}
+        </section>
+
+        <section className="surface p-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-ink">Search provider</h2>
+            <p className="mt-0.5 text-sm text-mid">
+              External search API the Researcher hits to discover fresh URLs.
+              Both have free tiers; pick whichever has a key configured.
+            </p>
+          </div>
+          <div className="grid gap-2.5 md:grid-cols-2">
+            {RESEARCH_SEARCH_PROVIDERS.map((p) => {
+              const selected = p === researchProvider;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => void setResearchProvider(p)}
+                  disabled={isPending || selected}
+                  className={[
+                    "h-full text-left surface-2 px-4 py-3 transition-colors",
+                    selected
+                      ? "border-accent ring-1 ring-accent"
+                      : "hover:border-border-strong",
+                  ].join(" ")}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-ink">
+                      {RESEARCH_PROVIDER_LABELS[p]}
+                    </span>
+                    {selected && (
+                      <span className="badge badge-success badge-dot">active</span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-mid">
+                    {RESEARCH_PROVIDER_HINTS[p]}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="surface p-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-ink">
+              Embedding provider
+            </h2>
+            <p className="mt-0.5 text-sm text-mid">
+              Powers the Knowledge Base, similar-content lookups, and
+              common-mistake retrieval. Vectors stay 1536d across providers.
+              Switching providers makes existing vectors invisible to search
+              until you re-embed via the backfill route.
+            </p>
+          </div>
+          <div className="grid gap-2.5 md:grid-cols-3">
+            {EMBEDDING_PROVIDERS.map((p) => {
+              const selected = p === embeddingProvider;
+              const wired = EMBEDDING_MODELS.some(
+                (m) => m.provider === p && m.wired,
+              );
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => void setEmbeddingProvider(p)}
+                  disabled={isPending || selected || !wired}
+                  className={[
+                    "h-full text-left surface-2 px-4 py-3 transition-colors",
+                    selected
+                      ? "border-accent ring-1 ring-accent"
+                      : "hover:border-border-strong",
+                    !wired && "opacity-50 cursor-not-allowed",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  title={
+                    !wired
+                      ? "Catalogued for the future. Needs a DB migration before it can be selected."
+                      : undefined
+                  }
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-ink">
+                      {EMBEDDING_PROVIDER_LABELS[p]}
+                    </span>
+                    {selected && (
+                      <span className="badge badge-success badge-dot">
+                        active
+                      </span>
+                    )}
+                    {!wired && (
+                      <span className="badge badge-muted">soon</span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-mid">
+                    {EMBEDDING_PROVIDER_HINTS[p]}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+
+          {embeddingModelsForProvider.length > 1 && (
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-ink mb-1.5">
+                Model
+              </label>
+              <select
+                value={embeddingModel}
+                onChange={(e) => void setEmbeddingModel(e.target.value)}
+                disabled={isPending}
+                className="field field-sm w-full"
+              >
+                {embeddingModelsForProvider.map((m) => (
+                  <option key={m.id} value={m.id} disabled={!m.fits1536}>
+                    {m.label}
+                    {!m.fits1536 ? " — needs schema migration" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <p className="mt-3 text-xs text-mid">
+            Re-embed existing rows after switching:{" "}
+            <code className="text-ink">
+              POST /api/admin/embeddings/backfill
+            </code>
+          </p>
+        </section>
       </div>
 
       {usagePanel && (

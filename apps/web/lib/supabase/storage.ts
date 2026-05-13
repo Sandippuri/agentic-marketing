@@ -17,13 +17,17 @@ function getServiceClient() {
 /**
  * Generate a signed URL for an asset stored in Supabase Storage.
  * `storagePath` is the path within the `assets/` bucket, e.g.
- * `"2026/04/poster-abc123.png"`.
+ * `"2026/04/poster-abc123.png"`. `ttlSeconds` defaults to one hour — pass a
+ * longer value when the URL is going somewhere durable (KB metadata, OG tags).
  */
-export async function getSignedAssetUrl(storagePath: string): Promise<string> {
+export async function getSignedAssetUrl(
+  storagePath: string,
+  ttlSeconds: number = SIGNED_URL_TTL_SECONDS,
+): Promise<string> {
   const supabase = getServiceClient();
   const { data, error } = await supabase.storage
     .from(BUCKET)
-    .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
+    .createSignedUrl(storagePath, ttlSeconds);
   if (error || !data?.signedUrl) {
     throw new Error(`Failed to sign asset URL: ${error?.message ?? "unknown"}`);
   }

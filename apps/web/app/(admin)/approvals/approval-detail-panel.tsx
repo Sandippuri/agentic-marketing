@@ -97,7 +97,9 @@ function DetailBody({
   const updateContent = useUpdateContent();
 
   const [reason, setReason] = useState("");
-  const [showReason, setShowReason] = useState(false);
+  const [reasonMode, setReasonMode] = useState<
+    "changes_requested" | "rejected" | null
+  >(null);
   const [previewIdx, setPreviewIdx] = useState(0);
 
   const renderable = approval.assets.filter((a) => a.signedUrl);
@@ -467,26 +469,32 @@ function DetailBody({
 
       {/* STICKY ACTION BAR */}
       <footer className="px-5 py-3 hairline-t bg-[var(--surface)]">
-        {showReason ? (
+        {reasonMode ? (
           <div className="flex flex-col gap-2">
             <input
               autoFocus
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="What needs to change?"
+              placeholder={
+                reasonMode === "rejected"
+                  ? "Why are you rejecting this? (captured for the learning loop)"
+                  : "What needs to change?"
+              }
               className="field flex-1"
             />
             <div className="flex gap-2">
               <button
-                onClick={() => decideWith("changes_requested", reason)}
-                disabled={!reason || decide.isPending}
-                className="btn btn-primary btn-sm flex-1"
+                onClick={() => decideWith(reasonMode, reason.trim())}
+                disabled={!reason.trim() || decide.isPending}
+                className={`btn btn-sm flex-1 ${
+                  reasonMode === "rejected" ? "btn-danger" : "btn-primary"
+                }`}
               >
-                Send request
+                {reasonMode === "rejected" ? "Confirm reject" : "Send request"}
               </button>
               <button
                 onClick={() => {
-                  setShowReason(false);
+                  setReasonMode(null);
                   setReason("");
                 }}
                 className="btn btn-secondary btn-sm"
@@ -509,14 +517,14 @@ function DetailBody({
               Approve
             </button>
             <button
-              onClick={() => setShowReason(true)}
+              onClick={() => setReasonMode("changes_requested")}
               disabled={decide.isPending}
               className="btn btn-secondary btn-sm"
             >
               Request changes
             </button>
             <button
-              onClick={() => decideWith("rejected")}
+              onClick={() => setReasonMode("rejected")}
               disabled={decide.isPending}
               className="btn btn-danger btn-sm"
             >
