@@ -2,6 +2,35 @@
 // Plan §3.
 
 export { parseRationale } from "./rationale";
+export {
+  PLAN_CODES,
+  BILLING_PERIODS,
+  SUBSCRIPTION_STATUSES,
+  BILLING_PROVIDERS,
+  WORKSPACE_ROLES,
+  ADMIN_ROLES,
+  FEATURES,
+  QUOTAS,
+  USAGE_METRICS,
+  DEFAULT_PLANS,
+  PLAN_IDS,
+  findDefaultPlan,
+  isUnlimited,
+} from "./billing";
+export type {
+  PlanCode,
+  BillingPeriod,
+  SubscriptionStatus,
+  BillingProvider,
+  WorkspaceRole,
+  AdminRole,
+  Feature,
+  Quota,
+  UsageMetric,
+  FeatureSet,
+  QuotaSet,
+  PlanDefinition,
+} from "./billing";
 
 export const CAMPAIGN_PHASES = ["buildup", "launch", "post_launch"] as const;
 export type CampaignPhase = (typeof CAMPAIGN_PHASES)[number];

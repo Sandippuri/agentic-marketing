@@ -1,9 +1,16 @@
 # Agentic Marketing Platform — Final Implementation Plan
 
-**Stack anchors:** Next.js 15 · Zustand · TanStack Query · Supabase · Drizzle
+**Stack anchors:** Next.js 15 · Zustand · TanStack Query · Supabase · Drizzle · Vercel Workflow
 **Calibrated to:** TypeScript/Node, React/Next.js, Postgres, Redis, Docker, Drizzle, LLM SDKs, Slack/Discord APIs, OAuth
-**Last updated:** 2026-04-30
-**Status:** Final
+**Last updated:** 2026-05-04
+**Status:** Final — being migrated from 3-app (web + manager + distributor) to single Next.js + Vercel Workflow deploy
+
+> **Migration in progress.** Phases 1–3 of [VERCEL-MIGRATION-PLAN.md](VERCEL-MIGRATION-PLAN.md)
+> have shipped behind feature flags (`WORKFLOW_PUBLISH`, `WORKFLOW_EMBED`,
+> `WORKFLOW_CHAT`). The architecture below describes the **target** topology;
+> sections that say "Manager" or "Distributor" still hold today but are on
+> deck for removal once the dual-run window closes. See the migration plan
+> for what's running where right now and what's been replaced.
 
 ---
 
@@ -1095,7 +1102,7 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 **Status:** complete (code) · **Last touched:** 2026-05-01
 
 **Also shipped in this session:**
-- [x] RLS policies for `agent_feedback`, `outcomes`, `content_embeddings` added to `infra/supabase/policies.sql`
+- [x] RLS policies for `agent_feedback`, `outcomes`, `embeddings` added to `infra/supabase/policies.sql` (legacy `content_embeddings` dropped; see Phase 11.1)
 - [x] `levenshtein.test.ts` — 11 unit tests (all passing); wired into CI (`ci.yml`)
 - [x] `agent-feedback.test.ts` — 4 integration tests covering all three decision paths (approved/changes_requested/rejected) plus zero-edit path; runs with `DATABASE_URL` secret in CI
 
@@ -1127,17 +1134,24 @@ Mark `[x]` as items complete. Day numbers refer to the plan above; reorder freel
 
 **Phase 11.1 — Generic embeddings refactor:**
 
-**Status:** complete (code) · **Last touched:** 2026-05-01
+**Status:** complete (code + migration 0003; `findCommonMistakes` shipped) · **Last touched:** 2026-05-01
 
 - [x] New migration `0002_generic_embeddings.sql`: `embedding_source_type` enum (`content`, `brand_doc`, `rejected_draft`); `embeddings` table with `source_type`, `source_id`, `chunk_index`, `text`, `embedding`, `metadata`, `model`, `embedded_at`; composite unique constraint `(source_type, source_id, chunk_index)`; partial ivfflat indexes per `source_type`; data migration `INSERT … FROM content_embeddings ON CONFLICT DO NOTHING`; journal updated
 - [x] `embedding_source_type` enum + `embeddings` table added to `packages/db/src/schema.ts`; `Embedding` + `NewEmbedding` types exported; `embeddingSourceTypeEnum` exported
-- [x] `apps/distributor/src/embed-worker.ts` now writes to `embeddings` (`source_type='content'`) first; also writes to legacy `content_embeddings` during migration window (silent catch if already dropped); `embedText` extracted as named export; `backfillEmbeds` updated to left-join `embeddings` table
+- [x] `apps/distributor/src/embed-worker.ts` writes only to `embeddings` (`source_type='content'`); `embedText` extracted as named export; `backfillEmbeds` left-joins `embeddings`; dual-write to legacy `content_embeddings` removed after migration `0003_drop_content_embeddings.sql`
 - [x] `POST /api/content/similar` updated to query `embeddings WHERE source_type='content'` with `source_id = content_items.id::text` join; no longer references `contentEmbeddings`
 - [x] RLS: `alter table embeddings enable row level security` + `team_read_embeddings` select policy added to `infra/supabase/policies.sql`
 - [x] `findBrandGuidance` implemented in `apps/manager/src/brand-guidance.ts`: loads `memory/brand/*.md` + `memory/channel-sops/*.md`; paragraph chunker; OpenAI embed with 5-min in-process cache; pure cosine similarity ranking; returns `{ source, text, similarity }[]`
 - [x] `find_brand_guidance` tool added to both Strategist + Content sub-agents; prompts updated — Content must call `find_brand_guidance` AND `find_similar_content` before every first draft
-- [ ] Drop `content_embeddings` after verifying data parity in staging (run `DROP TABLE content_embeddings;` after 0002 migration is applied)
-- [ ] `findCommonMistakes` tool (defer until ~50+ `agent_feedback` rejections exist)
+- [x] Drop `content_embeddings` — migration `packages/db/drizzle/0003_drop_content_embeddings.sql` (`DROP TABLE IF EXISTS`), Drizzle journal updated; table + `ContentEmbedding` type removed from `schema.ts`; RLS/policy lines removed from `infra/supabase/policies.sql`
+- [x] `findCommonMistakes` tool — full vertical slice implemented (silently low-yield until ~50+ rejections accumulate, but ready from day one):
+  - `POST /api/content/common-mistakes` (`apps/web/app/api/content/common-mistakes/route.ts`): pgvector cosine query over `embeddings WHERE source_type='rejected_draft'` joined to `agent_feedback`; returns `ai_draft_md`, `decision`, `reason`, `edit_distance`, `similarity`
+  - `embed-worker` extended (`apps/distributor/src/embed-worker.ts`): `EmbedJobData` is now a discriminated union (`{ contentId } | { kind: 'rejected_draft', feedbackId }`); rejected-draft branch reads `agent_feedback`, prefixes the reviewer reason, and writes `embeddings` with `source_type='rejected_draft'`
+  - HTTP `POST /embed` accepts either `{ contentId }` or `{ feedbackId }`
+  - Approval handler (`apps/web/app/api/approvals/[id]/route.ts`) now `enqueueRejectedDraftEmbedding(feedback.id)` on every `rejected` / `changes_requested` decision (uses the new `RETURNING id` from the `agent_feedback` insert)
+  - `apps/manager/src/find-common-mistakes.ts`: same OpenAI-embed-locally → CP-query shape as `find-similar.ts`
+  - `find_common_mistakes` tool added to Content sub-agent (`apps/manager/src/sub-agents/content.ts`)
+  - Content prompt (`packages/prompts/src/content.ts`) updated: step 4 of pre-draft retrieval now calls `find_common_mistakes`; `<rationale>` block extended with an "Avoiding: …" line
 
 ---
 

@@ -43,6 +43,12 @@ import {
   BRAND_DOC_STATUSES,
   BRAND_DRAFT_STATUSES,
   EXTRACTION_RUN_STATUSES,
+  PLAN_CODES,
+  SUBSCRIPTION_STATUSES,
+  BILLING_PROVIDERS,
+  BILLING_PERIODS,
+  WORKSPACE_ROLES,
+  ADMIN_ROLES,
 } from "@marketing/shared-types";
 import type {
   DesignColor,
@@ -193,6 +199,15 @@ export const extractionRunStatusEnum = pgEnum(
   "extraction_run_status",
   EXTRACTION_RUN_STATUSES,
 );
+export const planCodeEnum = pgEnum("plan_code", PLAN_CODES);
+export const subscriptionStatusEnum = pgEnum(
+  "subscription_status",
+  SUBSCRIPTION_STATUSES,
+);
+export const billingProviderEnum = pgEnum("billing_provider", BILLING_PROVIDERS);
+export const billingPeriodEnum = pgEnum("billing_period", BILLING_PERIODS);
+export const workspaceRoleEnum = pgEnum("workspace_role", WORKSPACE_ROLES);
+export const adminRoleEnum = pgEnum("admin_role", ADMIN_ROLES);
 
 // --- campaigns ----------------------------------------------------------------
 
@@ -200,6 +215,11 @@ export const campaigns = pgTable(
   "campaigns",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    // SaaS tenant. Nullable in PR 1 so the migration is non-breaking; PR 3
+    // backfills the Legacy workspace then flips this NOT NULL.
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     status: campaignStatusEnum("status").notNull().default("draft"),
@@ -230,6 +250,7 @@ export const campaigns = pgTable(
     slugUq: uniqueIndex("campaigns_slug_uq").on(t.slug),
     statusIdx: index("campaigns_status_idx").on(t.status),
     loopStatusIdx: index("campaigns_loop_status_idx").on(t.loopStatus),
+    workspaceIdx: index("campaigns_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -239,6 +260,11 @@ export const contentItems = pgTable(
   "content_items",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    // Denormalized from campaigns.workspace_id so RLS / scoped reads don't
+    // need a join. Backfilled in PR 3 and kept in sync by app code.
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -283,6 +309,7 @@ export const contentItems = pgTable(
     stageIdx: index("content_items_stage_idx").on(t.stage),
     variantGroupIdx: index("content_items_variant_group_idx").on(t.variantGroup),
     experimentIdx: index("content_items_experiment_idx").on(t.experimentId),
+    workspaceIdx: index("content_items_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -292,6 +319,9 @@ export const contentRevisions = pgTable(
   "content_revisions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -305,6 +335,7 @@ export const contentRevisions = pgTable(
   },
   (t) => ({
     contentIdx: index("content_revisions_content_idx").on(t.contentId),
+    workspaceIdx: index("content_revisions_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -314,6 +345,9 @@ export const approvals = pgTable(
   "approvals",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -327,6 +361,7 @@ export const approvals = pgTable(
   },
   (t) => ({
     contentIdx: index("approvals_content_idx").on(t.contentId),
+    workspaceIdx: index("approvals_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -336,6 +371,9 @@ export const publishJobs = pgTable(
   "publish_jobs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -369,6 +407,7 @@ export const publishJobs = pgTable(
       t.createdAt,
     ),
     sequenceIdx: index("publish_jobs_sequence_idx").on(t.sequenceId),
+    workspaceIdx: index("publish_jobs_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -378,6 +417,9 @@ export const assets = pgTable(
   "assets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     contentId: uuid("content_id").references(() => contentItems.id, {
       onDelete: "set null",
     }),
@@ -407,6 +449,7 @@ export const assets = pgTable(
   (t) => ({
     contentIdx: index("assets_content_idx").on(t.contentId),
     judgeTotalIdx: index("assets_judge_total_idx").on(t.judgeTotal),
+    workspaceIdx: index("assets_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -416,6 +459,9 @@ export const metrics = pgTable(
   "metrics",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     scopeType: scopeTypeEnum("scope_type").notNull(),
     scopeId: uuid("scope_id").notNull(),
     channel: channelEnum("channel"),
@@ -428,6 +474,7 @@ export const metrics = pgTable(
   (t) => ({
     scopeIdx: index("metrics_scope_idx").on(t.scopeType, t.scopeId),
     metricIdx: index("metrics_metric_idx").on(t.metric),
+    workspaceIdx: index("metrics_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -437,6 +484,9 @@ export const auditLog = pgTable(
   "audit_log",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
     actorId: uuid("actor_id"),
     actorKind: actorKindEnum("actor_kind").notNull(),
     action: text("action").notNull(),
@@ -449,6 +499,7 @@ export const auditLog = pgTable(
   (t) => ({
     entityIdx: index("audit_log_entity_idx").on(t.entityType, t.entityId),
     atIdx: index("audit_log_at_idx").on(t.at),
+    workspaceIdx: index("audit_log_workspace_idx").on(t.workspaceId, t.at),
   }),
 );
 
@@ -460,6 +511,9 @@ export const agentFeedback = pgTable(
   "agent_feedback",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -481,6 +535,7 @@ export const agentFeedback = pgTable(
     contentIdx: index("agent_feedback_content_idx").on(t.contentId),
     decisionIdx: index("agent_feedback_decision_idx").on(t.decision),
     decidedAtIdx: index("agent_feedback_decided_at_idx").on(t.decidedAt),
+    workspaceIdx: index("agent_feedback_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -492,6 +547,9 @@ export const outcomes = pgTable(
   "outcomes",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -513,6 +571,7 @@ export const outcomes = pgTable(
     ),
     ctrIdx: index("outcomes_ctr_idx").on(t.ctr),
     channelIdx: index("outcomes_channel_idx").on(t.channel),
+    workspaceIdx: index("outcomes_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -529,6 +588,12 @@ export const embeddings = pgTable(
   "embeddings",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    // Critical for tenant isolation: a missing where-clause here would leak
+    // RAG context across tenants. PR 9 adds an RLS policy specifically on
+    // this column and runs ANN queries through a dedicated DB role.
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     sourceType: embeddingSourceTypeEnum("source_type").notNull(),
     sourceId: text("source_id").notNull(),
     chunkIndex: integer("chunk_index").notNull().default(0),
@@ -542,6 +607,7 @@ export const embeddings = pgTable(
     sourceUq: uniqueIndex("embeddings_source_uq").on(t.sourceType, t.sourceId, t.chunkIndex),
     sourceTypeIdx: index("embeddings_source_type_idx").on(t.sourceType),
     sourceIdIdx: index("embeddings_source_id_idx").on(t.sourceId),
+    workspaceIdx: index("embeddings_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -563,6 +629,9 @@ export const brandMemory = pgTable(
   "brand_memory",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     campaignId: uuid("campaign_id").references(() => campaigns.id, {
       onDelete: "cascade",
     }),
@@ -579,6 +648,7 @@ export const brandMemory = pgTable(
   },
   (t) => ({
     campaignIdx: index("brand_memory_campaign_idx").on(t.campaignId),
+    workspaceIdx: index("brand_memory_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -599,6 +669,9 @@ export const brandDesignSystem = pgTable(
   "brand_design_system",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     campaignId: uuid("campaign_id").references(() => campaigns.id, {
       onDelete: "cascade",
     }),
@@ -635,6 +708,7 @@ export const brandDesignSystem = pgTable(
   },
   (t) => ({
     campaignIdx: index("brand_design_system_campaign_idx").on(t.campaignId),
+    workspaceIdx: index("brand_design_system_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -651,6 +725,9 @@ export const brandDocuments = pgTable(
   "brand_documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     filename: text("filename").notNull(),
     mimeType: text("mime_type").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
@@ -674,6 +751,7 @@ export const brandDocuments = pgTable(
   (t) => ({
     statusIdx: index("brand_documents_status_idx").on(t.status),
     uploadedAtIdx: index("brand_documents_uploaded_at_idx").on(t.uploadedAt),
+    workspaceIdx: index("brand_documents_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -686,6 +764,9 @@ export const extractionRuns = pgTable(
   "extraction_runs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     triggeredBy: uuid("triggered_by"),
     status: extractionRunStatusEnum("status").notNull().default("running"),
     sourceDocIds: jsonb("source_doc_ids")
@@ -702,6 +783,7 @@ export const extractionRuns = pgTable(
   (t) => ({
     statusIdx: index("extraction_runs_status_idx").on(t.status),
     startedIdx: index("extraction_runs_started_idx").on(t.startedAt),
+    workspaceIdx: index("extraction_runs_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -720,6 +802,9 @@ export const brandMemoryDrafts = pgTable(
   "brand_memory_drafts",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     runId: uuid("run_id")
       .notNull()
       .references(() => extractionRuns.id, { onDelete: "cascade" }),
@@ -746,6 +831,7 @@ export const brandMemoryDrafts = pgTable(
     slugIdx: index("brand_memory_drafts_slug_idx").on(t.slug),
     statusIdx: index("brand_memory_drafts_status_idx").on(t.status),
     runIdx: index("brand_memory_drafts_run_idx").on(t.runId),
+    workspaceIdx: index("brand_memory_drafts_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -758,7 +844,12 @@ export const generationJobs = pgTable(
   "generation_jobs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     threadRef: text("thread_ref"),
+    // TODO PR 3: retype to uuid once backfill maps legacy literals like
+    // "admin" to a real auth.users.id.
     userId: text("user_id"),
     userMessage: text("user_message").notNull(),
     kind: generationJobKindEnum("kind").notNull().default("other"),
@@ -786,6 +877,7 @@ export const generationJobs = pgTable(
     statusIdx: index("generation_jobs_status_idx").on(t.status),
     threadIdx: index("generation_jobs_thread_idx").on(t.threadRef),
     createdIdx: index("generation_jobs_created_idx").on(t.createdAt),
+    workspaceIdx: index("generation_jobs_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -827,6 +919,9 @@ export const workflowRuns = pgTable(
   "workflow_runs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     engine: workflowEngineEnum("engine").notNull(),
     kind: generationJobKindEnum("kind").notNull(),
     status: workflowRunStatusEnum("status").notNull().default("queued"),
@@ -859,6 +954,7 @@ export const workflowRuns = pgTable(
     threadIdx: index("workflow_runs_thread_idx").on(t.threadRef),
     createdIdx: index("workflow_runs_created_idx").on(t.createdAt),
     engineRefIdx: index("workflow_runs_engine_ref_idx").on(t.engineRunRef),
+    workspaceIdx: index("workflow_runs_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -872,6 +968,11 @@ export const llmUsage = pgTable(
   "llm_usage",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    // Stamped at write time by recordLlmUsage once PR 5 lands. Without this
+    // we can't attribute LLM spend to a tenant for cost dashboards.
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     occurredAt: timestamp("occurred_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -903,10 +1004,17 @@ export const llmUsage = pgTable(
     modelIdx: index("llm_usage_model_idx").on(t.model),
     agentIdx: index("llm_usage_agent_idx").on(t.agent),
     workflowRunIdx: index("llm_usage_workflow_run_idx").on(t.workflowRunId),
+    workspaceIdx: index("llm_usage_workspace_idx").on(
+      t.workspaceId,
+      t.occurredAt,
+    ),
   }),
 );
 
 // --- settings -----------------------------------------------------------------
+// `key` is the global setting name. PR1 keeps the table single-tenant; PR4
+// converts the PK to `(workspace_id, key)` with a partial unique on global
+// rows. Don't change this table here.
 
 export const settings = pgTable(
   "settings",
@@ -915,6 +1023,292 @@ export const settings = pgTable(
     value: jsonb("value").notNull(),
     updatedBy: uuid("updated_by"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+// --- SaaS foundation (PR 1) ---------------------------------------------------
+// Tenant, billing, and metering tables. Nothing reads these in PR 1; the app
+// continues to operate against the legacy single-tenant data set. PRs 2–9 will
+// wire entitlement checks, scoping, admin UI, and Khalti webhooks against them.
+
+export const workspaces = pgTable(
+  "workspaces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    // auth.users(id). No FK — same pattern as campaigns.owner_id, see comment
+    // at the top of this file.
+    ownerUserId: uuid("owner_user_id").notNull(),
+    // Denormalized current plan. Authoritative source is the latest
+    // subscriptions row in ('trialing','active','past_due','grace').
+    planId: uuid("plan_id").notNull(),
+    // When non-null, billing changes are suppressed until this date; the
+    // workspace stays on planId regardless of subscription status. Used by
+    // superadmins to park enterprise / free-friend tenants on a plan.
+    planOverriddenUntil: timestamp("plan_overridden_until", {
+      withTimezone: true,
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => ({
+    slugUq: uniqueIndex("workspaces_slug_uq").on(t.slug),
+    ownerIdx: index("workspaces_owner_idx").on(t.ownerUserId),
+    planIdx: index("workspaces_plan_idx").on(t.planId),
+  }),
+);
+
+export const workspaceMembers = pgTable(
+  "workspace_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // Null while an invite is pending; set on acceptance.
+    userId: uuid("user_id"),
+    role: workspaceRoleEnum("role").notNull(),
+    // Invitation fields. invitedEmail + invitedToken are set when the row is
+    // created from an invite; both cleared on acceptance.
+    invitedEmail: text("invited_email"),
+    invitedToken: text("invited_token"),
+    invitedAt: timestamp("invited_at", { withTimezone: true }),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    // A user can only hold one role per workspace. Enforced as a partial
+    // unique on accepted memberships in 0024 (Drizzle's uniqueIndex can't
+    // express partials; see migration SQL).
+    workspaceUserUq: uniqueIndex("workspace_members_workspace_user_uq").on(
+      t.workspaceId,
+      t.userId,
+    ),
+    userIdx: index("workspace_members_user_idx").on(t.userId),
+    tokenIdx: uniqueIndex("workspace_members_invited_token_uq").on(
+      t.invitedToken,
+    ),
+  }),
+);
+
+export const plans = pgTable(
+  "plans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: planCodeEnum("code").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    priceMonthlyNpr: integer("price_monthly_npr").notNull().default(0),
+    priceYearlyNpr: integer("price_yearly_npr").notNull().default(0),
+    // Stripe lives in cents; nullable until Stripe is wired in PR 10.
+    priceMonthlyUsdCents: integer("price_monthly_usd_cents"),
+    priceYearlyUsdCents: integer("price_yearly_usd_cents"),
+    // Static catalog snapshots — typed in @marketing/shared-types/billing.
+    // Stored as jsonb so plan changes don't require schema migrations.
+    features: jsonb("features").notNull().default(sql`'{}'::jsonb`),
+    quotas: jsonb("quotas").notNull().default(sql`'{}'::jsonb`),
+    isPublic: boolean("is_public").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    codeUq: uniqueIndex("plans_code_uq").on(t.code),
+    publicIdx: index("plans_public_sort_idx").on(t.isPublic, t.sortOrder),
+  }),
+);
+
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    planId: uuid("plan_id")
+      .notNull()
+      .references(() => plans.id),
+    status: subscriptionStatusEnum("status").notNull(),
+    provider: billingProviderEnum("provider").notNull(),
+    // Khalti has no native subscriptions, so we mint a uuid up front and
+    // attach every payment in the chain to it. Stripe uses its `sub_…` id.
+    providerSubscriptionId: text("provider_subscription_id"),
+    providerCustomerId: text("provider_customer_id"),
+    billingPeriod: billingPeriodEnum("billing_period")
+      .notNull()
+      .default("monthly"),
+    currentPeriodStart: timestamp("current_period_start", {
+      withTimezone: true,
+    }).notNull(),
+    currentPeriodEnd: timestamp("current_period_end", {
+      withTimezone: true,
+    }).notNull(),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end")
+      .notNull()
+      .default(false),
+    trialEnd: timestamp("trial_end", { withTimezone: true }),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    workspaceIdx: index("subscriptions_workspace_idx").on(t.workspaceId),
+    // Lookups by Khalti/Stripe id from the webhook handler.
+    providerSubIdx: index("subscriptions_provider_sub_idx").on(
+      t.providerSubscriptionId,
+    ),
+    // Powers the renewal-due cron (find subs whose period ends soon).
+    statusExpiryIdx: index("subscriptions_status_expiry_idx").on(
+      t.status,
+      t.currentPeriodEnd,
+    ),
+    // Partial unique "one live sub per workspace" is added in 0024 SQL
+    // because Drizzle's uniqueIndex doesn't express the predicate.
+  }),
+);
+
+// Append-only ledger of every payment-provider event we ingest. Idempotency
+// key is (provider, provider_event_id); replaying a webhook is a no-op once
+// processed_at is set. Forensics live here too.
+export const billingEvents = pgTable(
+  "billing_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Both nullable while we resolve the inbound webhook to a workspace.
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
+    subscriptionId: uuid("subscription_id").references(
+      () => subscriptions.id,
+      { onDelete: "set null" },
+    ),
+    provider: billingProviderEnum("provider").notNull(),
+    // payment.succeeded | payment.failed | refund | initiated | renewed | …
+    eventType: text("event_type").notNull(),
+    // For Khalti KPG-2 this is the `pidx`; for Stripe, the event id.
+    providerEventId: text("provider_event_id").notNull(),
+    payload: jsonb("payload").notNull(),
+    signature: text("signature"),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    processingError: text("processing_error"),
+  },
+  (t) => ({
+    providerEventUq: uniqueIndex("billing_events_provider_event_uq").on(
+      t.provider,
+      t.providerEventId,
+    ),
+    workspaceReceivedIdx: index("billing_events_workspace_received_idx").on(
+      t.workspaceId,
+      t.receivedAt,
+    ),
+    typeIdx: index("billing_events_type_idx").on(t.eventType),
+  }),
+);
+
+// Append-only event log. usage_counters is the rollup; this is the truth.
+// Refunds insert negative-delta rows so counters can decrement.
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // One of UsageMetric from @marketing/shared-types/billing.
+    metric: text("metric").notNull(),
+    delta: bigint("delta", { mode: "number" }).notNull(),
+    // What was the subject of this charge? E.g. workflow_run id, content_id,
+    // llm_usage row id. Free-form because the metric→subject mapping evolves.
+    subjectType: text("subject_type"),
+    subjectId: text("subject_id"),
+    // Set to true when the event records a blocked attempt (delta = 0). Lets
+    // dashboards show "quota-blocked X times this month" without scanning.
+    blocked: boolean("blocked").notNull().default(false),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    workspaceOccurredIdx: index("usage_events_workspace_occurred_idx").on(
+      t.workspaceId,
+      t.occurredAt,
+    ),
+    metricOccurredIdx: index("usage_events_metric_occurred_idx").on(
+      t.metric,
+      t.occurredAt,
+    ),
+    subjectIdx: index("usage_events_subject_idx").on(
+      t.subjectType,
+      t.subjectId,
+    ),
+  }),
+);
+
+// Hot-path rollup. Read on every entitlement check; updated atomically in
+// the same transaction as the usage_events insert. (workspace, period, metric)
+// is unique; conflicts upsert by adding the delta.
+export const usageCounters = pgTable(
+  "usage_counters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // UTC month start for the canonical monthly window. Future daily caps
+    // would use a separate table or a (period_kind, period_start) composite.
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    metric: text("metric").notNull(),
+    value: bigint("value", { mode: "number" }).notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    workspacePeriodMetricUq: uniqueIndex(
+      "usage_counters_workspace_period_metric_uq",
+    ).on(t.workspaceId, t.periodStart, t.metric),
+    metricPeriodIdx: index("usage_counters_metric_period_idx").on(
+      t.workspaceId,
+      t.metric,
+      t.periodStart,
+    ),
+  }),
+);
+
+// Internal operator allowlist for the /super/* console. Separate from
+// workspace_members because cross-tenant access is a different authority.
+// `AUTH_ALLOWLIST` env stays in place for private-beta signup gating in PR 2
+// and is decommissioned for authorization once this table is populated.
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    userId: uuid("user_id").primaryKey(),
+    role: adminRoleEnum("role").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
@@ -930,6 +1324,9 @@ export const kbCollections = pgTable(
   "kb_collections",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     kind: kbCollectionKindEnum("kind").notNull(),
@@ -949,6 +1346,7 @@ export const kbCollections = pgTable(
     slugUq: uniqueIndex("kb_collections_slug_uq").on(t.slug),
     kindIdx: index("kb_collections_kind_idx").on(t.kind),
     campaignIdx: index("kb_collections_campaign_idx").on(t.campaignId),
+    workspaceIdx: index("kb_collections_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -956,6 +1354,9 @@ export const kbDocuments = pgTable(
   "kb_documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     collectionId: uuid("collection_id")
       .notNull()
       .references(() => kbCollections.id, { onDelete: "cascade" }),
@@ -983,6 +1384,7 @@ export const kbDocuments = pgTable(
     statusIdx: index("kb_documents_status_idx").on(t.status),
     collectionIdx: index("kb_documents_collection_idx").on(t.collectionId),
     updatedAtIdx: index("kb_documents_updated_at_idx").on(t.updatedAt),
+    workspaceIdx: index("kb_documents_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -990,6 +1392,9 @@ export const kbChunks = pgTable(
   "kb_chunks",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     documentId: uuid("document_id")
       .notNull()
       .references(() => kbDocuments.id, { onDelete: "cascade" }),
@@ -1004,6 +1409,7 @@ export const kbChunks = pgTable(
   (t) => ({
     docIdxUq: uniqueIndex("kb_chunks_doc_idx_uq").on(t.documentId, t.chunkIndex),
     documentIdx: index("kb_chunks_document_idx").on(t.documentId),
+    workspaceIdx: index("kb_chunks_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -1018,6 +1424,9 @@ export const goalEvents = pgTable(
   "goal_events",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -1031,6 +1440,7 @@ export const goalEvents = pgTable(
     campaignIdx: index("goal_events_campaign_idx").on(t.campaignId),
     kindIdx: index("goal_events_kind_idx").on(t.kind),
     tsIdx: index("goal_events_ts_idx").on(t.ts),
+    workspaceIdx: index("goal_events_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -1043,6 +1453,9 @@ export const experiments = pgTable(
   "experiments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -1073,6 +1486,7 @@ export const experiments = pgTable(
     variantGroupUq: uniqueIndex("experiments_variant_group_uq").on(t.variantGroup),
     campaignIdx: index("experiments_campaign_idx").on(t.campaignId),
     statusIdx: index("experiments_status_idx").on(t.status),
+    workspaceIdx: index("experiments_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -1086,6 +1500,9 @@ export const lifecycleSequences = pgTable(
   "lifecycle_sequences",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -1103,6 +1520,7 @@ export const lifecycleSequences = pgTable(
   (t) => ({
     campaignIdx: index("lifecycle_sequences_campaign_idx").on(t.campaignId),
     statusIdx: index("lifecycle_sequences_status_idx").on(t.status),
+    workspaceIdx: index("lifecycle_sequences_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -1110,6 +1528,9 @@ export const lifecycleSteps = pgTable(
   "lifecycle_steps",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
     sequenceId: uuid("sequence_id")
       .notNull()
       .references(() => lifecycleSequences.id, { onDelete: "cascade" }),
@@ -1129,6 +1550,7 @@ export const lifecycleSteps = pgTable(
       t.stepIndex,
     ),
     contentIdx: index("lifecycle_steps_content_idx").on(t.contentId),
+    workspaceIdx: index("lifecycle_steps_workspace_idx").on(t.workspaceId),
   }),
 );
 
@@ -1178,6 +1600,22 @@ export type LifecycleSequence = typeof lifecycleSequences.$inferSelect;
 export type NewLifecycleSequence = typeof lifecycleSequences.$inferInsert;
 export type LifecycleStep = typeof lifecycleSteps.$inferSelect;
 export type NewLifecycleStep = typeof lifecycleSteps.$inferInsert;
+export type Workspace = typeof workspaces.$inferSelect;
+export type NewWorkspace = typeof workspaces.$inferInsert;
+export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
+export type NewWorkspaceMember = typeof workspaceMembers.$inferInsert;
+export type Plan = typeof plans.$inferSelect;
+export type NewPlan = typeof plans.$inferInsert;
+export type Subscription = typeof subscriptions.$inferSelect;
+export type NewSubscription = typeof subscriptions.$inferInsert;
+export type BillingEvent = typeof billingEvents.$inferSelect;
+export type NewBillingEvent = typeof billingEvents.$inferInsert;
+export type UsageEvent = typeof usageEvents.$inferSelect;
+export type NewUsageEvent = typeof usageEvents.$inferInsert;
+export type UsageCounter = typeof usageCounters.$inferSelect;
+export type NewUsageCounter = typeof usageCounters.$inferInsert;
+export type AdminUser = typeof adminUsers.$inferSelect;
+export type NewAdminUser = typeof adminUsers.$inferInsert;
 
 // Re-export enum type unions so callers don't need a second import.
 export {
