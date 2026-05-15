@@ -16,7 +16,10 @@ import { ensureCollection, upsertDocument, chunkAndEmbed } from "@marketing/agen
 import { getLanguageModel } from "@marketing/agents/llm-registry";
 import { recordLlmUsage } from "@marketing/agents/usage";
 import { aggregateLearningSignal, type LearningSummary } from "@/lib/learning/aggregate";
-import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
+// Deep-import: the billing index re-exports workspace-context → supabase →
+// @marketing/db, which pulls `postgres` into the workflow bundle and trips
+// node-js-module-in-workflow. scoped-db has no node-only deps.
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing/scoped-db";
 
 export type LearningSynthesisInput = {
   windowDays?: number;

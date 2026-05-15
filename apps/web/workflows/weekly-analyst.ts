@@ -1,7 +1,10 @@
 import { runAnalyst } from "@marketing/agents/sub-agents/analyst";
 import { CpClient } from "@marketing/cp-client";
 import { resolveSubAgentModel } from "@/lib/workflow-engines";
-import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
+// Deep-import: the billing index re-exports workspace-context → supabase →
+// @marketing/db, which pulls `postgres` into the workflow bundle and trips
+// node-js-module-in-workflow. scoped-db has no node-only deps.
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing/scoped-db";
 
 // Phase 3 mirror of apps/manager/src/cron.ts. Triggered by Vercel Cron at
 // 03:15 UTC every Monday (= 09:00 Asia/Kathmandu). Runs runAnalyst and
