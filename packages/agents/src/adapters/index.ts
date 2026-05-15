@@ -3,6 +3,8 @@ import type { CpClient } from "@marketing/cp-client";
 import { InternalBlogAdapter } from "./internal-blog";
 import { LinkedInAdapter } from "./linkedin";
 import { XAdapter } from "./x";
+import { InstagramAdapter } from "./instagram";
+import { FacebookAdapter } from "./facebook";
 import { HubspotEmailAdapter } from "./hubspot-email";
 import { MailchimpAdapter } from "./mailchimp";
 
@@ -10,6 +12,8 @@ export {
   InternalBlogAdapter,
   LinkedInAdapter,
   XAdapter,
+  InstagramAdapter,
+  FacebookAdapter,
   HubspotEmailAdapter,
   MailchimpAdapter,
 };
@@ -31,6 +35,14 @@ export function buildAdapters(
 
   if (process.env.X_ACCESS_TOKEN) {
     adapters.x = new XAdapter();
+  }
+
+  if (process.env.META_PAGE_ACCESS_TOKEN && process.env.IG_BUSINESS_ACCOUNT_ID) {
+    adapters.instagram = new InstagramAdapter();
+  }
+
+  if (process.env.META_PAGE_ACCESS_TOKEN && process.env.FB_PAGE_ID) {
+    adapters.facebook = new FacebookAdapter();
   }
 
   if (process.env.HUBSPOT_ACCESS_TOKEN) {

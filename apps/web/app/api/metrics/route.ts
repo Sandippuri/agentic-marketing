@@ -15,6 +15,7 @@ import { getDb, schema } from "@marketing/db";
 import { CHANNELS, SCOPE_TYPES } from "@marketing/shared-types";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 // Single metric entry
 const MetricEntry = z.object({
@@ -25,6 +26,7 @@ const MetricEntry = z.object({
 });
 
 const PostMetrics = z.object({
+  workspaceId: z.string().uuid().optional(),
   scopeType: z.enum(SCOPE_TYPES),
   scopeId: z.string().uuid(),
   metrics: z.array(MetricEntry).min(1).max(100),
@@ -38,7 +40,30 @@ export async function POST(request: Request) {
     const input = await parseJson(request, PostMetrics);
     const db = getDb();
 
+    // Resolve workspaceId from the scoped row when the caller doesn't supply
+    // one — keeps internal cron callers (which only have a scope id) working.
+    let workspaceId = input.workspaceId ?? null;
+    if (!workspaceId) {
+      if (input.scopeType === "content") {
+        const [row] = await db
+          .select({ workspaceId: schema.contentItems.workspaceId })
+          .from(schema.contentItems)
+          .where(eq(schema.contentItems.id, input.scopeId))
+          .limit(1);
+        workspaceId = row?.workspaceId ?? null;
+      } else if (input.scopeType === "campaign") {
+        const [row] = await db
+          .select({ workspaceId: schema.campaigns.workspaceId })
+          .from(schema.campaigns)
+          .where(eq(schema.campaigns.id, input.scopeId))
+          .limit(1);
+        workspaceId = row?.workspaceId ?? null;
+      }
+    }
+    const ws = workspaceId ?? LEGACY_WORKSPACE_ID;
+
     const rows = input.metrics.map((m) => ({
+      workspaceId: ws,
       scopeType: input.scopeType,
       scopeId: input.scopeId,
       channel: m.channel ?? null,

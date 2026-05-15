@@ -33,6 +33,8 @@ const log = pino({ name: "orchestrator" });
 export type OrchestratorInput = {
   text: string;
   userId: string;
+  /** Workspace scope; mandatory from PR 4. Resolved by the calling route. */
+  workspaceId: string;
   threadRef: ThreadRef;
   history: Array<{ role: string; content: string }>;
   cp: CpClient;
@@ -50,6 +52,7 @@ export function runOrchestrator(input: OrchestratorInput): Promise<string> {
 async function buildOrchestratorCall({
   text,
   userId,
+  workspaceId,
   threadRef,
   history,
   cp,
@@ -75,7 +78,13 @@ async function buildOrchestratorCall({
     "orchestrator start",
   );
 
-  type StepName = "strategist" | "content" | "asset" | "analyst" | "distributor";
+  type StepName =
+    | "strategist"
+    | "content"
+    | "asset"
+    | "analyst"
+    | "distributor"
+    | "researcher";
   const recordStep = async <T>(
     name: StepName,
     input: Record<string, unknown>,
@@ -99,7 +108,7 @@ async function buildOrchestratorCall({
   // Knowledge-base tools (read-only subset) — give the chat direct semantic
   // access to brand/persona/competitor/SOP/playbook docs without needing to
   // spin up the researcher sub-agent.
-  const kbTools = buildKbTools({ actorId: userId });
+  const kbTools = buildKbTools({ workspaceId, actorId: userId });
   const { kb_search, kb_read_document, kb_list } = kbTools;
 
   return {
@@ -191,6 +200,7 @@ async function buildOrchestratorCall({
             tags,
             scope: scope ?? "team",
             userId,
+            workspaceId,
           });
         },
       }),
@@ -216,21 +226,24 @@ async function buildOrchestratorCall({
             ),
         }),
         execute: async ({ request, campaignId }) => {
-          return withSpan(
-            "sub-agent.researcher",
-            { campaignId: campaignId ?? "" },
-            () => {
-              log.info({ campaignId }, "invoking researcher sub-agent");
-              return runResearcher({
-                request,
-                campaignId,
-                cp,
-                model: modelFor("researcher"),
-                threadRef,
-                jobId: tracker?.getJobId() ?? null,
-                searchProvider: researchProvider,
-              });
-            },
+          return recordStep("researcher", { request, campaignId }, () =>
+            withSpan(
+              "sub-agent.researcher",
+              { campaignId: campaignId ?? "" },
+              () => {
+                log.info({ campaignId }, "invoking researcher sub-agent");
+                return runResearcher({
+                  request,
+                  workspaceId,
+                  campaignId,
+                  cp,
+                  model: modelFor("researcher"),
+                  threadRef,
+                  jobId: tracker?.getJobId() ?? null,
+                  searchProvider: researchProvider,
+                });
+              },
+            ),
           );
         },
       }),
@@ -248,6 +261,7 @@ async function buildOrchestratorCall({
               log.info({ campaignId }, "invoking strategist");
               return runStrategist({
                 request,
+                workspaceId,
                 campaignId,
                 cp,
                 model: modelFor("strategist"),
@@ -285,6 +299,7 @@ async function buildOrchestratorCall({
                   }
                   return runContent({
                     request,
+                    workspaceId,
                     campaignId,
                     contentId,
                     cp,
@@ -320,6 +335,7 @@ async function buildOrchestratorCall({
               if (tracker && contentId) await tracker.link({ contentId });
               return runAsset({
                 request,
+                workspaceId,
                 contentId,
                 cp,
                 model: modelFor("asset"),
@@ -344,6 +360,7 @@ async function buildOrchestratorCall({
               log.info({ campaignId }, "invoking analyst sub-agent");
               return runAnalyst({
                 request,
+                workspaceId,
                 campaignId,
                 cp,
                 model: modelFor("analyst"),
@@ -411,6 +428,7 @@ async function _runOrchestrator(input: OrchestratorInput): Promise<string> {
   log.info({ steps: steps.length }, "orchestrator finished");
   await recordLlmUsage({
     agent: "orchestrator",
+    workspaceId: input.workspaceId,
     model: resolvedModel,
     threadRef: input.threadRef,
     jobId: input.tracker?.getJobId() ?? null,
@@ -472,6 +490,7 @@ async function _streamOrchestrator(
   log.info({ steps: steps.length }, "orchestrator stream finished");
   await recordLlmUsage({
     agent: "orchestrator",
+    workspaceId: input.workspaceId,
     model: resolvedModel,
     threadRef: input.threadRef,
     jobId: input.tracker?.getJobId() ?? null,
@@ -508,6 +527,7 @@ async function persistChatInsight(opts: {
   tags?: string[];
   scope: "team" | "personal";
   userId: string;
+  workspaceId: string;
 }): Promise<{ documentId: string; status: string; warning?: string }> {
   if (!process.env.OPENAI_API_KEY) {
     log.warn(
@@ -521,6 +541,7 @@ async function persistChatInsight(opts: {
     };
   }
   const collectionId = await ensureCollection({
+    workspaceId: opts.workspaceId,
     slug: CHAT_INSIGHTS_COLLECTION.slug,
     name: CHAT_INSIGHTS_COLLECTION.name,
     kind: CHAT_INSIGHTS_COLLECTION.kind,
@@ -530,6 +551,7 @@ async function persistChatInsight(opts: {
   const persistedSlug =
     opts.scope === "personal" ? `${opts.slug}-u-${shortUserHash(opts.userId)}` : opts.slug;
   const doc = await upsertDocument({
+    workspaceId: opts.workspaceId,
     collectionId,
     slug: persistedSlug,
     title: opts.title,

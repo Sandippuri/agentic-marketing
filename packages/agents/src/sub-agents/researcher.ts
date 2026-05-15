@@ -18,11 +18,15 @@ import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 import { buildKbTools } from "../tools/kb-tools";
 import { buildWebSearchTool } from "../tools/web-search";
+import { buildXProfileTool } from "../tools/x-profile";
+import { buildKbArchiveImageTool } from "../tools/kb-archive-image";
 
 const log = pino({ name: "researcher" });
 
 export type ResearcherInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   campaignId?: string;
   cp: CpClient;
   model?: LlmModel;
@@ -38,6 +42,7 @@ export type ResearcherInput = {
 
 export async function runResearcher({
   request,
+  workspaceId,
   campaignId,
   model,
   threadRef,
@@ -45,19 +50,23 @@ export async function runResearcher({
   workflowRunId,
   searchProvider,
 }: ResearcherInput): Promise<string> {
-  const kbTools = buildKbTools({ campaignId });
+  const kbTools = buildKbTools({ workspaceId, campaignId });
   const webSearch = buildWebSearchTool({
     provider: searchProvider ?? DEFAULT_RESEARCH_SEARCH_PROVIDER,
   });
+  const xProfile = buildXProfileTool();
+  const kbArchiveImage = buildKbArchiveImageTool();
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
     system: RESEARCHER_PROMPT,
     prompt: request,
-    maxSteps: 8,
+    maxSteps: 12,
     tools: {
       ...kbTools,
       ...webSearch,
+      ...xProfile,
+      ...kbArchiveImage,
       web_fetch: tool({
         description:
           "Fetch a public URL and return its readable text (truncated to ~10k chars). Use sparingly — prefer kb_search for things we already know. Returns {status, contentType, text, url}.",
@@ -86,6 +95,7 @@ export async function runResearcher({
 
   await recordLlmUsage({
     agent: "researcher",
+    workspaceId,
     model,
     threadRef: threadRef ?? undefined,
     jobId: jobId ?? null,

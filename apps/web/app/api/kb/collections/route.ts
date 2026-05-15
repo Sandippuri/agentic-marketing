@@ -10,6 +10,7 @@ import {
 } from "@marketing/agents/kb";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -54,8 +55,10 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const input = await parseJson(request, UpsertCollection);
     const row = await upsertCollection({
+      workspaceId,
       slug: input.slug,
       name: input.name,
       kind: input.kind,

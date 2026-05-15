@@ -17,6 +17,8 @@ const MEMORY_ROOT = import.meta.dirname ? resolve(import.meta.dirname, "..", "..
 
 export type AnalystInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   campaignId?: string;
   cp: CpClient;
   model?: LlmModel;
@@ -25,7 +27,7 @@ export type AnalystInput = {
   workflowRunId?: string | null;
 };
 
-export async function runAnalyst({ request, campaignId, cp, model, threadRef, jobId, workflowRunId }: AnalystInput): Promise<string> {
+export async function runAnalyst({ request, workspaceId, campaignId, cp, model, threadRef, jobId, workflowRunId }: AnalystInput): Promise<string> {
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
     system: ANALYST_PROMPT,
@@ -151,6 +153,7 @@ export async function runAnalyst({ request, campaignId, cp, model, threadRef, jo
   log.info({ steps: steps.length }, "analyst finished");
   await recordLlmUsage({
     agent: "analyst",
+    workspaceId,
     model,
     threadRef,
     jobId,

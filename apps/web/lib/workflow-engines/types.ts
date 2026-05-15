@@ -9,6 +9,8 @@ export type WorkflowKind = "campaign" | "single_post" | "asset";
 
 export type StartInput = {
   kind: WorkflowKind;
+  /** Workspace this run executes against. PR 4: mandatory; resolved by dispatcher. */
+  workspaceId: string;
   request: string;
   campaignId?: string;
   contentId?: string;

@@ -122,7 +122,16 @@ export class CpClient {
   }) {
     return this.req<CampaignDto>("POST", "/api/campaigns", input);
   }
-  patchCampaign(id: string, input: Partial<{ name: string; phase: CampaignPhase; briefMd: string; calendarJson: unknown }>) {
+  patchCampaign(
+    id: string,
+    input: Partial<{
+      name: string;
+      phase: CampaignPhase;
+      briefMd: string;
+      calendarJson: unknown;
+      visualIdentity: unknown;
+    }>,
+  ) {
     return this.req<CampaignDto>("PATCH", `/api/campaigns/${id}`, input);
   }
 
@@ -155,6 +164,7 @@ export class CpClient {
     stage?: ContentStage;
     title: string;
     bodyMd: string;
+    imageBrief?: unknown;
   }) {
     return this.req<ContentItemDto>("POST", "/api/content", input);
   }
@@ -305,7 +315,7 @@ export class CpClient {
     threadRef?: string;
     userId?: string;
     userMessage: string;
-    kind?: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "other";
+    kind?: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "research" | "other";
   }) {
     return this.req<{ id: string }>("POST", "/api/generation-jobs", input);
   }
@@ -313,8 +323,8 @@ export class CpClient {
     id: string,
     input: Partial<{
       status: "running" | "completed" | "failed";
-      kind: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "other";
-      currentStep: "strategist" | "content" | "asset" | "analyst" | "distributor" | null;
+      kind: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "research" | "other";
+      currentStep: "strategist" | "content" | "asset" | "analyst" | "distributor" | "researcher" | null;
       campaignId: string | null;
       contentId: string | null;
       error: string | null;
@@ -326,7 +336,7 @@ export class CpClient {
   startGenerationStep(
     jobId: string,
     input: {
-      name: "strategist" | "content" | "asset" | "analyst" | "distributor";
+      name: "strategist" | "content" | "asset" | "analyst" | "distributor" | "researcher";
       input?: unknown;
     },
   ) {

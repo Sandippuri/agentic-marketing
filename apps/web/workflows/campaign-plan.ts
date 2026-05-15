@@ -14,6 +14,8 @@ import { finishRun } from "@/lib/workflow-engines/runs";
 
 export type CampaignPlanInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. Threaded via dispatchStart. */
+  workspaceId: string;
   campaignId?: string;
   userId?: string;
   threadRef?: string;
@@ -70,6 +72,7 @@ async function runStrategistStep(input: CampaignPlanInput): Promise<{
 
   const summary = await runStrategist({
     request: input.request,
+    workspaceId: input.workspaceId,
     campaignId: input.campaignId,
     cp,
     model: await resolveSubAgentModel("strategist", input.model),

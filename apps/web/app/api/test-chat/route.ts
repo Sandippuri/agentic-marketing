@@ -2,6 +2,7 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { errorResponse, parseJson } from "@/lib/http";
 import { getRequestActor } from "@/lib/auth";
+import { getWorkspaceContext } from "@/lib/billing";
 import type { ThreadRef } from "@marketing/shared-types";
 
 // Test-chat HTTP entrypoint. Phase 4 cutover: the legacy proxy to apps/manager
@@ -18,6 +19,7 @@ const Send = z.object({
 export async function POST(request: Request) {
   try {
     const actor = await getRequestActor();
+    const ctx = await getWorkspaceContext();
     const input = await parseJson(request, Send);
     const userId = actor.id ?? "admin";
 
@@ -32,6 +34,7 @@ export async function POST(request: Request) {
         sessionId: input.sessionId,
         model: input.model,
         userId,
+        workspaceId: ctx.workspaceId,
         campaignId: input.campaignId,
       });
     }
@@ -42,6 +45,7 @@ export async function POST(request: Request) {
       sessionId: input.sessionId,
       model: input.model,
       userId,
+      workspaceId: ctx.workspaceId,
       campaignId: input.campaignId,
     });
   } catch (err) {
@@ -55,6 +59,7 @@ async function handleInProcess(input: {
   sessionId?: string;
   model?: string;
   userId: string;
+  workspaceId: string;
   campaignId?: string;
 }): Promise<Response> {
   const { handleChat } = await import("@/lib/chat/chat-handler");
@@ -73,6 +78,7 @@ async function handleInProcess(input: {
   const reply = await handleChat({
     text: input.text,
     userId: input.userId,
+    workspaceId: input.workspaceId,
     threadRef,
     cp,
     model: input.model,
@@ -87,6 +93,7 @@ async function handleInProcessStream(input: {
   sessionId?: string;
   model?: string;
   userId: string;
+  workspaceId: string;
   campaignId?: string;
 }): Promise<Response> {
   const { handleChatStream } = await import("@/lib/chat/chat-handler");
@@ -129,6 +136,7 @@ async function handleInProcessStream(input: {
       void handleChatStream({
         text: input.text,
         userId: input.userId,
+        workspaceId: input.workspaceId,
         threadRef,
         cp,
         model: input.model,

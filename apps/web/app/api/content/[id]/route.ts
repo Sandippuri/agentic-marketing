@@ -68,6 +68,7 @@ export async function PATCH(
           .returning();
         if (input.bodyMd !== undefined) {
           await db.insert(schema.contentRevisions).values({
+            workspaceId: before.workspaceId,
             contentId: id,
             bodyMd: input.bodyMd,
             changeNote: input.changeNote ?? null,
@@ -91,9 +92,16 @@ export async function PATCH(
             .where(eq(schema.assets.contentId, id))
             .limit(1);
           if (!existing) {
+            // Capture workspace_id BEFORE the after() callback runs, since
+            // the request-bound context disappears once the response is sent.
+            const wsId = before.workspaceId;
             after(async () => {
               try {
-                await generateAssetVariants({ contentId: id });
+                if (!wsId) throw new Error("content row missing workspace_id");
+                await generateAssetVariants({
+                  contentId: id,
+                  workspaceId: wsId,
+                });
               } catch (err) {
                 console.warn(
                   `[content.update] background asset generation failed for ${id}`,

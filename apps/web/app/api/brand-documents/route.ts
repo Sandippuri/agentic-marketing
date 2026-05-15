@@ -7,6 +7,7 @@ import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse } from "@/lib/http";
 import { brandDocStoragePath, uploadBrandDoc } from "@/lib/supabase/storage";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,7 @@ const MimeType = z.enum(BRAND_DOC_MIME_TYPES);
 export async function POST(request: Request) {
   try {
     const actor = await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const db = getDb();
 
     const form = await request.formData();
@@ -74,6 +76,7 @@ export async function POST(request: Request) {
           const [row] = await db
             .insert(schema.brandDocuments)
             .values({
+              workspaceId,
               filename,
               mimeType,
               sizeBytes: file.size,

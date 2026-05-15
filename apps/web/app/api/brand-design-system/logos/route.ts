@@ -9,6 +9,7 @@ import {
 import { getRequestActor } from "@/lib/auth";
 import { withAudit } from "@/lib/audit";
 import { errorResponse, parseJson } from "@/lib/http";
+import { getWorkspaceContext } from "@/lib/billing";
 import {
   uploadAsset,
   deleteAsset,
@@ -108,6 +109,7 @@ async function signLogos(
 export async function PUT(request: Request) {
   try {
     const actor = await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const input = await parseJson(request, PutBody);
     const db = getDb();
 
@@ -135,6 +137,7 @@ export async function PUT(request: Request) {
         const [row] = await db
           .insert(schema.brandDesignSystem)
           .values({
+            workspaceId,
             slug: SLUG,
             colors: EMPTY_DESIGN_SYSTEM.colors,
             typography: EMPTY_DESIGN_SYSTEM.typography,

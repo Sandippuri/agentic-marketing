@@ -45,7 +45,7 @@ export async function POST(
           .returning();
         await db
           .insert(schema.approvals)
-          .values({ contentId: id });
+          .values({ workspaceId: before.workspaceId, contentId: id });
         return updated!;
       },
     );
@@ -55,9 +55,11 @@ export async function POST(
     // re-trigger generation. On Vercel, after() defers to waitUntil so the
     // work survives the response returning.
     if (result.needsImages !== false) {
+      const wsId = result.workspaceId;
       after(async () => {
         try {
-          await generateAssetVariants({ contentId: id });
+          if (!wsId) throw new Error("content row missing workspace_id");
+          await generateAssetVariants({ contentId: id, workspaceId: wsId });
         } catch (err) {
           console.warn(
             `[content.submit] background asset generation failed for ${id}`,

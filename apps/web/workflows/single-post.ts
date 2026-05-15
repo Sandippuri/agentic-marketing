@@ -1,7 +1,7 @@
 import { defineHook, sleep } from "workflow";
 import { z } from "zod";
 import { generateText } from "ai";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { getLanguageModel } from "@marketing/agents/llm-registry";
 import { recordLlmUsage } from "@marketing/agents/usage";
@@ -36,6 +36,8 @@ const CHANNEL_TO_CONTENT_TYPE: Record<Channel, "blog" | "linkedin" | "x_post" | 
 
 export type SinglePostInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   channel: Channel;
   campaignId?: string;
   userId?: string;
@@ -45,6 +47,11 @@ export type SinglePostInput = {
   // workflow updates the matching workflow_runs row at terminal states so
   // the dashboard reflects completion without polling Vercel.
   workflowRunId?: string;
+  // Resume path: when set, the workflow skips draftStep + asset generation
+  // and enters the loop in revise mode against the existing content row.
+  // Used by the redraft button and by retry-on-max_revisions to continue
+  // revising instead of orphaning the prior draft and starting fresh.
+  contentId?: string;
 };
 
 export type SinglePostOutput = {
@@ -55,10 +62,21 @@ export type SinglePostOutput = {
     | "changes_requested"
     | "rejected"
     | "timeout"
-    | "max_revisions";
+    | "max_revisions"
+    | "budget_exceeded";
   externalUrl?: string;
   revisionCount?: number;
 };
+
+// Per-run USD ceiling. Above this we stop auto-revising even if iter count
+// is under MAX_REVISIONS — protects against a model that decides to rewrite
+// the whole post each round on a long input. Unset (0/NaN) disables.
+function runBudgetUsd(): number {
+  const raw = process.env.SINGLE_POST_RUN_BUDGET_USD;
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
 
 // Cap revisions so a chatty reviewer can't burn budget indefinitely. Three
 // passes covers the typical "tone tweak → tighter hook → final polish" arc;
@@ -81,8 +99,23 @@ export async function singlePostWorkflow(
   let approvalId: string | undefined;
   let lastReason: string | null = null;
 
+  // Resume path. When the caller passes contentId (redraft button or a
+  // retry of a max_revisions cancelled run), prime the loop so iter 1 lands
+  // straight in reviseAndResubmitStep against the existing content row.
+  // lastReason is pulled from the most recent decided changes_requested
+  // approval so the model has the reviewer's feedback in context.
+  const resume = !!input.contentId;
+  if (resume) {
+    const primed = await resumeFromContentStep({
+      contentId: input.contentId!,
+      workflowRunId: input.workflowRunId,
+    });
+    contentId = primed.contentId;
+    lastReason = primed.lastReason;
+  }
+
   try {
-    for (let iter = 0; iter <= MAX_REVISIONS; iter++) {
+    for (let iter = resume ? 1 : 0; iter <= MAX_REVISIONS; iter++) {
       if (iter === 0) {
         // Draft first, *then* generate assets, *then* expose to the approvals
         // queue. Doing all three in a single submit-then-generate step left a
@@ -100,16 +133,41 @@ export async function singlePostWorkflow(
         // Best-effort: a misconfigured Replicate/Supabase still lets the
         // approval proceed without imagery.
         await assetPipelineWorkflow({
+          workspaceId: input.workspaceId,
           contentId,
           request: input.request,
         });
         await kickVideoVariantStep({ contentId });
         approvalId = await submitForApprovalStep({
+          workspaceId: input.workspaceId,
           contentId,
           campaignId: draft.campaignId,
           workflowRunId: input.workflowRunId,
         });
       } else {
+        // Budget guard: stop auto-revising once the run's LLM spend has
+        // crossed the per-run USD ceiling. Without this, a reviewer who
+        // asks for full rewrites three times can quietly burn the budget.
+        const cap = runBudgetUsd();
+        if (cap > 0) {
+          const spent = await runSpendUsdStep({
+            workflowRunId: input.workflowRunId,
+          });
+          if (spent >= cap) {
+            await finishWorkflowRunStep({
+              workflowRunId: input.workflowRunId,
+              status: "cancelled",
+              contentId,
+              error: `revision budget exceeded ($${spent.toFixed(2)} / $${cap.toFixed(2)})`,
+            });
+            return {
+              contentId: contentId!,
+              approvalId: approvalId!,
+              status: "budget_exceeded",
+              revisionCount: iter,
+            };
+          }
+        }
         // Reviewer asked for image changes — regenerate assets before the
         // text revision so the new approval row surfaces fresh imagery from
         // the moment it appears in the queue. Demote prior approved assets
@@ -118,6 +176,7 @@ export async function singlePostWorkflow(
         if (lastReason && IMAGE_FEEDBACK_RE.test(lastReason)) {
           await demotePriorAssetsStep({ contentId: contentId! });
           await assetPipelineWorkflow({
+            workspaceId: input.workspaceId,
             contentId: contentId!,
             request: `${input.request} — reviewer image feedback: ${lastReason}`,
           });
@@ -146,6 +205,7 @@ export async function singlePostWorkflow(
         let externalUrl: string;
         if (process.env.WORKFLOW_PUBLISH === "1") {
           const r = await runPublishStep({
+            workspaceId: input.workspaceId,
             contentId: contentId!,
             channel: input.channel,
             threadRef: input.threadRef,
@@ -255,10 +315,17 @@ async function draftStep(
   let campaignId = input.campaignId;
   if (!campaignId) {
     const slug = "workflow-test";
+    // Slug uniqueness is per-workspace as of migration 0027 — scope the lookup
+    // by workspace too or two tenants' "workflow-test" rows would collide.
     const [existing] = await db
       .select()
       .from(schema.campaigns)
-      .where(eq(schema.campaigns.slug, slug))
+      .where(
+        and(
+          eq(schema.campaigns.workspaceId, input.workspaceId),
+          eq(schema.campaigns.slug, slug),
+        ),
+      )
       .limit(1);
     if (existing) {
       campaignId = existing.id;
@@ -266,6 +333,7 @@ async function draftStep(
       const [created] = await db
         .insert(schema.campaigns)
         .values({
+          workspaceId: input.workspaceId,
           slug,
           name: "Workflow Test (Phase 1)",
           status: "active",
@@ -290,6 +358,7 @@ async function draftStep(
 
   await recordLlmUsage({
     agent: "single-post",
+    workspaceId: input.workspaceId,
     model: input.model,
     threadRef: input.threadRef ?? null,
     workflowRunId: input.workflowRunId ?? null,
@@ -306,6 +375,7 @@ async function draftStep(
   const [content] = await db
     .insert(schema.contentItems)
     .values({
+      workspaceId: input.workspaceId,
       campaignId,
       type: contentType,
       stage: "explain",
@@ -335,6 +405,7 @@ async function draftStep(
 }
 
 async function submitForApprovalStep(payload: {
+  workspaceId: string;
   contentId: string;
   campaignId: string;
   workflowRunId?: string;
@@ -349,10 +420,69 @@ async function submitForApprovalStep(payload: {
 
   const [approval] = await db
     .insert(schema.approvals)
-    .values({ contentId: payload.contentId })
+    .values({
+      workspaceId: payload.workspaceId,
+      contentId: payload.contentId,
+    })
     .returning({ id: schema.approvals.id });
 
   return approval!.id;
+}
+
+// Resume-path priming. Looks up the existing content row to make sure the
+// caller isn't asking us to revise something that doesn't exist or already
+// shipped, then pulls the latest changes_requested reason so the first
+// revision pass has reviewer feedback in context. Also links the
+// workflow_runs row to the existing content/campaign so the dashboard
+// joins through correctly while the run is in flight.
+async function resumeFromContentStep(payload: {
+  contentId: string;
+  workflowRunId?: string;
+}): Promise<{ contentId: string; lastReason: string | null }> {
+  "use step";
+  const db = getDb();
+
+  const [content] = await db
+    .select()
+    .from(schema.contentItems)
+    .where(eq(schema.contentItems.id, payload.contentId))
+    .limit(1);
+  if (!content) {
+    throw new Error(`resume: content not found: ${payload.contentId}`);
+  }
+  if (content.status === "published" || content.status === "retracted") {
+    throw new Error(
+      `resume: content ${payload.contentId} is in terminal state ${content.status}`,
+    );
+  }
+
+  const [latestChangesRequested] = await db
+    .select({ reason: schema.approvals.reason })
+    .from(schema.approvals)
+    .where(
+      and(
+        eq(schema.approvals.contentId, payload.contentId),
+        eq(schema.approvals.decision, "changes_requested"),
+      ),
+    )
+    .orderBy(desc(schema.approvals.decidedAt))
+    .limit(1);
+
+  if (payload.workflowRunId) {
+    await db
+      .update(schema.workflowRuns)
+      .set({
+        contentId: content.id,
+        campaignId: content.campaignId,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.workflowRuns.id, payload.workflowRunId));
+  }
+
+  return {
+    contentId: content.id,
+    lastReason: latestChangesRequested?.reason ?? null,
+  };
 }
 
 async function kickVideoVariantStep(payload: {
@@ -360,6 +490,25 @@ async function kickVideoVariantStep(payload: {
 }): Promise<void> {
   "use step";
   await kickVideoVariant(payload.contentId);
+}
+
+// Sums llm_usage.cost_usd attributed to this workflow_run. Used by the
+// revision loop to bail out of further revisions when the run has already
+// consumed its USD budget. Returns 0 when workflowRunId is absent so dev
+// runs (no dispatcher) keep working.
+async function runSpendUsdStep(payload: {
+  workflowRunId?: string;
+}): Promise<number> {
+  "use step";
+  if (!payload.workflowRunId) return 0;
+  const db = getDb();
+  const [agg] = await db
+    .select({
+      costUsd: sql<number>`coalesce(sum(${schema.llmUsage.costUsd}), 0)::float8`,
+    })
+    .from(schema.llmUsage)
+    .where(eq(schema.llmUsage.workflowRunId, payload.workflowRunId));
+  return agg?.costUsd ?? 0;
 }
 
 // Demote any currently approved assets back to 'draft' before re-running the
@@ -424,6 +573,7 @@ async function reviseAndResubmitStep(payload: {
 
   await recordLlmUsage({
     agent: "single-post",
+    workspaceId: content.workspaceId,
     model: payload.model,
     threadRef: payload.threadRef ?? null,
     workflowRunId: payload.workflowRunId ?? null,
@@ -439,6 +589,7 @@ async function reviseAndResubmitStep(payload: {
   const [revision] = await db
     .insert(schema.contentRevisions)
     .values({
+      workspaceId: content.workspaceId,
       contentId: payload.contentId,
       bodyMd: content.bodyMd,
       changeNote: `agent revision: ${reason.slice(0, 200)}`,
@@ -461,13 +612,17 @@ async function reviseAndResubmitStep(payload: {
   // (changes_requested) and the API guards against reusing it.
   const [approval] = await db
     .insert(schema.approvals)
-    .values({ contentId: payload.contentId })
+    .values({
+      workspaceId: content.workspaceId,
+      contentId: payload.contentId,
+    })
     .returning({ id: schema.approvals.id });
 
   return approval!.id;
 }
 
 async function runPublishStep(payload: {
+  workspaceId: string;
   contentId: string;
   channel: Channel;
   threadRef?: string;
@@ -477,6 +632,7 @@ async function runPublishStep(payload: {
   const [job] = await db
     .insert(schema.publishJobs)
     .values({
+      workspaceId: payload.workspaceId,
       contentId: payload.contentId,
       channel: payload.channel,
       status: "queued",
@@ -487,6 +643,7 @@ async function runPublishStep(payload: {
   const result = await publishWorkflow({
     publishJobId: job!.id,
     contentId: payload.contentId,
+    workspaceId: payload.workspaceId,
     channel: payload.channel,
     threadRef: payload.threadRef,
     mode: "live",

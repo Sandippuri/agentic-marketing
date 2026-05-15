@@ -11,6 +11,7 @@ import { listDocuments, upsertDocument } from "@marketing/agents/kb";
 import { chunkAndEmbed } from "@marketing/agents/kb";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -57,8 +58,10 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const actor = await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const input = await parseJson(request, UpsertDocument);
     const doc = await upsertDocument({
+      workspaceId,
       collectionId: input.collectionId,
       slug: input.slug,
       title: input.title,

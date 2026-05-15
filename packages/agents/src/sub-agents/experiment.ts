@@ -34,6 +34,8 @@ const log = pino({ name: "experiment" });
 export type ExperimentInput = {
   request: string;
   campaignId: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   cp: CpClient;
   model?: LlmModel;
   threadRef?: string | null;
@@ -44,6 +46,7 @@ export type ExperimentInput = {
 export async function runExperiment({
   request,
   campaignId,
+  workspaceId,
   model,
   threadRef,
   jobId,
@@ -67,6 +70,7 @@ export async function runExperiment({
         execute: async ({ hypothesis, metric, minSampleSize, confidence }) => {
           const variantGroup = randomUUID();
           const ins: NewExperiment = {
+            workspaceId,
             campaignId,
             variantGroup,
             hypothesis,
@@ -97,6 +101,7 @@ export async function runExperiment({
 
   await recordLlmUsage({
     agent: "experiment",
+    workspaceId,
     model,
     threadRef: threadRef ?? undefined,
     jobId: jobId ?? null,

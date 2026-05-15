@@ -13,6 +13,7 @@ import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -120,6 +121,7 @@ export async function GET(request: Request) {
 export async function PUT(request: Request) {
   try {
     const actor = await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const input = await parseJson(request, PutBody);
     const db = getDb();
 
@@ -147,6 +149,7 @@ export async function PUT(request: Request) {
         const [row] = await db
           .insert(schema.brandDesignSystem)
           .values({
+            workspaceId,
             slug: SLUG,
             colors: input.colors,
             typography: input.typography,

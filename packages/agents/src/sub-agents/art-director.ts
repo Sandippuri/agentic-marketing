@@ -1,19 +1,21 @@
 /**
  * Art Director sub-agent.
  *
- * Runs BEFORE image generation. Takes a content brief + campaign context and
- * emits a structured **visual concept brief**: composition, focal point,
- * real subjects, reference image URLs (from KB visual_reference collection),
- * style notes, and banned elements.
+ * Two modes:
  *
- * Why: today asset.ts feeds a text prompt + brand colors straight into
- * image-gen, producing generic stock-AI shapes that hit the palette but miss
- * the actual product/feature/message. The Art Director closes that gap by
- * grounding every image in the real product (via KB visual_reference docs)
- * and explicitly naming what NOT to make.
+ *   1. REFINER (preferred, post-0029) — when the Content agent has emitted an
+ *      `imageBrief` on the content_item, the AD skips the LLM concept-
+ *      synthesis call entirely. It composes the VisualConceptBrief
+ *      deterministically from imageBrief + the campaign's visualIdentity +
+ *      KB visual_references. This is the cheap, on-target path.
  *
- * Output is JSON — concept-to-prompt.ts then translates the brief into the
- * provider-specific prompt + reference URLs the image model accepts.
+ *   2. LEGACY (fallback) — when imageBrief is missing (older content rows,
+ *      cron paths that didn't go through the new content tool), the AD runs
+ *      the original LLM-driven synthesis: read the body, search KB, ask the
+ *      model to invent a concept. Kept for backward compatibility.
+ *
+ * Output is the same VisualConceptBrief in both modes — concept-to-prompt.ts
+ * translates it into the provider-ready image-gen prompt downstream.
  */
 import { generateText } from "ai";
 import { z } from "zod";
@@ -24,12 +26,16 @@ import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 import { kbSearch, type KbSearchHit } from "../kb";
 import { findBrandGuidance } from "../brand-guidance";
+import type { ImageBrief } from "./content";
+import type { VisualIdentity } from "./strategist";
 
 const log = pino({ name: "art-director" });
 
 export type ArtDirectorInput = {
   /** What the content is about (the message / angle / feature). */
   request: string;
+  /** Workspace whose KB and brand memory the AD may read. PR 4 cross-tenant safety. */
+  workspaceId: string;
   /** Optional content body — gives the AD context for what the image must reinforce. */
   contentBody?: string;
   /** Channel hint affects composition/aspect (e.g. linkedin = square poster). */
@@ -40,6 +46,16 @@ export type ArtDirectorInput = {
   threadRef?: string | null;
   jobId?: string | null;
   workflowRunId?: string | null;
+  /**
+   * Per-post image direction emitted by the Content agent at draft time.
+   * When present, AD runs in REFINER mode — no LLM concept-synthesis call.
+   */
+  imageBrief?: ImageBrief | null;
+  /**
+   * Campaign-level visual identity from the Strategist. Used for cross-post
+   * consistency in REFINER mode.
+   */
+  visualIdentity?: VisualIdentity | null;
 };
 
 /**
@@ -188,28 +204,141 @@ Rules of the road:
 export async function runArtDirector(
   input: ArtDirectorInput,
 ): Promise<VisualConceptBrief> {
+  // REFINER mode: when the Content agent has named the literal subject in
+  // imageBrief, we don't need an LLM to invent one. Compose the brief
+  // deterministically — saves ~$0.05/post and keeps direction tight.
+  if (input.imageBrief) {
+    return refineFromImageBrief(input, input.imageBrief);
+  }
+  return runArtDirectorLegacy(input);
+}
+
+/**
+ * Compose a VisualConceptBrief from the Content agent's imageBrief + the
+ * campaign's visualIdentity + KB visual references. No LLM call — pure
+ * data transform plus one cheap embedding lookup.
+ */
+async function refineFromImageBrief(
+  input: ArtDirectorInput,
+  imageBrief: ImageBrief,
+): Promise<VisualConceptBrief> {
+  const visualHits = await kbSearch({
+    query: imageBrief.subject,
+    workspaceId: input.workspaceId,
+    collectionKinds: ["visual_reference"],
+    campaignId: input.campaignId,
+    k: 4,
+  }).catch(() => [] as KbSearchHit[]);
+
+  const referenceUrls = visualHits
+    .map((h) => extractImageUrl(h))
+    .filter((u): u is string => Boolean(u));
+
+  const identity = input.visualIdentity ?? null;
+
+  const styleNotes = [
+    identity?.color_mood,
+    identity?.art_style,
+    imageBrief.mood ? `mood: ${imageBrief.mood}` : null,
+    identity?.recurring_motifs.length
+      ? `recurring motifs: ${identity.recurring_motifs.join("; ")}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(". ");
+
+  // Banned elements: the Content agent's must_not_show + the campaign's
+  // banned_aesthetics + the project-wide AI-slop defaults. Deduped.
+  const banned = uniq([
+    ...DEFAULT_BANNED_AESTHETICS,
+    ...(identity?.banned_aesthetics ?? []),
+    ...imageBrief.must_not_show,
+  ]);
+
+  const focal = imageBrief.subject;
+  const composition = compositionLabel(imageBrief.composition);
+
+  // Slots: the model renders overlay text natively (post-0029 we dropped the
+  // template renderer). headline = imageBrief.overlay_text when set.
+  const slots = {
+    eyebrow: "",
+    headline: (imageBrief.overlay_text ?? "").slice(0, 80),
+    subline: "",
+    cta: "",
+  };
+
+  return {
+    concept_summary: imageBrief.subject.slice(0, 240),
+    composition,
+    focal_point: focal,
+    real_subjects: uniq(imageBrief.must_show),
+    reference_image_urls: uniq(referenceUrls),
+    style_notes: styleNotes,
+    banned_elements: banned,
+    motion: {
+      // Image-first path; video kickoff falls back to body-driven motion if
+      // it ever needs it. Empty here is fine — Veo path reads the brief
+      // differently and will degrade gracefully.
+      opening_state: "",
+      reveal_beat: "",
+      settling_state: "",
+      camera: "",
+    },
+    slots,
+    references_from_kb: visualHits.map((h) => ({
+      documentId: h.documentId,
+      title: h.documentTitle,
+      similarity: h.similarity,
+    })),
+  };
+}
+
+function compositionLabel(c: ImageBrief["composition"]): string {
+  switch (c) {
+    case "close_up":
+      return "tight close-up of the focal subject, shallow depth of field, generous negative space";
+    case "wide":
+      return "wide editorial framing, focal subject in the lower third with caption space above";
+    case "overhead":
+      return "directly overhead flat-lay composition, evenly lit, focal subject centred";
+    case "medium":
+    default:
+      return "medium shot, focal subject hero-centred at 3/4 view";
+  }
+}
+
+async function runArtDirectorLegacy(
+  input: ArtDirectorInput,
+): Promise<VisualConceptBrief> {
   // Gather KB references (visual + brand + product) BEFORE the LLM call so
   // the brief is grounded in reality, not imagination.
   const [visualHits, brandHits, productHits, brandGuidance] = await Promise.all([
     kbSearch({
       query: input.request,
+      workspaceId: input.workspaceId,
       collectionKinds: ["visual_reference"],
       campaignId: input.campaignId,
       k: 4,
     }),
     kbSearch({
       query: `brand visual language for ${input.channel ?? "marketing"}`,
+      workspaceId: input.workspaceId,
       collectionKinds: ["brand"],
       campaignId: input.campaignId,
       k: 3,
     }),
     kbSearch({
       query: input.request,
+      workspaceId: input.workspaceId,
       collectionKinds: ["product"],
       campaignId: input.campaignId,
       k: 3,
     }),
-    findBrandGuidance({ topic: `visual ${input.request}`, limit: 3 }),
+    findBrandGuidance({
+      topic: `visual ${input.request}`,
+      workspaceId: input.workspaceId,
+      limit: 3,
+    }),
   ]);
 
   const referenceUrls = visualHits
@@ -235,6 +364,7 @@ export async function runArtDirector(
 
   await recordLlmUsage({
     agent: "art-director",
+    workspaceId: input.workspaceId,
     model: input.model,
     threadRef: input.threadRef ?? undefined,
     jobId: input.jobId ?? null,

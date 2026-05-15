@@ -9,7 +9,7 @@
 // agent down. Errors are logged and swallowed.
 
 import pino from "pino";
-import { createDb, schema } from "@marketing/db";
+import { getDb, schema, type Database } from "@marketing/db";
 import {
   computeLlmCostUsd,
   getModelInfo,
@@ -26,6 +26,8 @@ export type AiSdkUsage = {
 
 export type RecordUsageInput = {
   agent: string;
+  /** Workspace scope; required from PR 5 — every llm_usage row is tenant-attributed. */
+  workspaceId: string;
   model?: LlmModel;
   threadRef?: string | null;
   /** generation_jobs.id when the call ran under a GenerationTracker. */
@@ -38,15 +40,16 @@ export type RecordUsageInput = {
   error?: string | null;
 };
 
-let cachedDb: ReturnType<typeof createDb> | null = null;
-function getLazyDb() {
-  if (cachedDb) return cachedDb;
+// Share the singleton pool from @marketing/db. Previously this kept its own
+// `cachedDb` from a separate createDb() call, which meant the llm-usage
+// recorder ran on a second 10-slot pool — a major contributor to
+// max_connections exhaustion in dev.
+function getLazyDb(): Database | null {
   if (!process.env.DATABASE_URL) return null;
   try {
-    cachedDb = createDb();
-    return cachedDb;
+    return getDb();
   } catch (err) {
-    log.warn({ err: (err as Error).message }, "createDb failed; usage recording disabled");
+    log.warn({ err: (err as Error).message }, "getDb failed; usage recording disabled");
     return null;
   }
 }
@@ -76,6 +79,7 @@ export async function recordLlmUsage(input: RecordUsageInput): Promise<void> {
 
   try {
     await db.insert(schema.llmUsage).values({
+      workspaceId: input.workspaceId,
       provider,
       model: modelId,
       agent: input.agent,

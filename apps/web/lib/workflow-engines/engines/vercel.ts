@@ -17,7 +17,10 @@ export const vercelEngine: WorkflowEngine = {
   capability: {
     available: true,
     kinds: ["campaign", "single_post", "asset"],
-    supportsContentRevision: false,
+    // single-post now honours input.contentId by skipping draftStep and
+    // entering the revision loop against the existing content row. The
+    // redraft button + retry-on-max_revisions rely on this flag.
+    supportsContentRevision: true,
   },
 
   async start(input, ctx) {
@@ -45,8 +48,13 @@ async function startSinglePost(
   const run = await start(singlePostWorkflow, [
     {
       request: input.request,
+      workspaceId: input.workspaceId,
       channel,
       campaignId: input.campaignId,
+      // When set, the workflow takes the resume path: skip draft + asset
+      // generation, jump straight into the revision loop against the
+      // existing content row.
+      contentId: input.contentId,
       threadRef: input.threadRef,
       userId: input.userId ?? "admin",
       model: input.model as LlmModel | undefined,
@@ -63,6 +71,7 @@ async function startCampaignPlan(
   const run = await start(campaignPlanWorkflow, [
     {
       request: input.request,
+      workspaceId: input.workspaceId,
       campaignId: input.campaignId,
       threadRef: input.threadRef,
       userId: input.userId ?? "admin",
@@ -80,6 +89,7 @@ async function startAsset(
   const run = await start(assetWorkflow, [
     {
       request: input.request,
+      workspaceId: input.workspaceId,
       contentId: input.contentId,
       threadRef: input.threadRef,
       userId: input.userId ?? "admin",

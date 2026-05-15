@@ -1,10 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@marketing/db";
 import { isInternal } from "@/lib/internal-auth";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
+import { getWorkspaceContext } from "@/lib/billing";
 import {
   CHANNELS,
   EMBEDDING_MODELS,
@@ -26,14 +27,40 @@ const EMBEDDING_MODEL_IDS = EMBEDDING_MODELS.filter((m) => m.wired).map(
 export const dynamic = "force-dynamic";
 
 // Internal + authenticated admin callers may read settings.
+//
+// Read order:
+//   1. Workspace-scoped rows for the caller's active workspace.
+//   2. Global fallback rows (workspace_id IS NULL) for keys not in step 1.
+// Workspace value wins. Internal-token callers read only the global rows
+// because they don't carry a workspace context.
 export async function GET(request: Request) {
   try {
     const isInternalReq = isInternal(request);
     if (!isInternalReq) await getRequestActor(); // throws 401 if unauthenticated
     const db = getDb();
-    const rows = await db.select().from(schema.settings);
-    const obj = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-    return Response.json(obj as Partial<SettingsShape>);
+
+    const workspaceId = isInternalReq
+      ? null
+      : (await getWorkspaceContext()).workspaceId;
+
+    const globalRows = await db
+      .select()
+      .from(schema.settings)
+      .where(isNull(schema.settings.workspaceId));
+
+    const merged: Record<string, unknown> = Object.fromEntries(
+      globalRows.map((r) => [r.key, r.value]),
+    );
+
+    if (workspaceId) {
+      const wsRows = await db
+        .select()
+        .from(schema.settings)
+        .where(eq(schema.settings.workspaceId, workspaceId));
+      for (const r of wsRows) merged[r.key] = r.value;
+    }
+
+    return Response.json(merged as Partial<SettingsShape>);
   } catch (err) {
     return errorResponse(err);
   }
@@ -66,14 +93,19 @@ const PatchSettings = z.object({
   embedding_model: z.enum(EMBEDDING_MODEL_IDS).optional(),
 });
 
-// PATCH /api/settings — upsert one or more settings keys.
-// Authenticated admin users and internal token callers may write.
+// PATCH /api/settings — upsert one or more settings keys for the active
+// workspace. Internal token callers write to the global fallback row
+// (workspace_id NULL) so legacy /api/* calls continue to set process-wide
+// defaults.
 export async function PATCH(request: Request) {
   try {
     const isInternalReq = isInternal(request);
     const actor = isInternalReq
       ? { id: null, kind: "agent" as const }
       : await getRequestActor();
+    const workspaceId = isInternalReq
+      ? null
+      : (await getWorkspaceContext()).workspaceId;
 
     const input = await parseJson(request, PatchSettings);
     const db = getDb();
@@ -83,24 +115,38 @@ export async function PATCH(request: Request) {
       return Response.json({ error: "no fields to update" }, { status: 400 });
     }
 
+    // Build the predicate for finding "the row for this (workspace, key)".
+    // workspace_id = $1 when scoped, IS NULL for global writes.
+    const rowFilter = (key: string) =>
+      workspaceId
+        ? and(
+            eq(schema.settings.workspaceId, workspaceId),
+            eq(schema.settings.key, key),
+          )
+        : and(isNull(schema.settings.workspaceId), eq(schema.settings.key, key));
+
     await withAudit(
       { db, actor, action: "settings.update", entityType: "settings" },
       async () => {
-        const rows = await db.select().from(schema.settings);
+        const rows = await db
+          .select()
+          .from(schema.settings)
+          .where(
+            workspaceId
+              ? eq(schema.settings.workspaceId, workspaceId)
+              : isNull(schema.settings.workspaceId),
+          );
         return Object.fromEntries(rows.map((r) => [r.key, r.value]));
       },
       async () => {
         for (const [key, rawValue] of entries) {
           let value: unknown = rawValue;
-          // sub_agent_models is the only key that needs merge semantics:
-          // callers send a partial patch (e.g. { content: "claude-opus-4-7" }
-          // or { content: null } to clear). We merge into the existing row
-          // so other kinds keep their pinned models.
+          // sub_agent_models merges into the existing row for this scope.
           if (key === "sub_agent_models") {
             const [existing] = await db
               .select()
               .from(schema.settings)
-              .where(eq(schema.settings.key, "sub_agent_models"))
+              .where(rowFilter("sub_agent_models"))
               .limit(1);
             const current = (existing?.value as Record<string, string> | null) ?? {};
             const patch = rawValue as Record<string, string | null>;
@@ -111,20 +157,48 @@ export async function PATCH(request: Request) {
             }
             value = next;
           }
-          await db
-            .insert(schema.settings)
-            .values({ key, value, updatedBy: actor.id ?? null })
-            .onConflictDoUpdate({
-              target: schema.settings.key,
-              set: { value, updatedBy: actor.id ?? null, updatedAt: new Date() },
+
+          // No native ON CONFLICT target works against the coalesce-based
+          // composite unique, so do an explicit upsert.
+          const [existing] = await db
+            .select()
+            .from(schema.settings)
+            .where(rowFilter(key))
+            .limit(1);
+          if (existing) {
+            await db
+              .update(schema.settings)
+              .set({ value, updatedBy: actor.id ?? null, updatedAt: new Date() })
+              .where(rowFilter(key));
+          } else {
+            await db.insert(schema.settings).values({
+              workspaceId,
+              key,
+              value,
+              updatedBy: actor.id ?? null,
             });
+          }
         }
         return null;
       },
     );
 
-    const rows = await db.select().from(schema.settings);
-    return Response.json(Object.fromEntries(rows.map((r) => [r.key, r.value])));
+    // Return merged view (workspace + global fallback) for the caller.
+    const globalRows = await db
+      .select()
+      .from(schema.settings)
+      .where(isNull(schema.settings.workspaceId));
+    const merged: Record<string, unknown> = Object.fromEntries(
+      globalRows.map((r) => [r.key, r.value]),
+    );
+    if (workspaceId) {
+      const wsRows = await db
+        .select()
+        .from(schema.settings)
+        .where(eq(schema.settings.workspaceId, workspaceId));
+      for (const r of wsRows) merged[r.key] = r.value;
+    }
+    return Response.json(merged);
   } catch (err) {
     return errorResponse(err);
   }

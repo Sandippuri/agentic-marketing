@@ -19,7 +19,7 @@ import {
 
 export type StepView = {
   id: string;
-  name: "strategist" | "content" | "asset" | "analyst" | "distributor";
+  name: "strategist" | "content" | "asset" | "analyst" | "distributor" | "researcher";
   status: "running" | "succeeded" | "failed";
   input: unknown;
   output: unknown;
@@ -37,7 +37,7 @@ export type JobView = {
   threadRef: string | null;
   userId: string | null;
   userMessage: string;
-  kind: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "other";
+  kind: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "research" | "other";
   status: "running" | "completed" | "failed" | "queued" | "cancelled";
   currentStep: StepView["name"] | null;
   error: string | null;
@@ -53,6 +53,11 @@ export type JobView = {
     | "changes_requested"
     | "rejected"
     | null;
+  // Count of agent-authored revisions on the linked content_id. Renders as
+  // "N/MAX" next to the Approval pill so reviewers can see how many auto-
+  // revision passes a run has consumed. Kept in sync with MAX_REVISIONS in
+  // apps/web/workflows/single-post.ts.
+  agentRevisionCount: number;
   linkedCampaign: { id: string; name: string; slug: string } | null;
   // Resolved at dispatch time (override → settings → default) and snapshotted
   // onto workflow_runs.input. Null only for very old rows written before the
@@ -75,6 +80,7 @@ const STEP_LABEL: Record<StepView["name"], string> = {
   asset: "Asset",
   analyst: "Analyst",
   distributor: "Distributor",
+  researcher: "Researcher",
 };
 
 const STEP_HINT: Record<StepView["name"], string> = {
@@ -83,6 +89,7 @@ const STEP_HINT: Record<StepView["name"], string> = {
   asset: "Generates visuals (poster, hero, og)",
   analyst: "Pulls performance numbers and learnings",
   distributor: "Schedules an approved post for a channel",
+  researcher: "Searches the public web and writes findings to the KB",
 };
 
 const KIND_LABEL: Record<JobView["kind"], string> = {
@@ -91,6 +98,7 @@ const KIND_LABEL: Record<JobView["kind"], string> = {
   asset: "Asset",
   analysis: "Analysis",
   publish: "Publish",
+  research: "Research",
   other: "Workflow",
 };
 
@@ -407,7 +415,11 @@ function JobCard({ job }: { job: JobView }) {
 
   // Build a pipeline row that includes pending placeholders for step names
   // not yet started, so the visual progression doesn't suddenly jump.
+  // Researcher is rendered only when it actually ran, since most jobs don't
+  // touch it — keeping it out of the placeholder list avoids a permanent
+  // ghost slot on every campaign/post run.
   const pipelineNames: StepView["name"][] = [
+    ...(job.steps.some((s) => s.name === "researcher") ? (["researcher"] as const) : []),
     "strategist",
     "content",
     "asset",
@@ -475,7 +487,23 @@ function JobCard({ job }: { job: JobView }) {
             </button>
           )}
           {(job.status === "failed" || job.status === "cancelled") && (
-            <RetryButton jobId={job.id} />
+            <RetryButton
+              jobId={job.id}
+              // Cancelled-with-changes_requested means the auto-revise loop
+              // had reviewer feedback to work from. The retry endpoint now
+              // resumes against the existing content row in that case, so
+              // the button copy should match: "Resume revising" instead of
+              // a generic Retry that reads like a redo from scratch.
+              mode={
+                job.status === "cancelled" &&
+                job.latestApprovalDecision === "changes_requested" &&
+                job.linkedContent &&
+                (job.linkedContent.status === "draft" ||
+                  job.linkedContent.status === "in_review")
+                  ? "resume_revising"
+                  : "retry"
+              }
+            />
           )}
           <button
             type="button"
@@ -761,6 +789,9 @@ function ExternalEngineStatus({ job }: { job: JobView }) {
         {phases.map((p, idx) => (
           <div key={p.key} className="flex items-center gap-2">
             <ExternalPhasePill phase={p} />
+            {p.key === "approval" && job.agentRevisionCount > 0 && (
+              <RevisionCountBadge count={job.agentRevisionCount} />
+            )}
             {idx < phases.length - 1 && (
               <span className="text-zinc-300 dark:text-zinc-700">→</span>
             )}
@@ -772,6 +803,30 @@ function ExternalEngineStatus({ job }: { job: JobView }) {
         <AssetVariantsStrip assets={renderableAssets} />
       )}
     </div>
+  );
+}
+
+// MAX_REVISIONS in apps/web/workflows/single-post.ts. Keep in sync — the
+// chip needs the denominator to render "N/MAX". Importing across the
+// workflow boundary risks dragging "use workflow" runtime into the RSC.
+const MAX_REVISIONS_DISPLAY = 3;
+
+function RevisionCountBadge({ count }: { count: number }) {
+  const exhausted = count >= MAX_REVISIONS_DISPLAY;
+  const tone = exhausted
+    ? "border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+    : "border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300";
+  return (
+    <span
+      title={
+        exhausted
+          ? "Max auto-revisions consumed"
+          : "Auto-revisions consumed / cap"
+      }
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium tabular-nums ${tone}`}
+    >
+      rev {count}/{MAX_REVISIONS_DISPLAY}
+    </span>
   );
 }
 
@@ -854,14 +909,27 @@ function AssetVariantsStrip({
 // snapshotted input off workflow_runs and re-resolves the model from
 // current settings, so a settings change between attempts (e.g. switching
 // off an out-of-quota provider) takes effect on the new run.
-function RetryButton({ jobId }: { jobId: string }) {
+//
+// `mode` switches the copy + tooltip. The retry endpoint now resumes
+// in-place against the linked content row when the prior run died with
+// reviewer feedback — so the button reads "Resume revising" in that case
+// instead of a generic "Retry" that implies a redo from scratch.
+function RetryButton({
+  jobId,
+  mode,
+}: {
+  jobId: string;
+  mode: "retry" | "resume_revising";
+}) {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   const onClick = async () => {
     setSubmitting(true);
-    const toastId = toast.loading("Retrying run…");
+    const toastId = toast.loading(
+      mode === "resume_revising" ? "Resuming revision…" : "Retrying run…",
+    );
     try {
       const res = await fetch(`/api/workflow-runs/${jobId}/retry`, {
         method: "POST",
@@ -884,10 +952,18 @@ function RetryButton({ jobId }: { jobId: string }) {
         toast.error(title, { id: toastId, description: detail });
         return;
       }
-      toast.success("Retry dispatched", {
-        id: toastId,
-        description: "A new run has been queued with current model settings.",
-      });
+      toast.success(
+        mode === "resume_revising"
+          ? "Revision resumed"
+          : "Retry dispatched",
+        {
+          id: toastId,
+          description:
+            mode === "resume_revising"
+              ? "A new run was queued against the same draft, continuing from the reviewer's last feedback."
+              : "A new run has been queued with current model settings.",
+        },
+      );
       startTransition(() => router.refresh());
     } catch (err) {
       toast.error("Retry failed", {
@@ -899,15 +975,28 @@ function RetryButton({ jobId }: { jobId: string }) {
     }
   };
 
+  const title =
+    mode === "resume_revising"
+      ? "Continues revising the same draft using the reviewer's latest changes_requested feedback."
+      : "Re-dispatch this run with the current model settings";
+  const label =
+    mode === "resume_revising"
+      ? submitting
+        ? "Resuming…"
+        : "Resume revising"
+      : submitting
+        ? "Retrying…"
+        : "Retry";
+
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={submitting || isPending}
-      title="Re-dispatch this run with the current model settings"
+      title={title}
       className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300 dark:hover:bg-amber-900/40"
     >
-      {submitting ? "Retrying…" : "Retry"}
+      {label}
     </button>
   );
 }

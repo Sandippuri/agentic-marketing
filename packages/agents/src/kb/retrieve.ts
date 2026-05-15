@@ -51,6 +51,19 @@ export type KbSearchMode = "vector" | "bm25" | "hybrid";
 
 export type KbSearchOptions = {
   query: string;
+  /**
+   * Workspace to scope the search to. Mandatory in single-tenant deploys
+   * pre-PR 4 you could omit this; from PR 4 onward callers MUST pass it
+   * (sub-agent tools resolve it from their RunContext; the /api/kb/search
+   * handler resolves it from the request's WorkspaceContext). Internal
+   * callers without context default to the Legacy workspace id.
+   *
+   * Cross-tenant safety: this is the only filter standing between an
+   * embedding written by tenant A and a RAG hit served to tenant B. Both
+   * `kbCollections.workspaceId` AND `kbChunks.workspaceId` are filtered as
+   * defense in depth.
+   */
+  workspaceId: string;
   collectionKinds?: CollectionKind[];
   collectionIds?: string[];
   campaignId?: string;
@@ -157,7 +170,14 @@ type RankedRow = { chunkId: string; rank: number; score: number };
 type Filters = ReturnType<typeof buildFilters>;
 
 function buildFilters(opts: KbSearchOptions) {
-  const conds: ReturnType<typeof eq>[] = [eq(kbDocuments.status, "active")];
+  // Tenant filter first — this is the only thing standing between a tenant
+  // and another tenant's embeddings. Both the collection AND the chunk are
+  // filtered on workspace_id for defense in depth.
+  const conds: ReturnType<typeof eq>[] = [
+    eq(kbCollections.workspaceId, opts.workspaceId) as never,
+    eq(kbChunks.workspaceId, opts.workspaceId) as never,
+    eq(kbDocuments.status, "active"),
+  ];
   if (opts.collectionKinds?.length) {
     conds.push(inArray(kbCollections.kind, opts.collectionKinds) as never);
   }

@@ -27,9 +27,12 @@ export function getHistoryStore(): HistoryStore {
 
 function buildRedisStore(url: string): HistoryStore {
   const redis = new IORedis(url, {
-    maxRetriesPerRequest: null,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectTimeout: 1500,
     lazyConnect: true,
   });
+  redis.on("error", () => {});
   return {
     async get(threadRef) {
       try {

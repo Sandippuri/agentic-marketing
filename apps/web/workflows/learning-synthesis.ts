@@ -16,11 +16,14 @@ import { ensureCollection, upsertDocument, chunkAndEmbed } from "@marketing/agen
 import { getLanguageModel } from "@marketing/agents/llm-registry";
 import { recordLlmUsage } from "@marketing/agents/usage";
 import { aggregateLearningSignal, type LearningSummary } from "@/lib/learning/aggregate";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 export type LearningSynthesisInput = {
   windowDays?: number;
   /** Optional collection slug override; default 'learning-loop'. */
   collectionSlug?: string;
+  /** Workspace scope; required from PR 4. Defaults to legacy when omitted. */
+  workspaceId?: string;
 };
 
 export type LearningSynthesisOutput = {
@@ -47,7 +50,8 @@ export async function learningSynthesisWorkflow(
       reason: "not_enough_data",
     };
   }
-  const themes = await synthesiseStep({ summary });
+  const workspaceId = input.workspaceId ?? LEGACY_WORKSPACE_ID;
+  const themes = await synthesiseStep({ summary, workspaceId });
   if (themes.length === 0) {
     return {
       documentId: null,
@@ -63,6 +67,7 @@ export async function learningSynthesisWorkflow(
     summary,
     collectionSlug: input.collectionSlug ?? "learning-loop",
     windowDays: input.windowDays ?? 30,
+    workspaceId,
   });
   return {
     documentId: result.documentId,
@@ -97,6 +102,7 @@ type Theme = {
 
 async function synthesiseStep(args: {
   summary: LearningSummary;
+  workspaceId: string;
 }): Promise<Theme[]> {
   "use step";
   const { summary } = args;
@@ -117,6 +123,7 @@ prescription, examples}. No markdown fence, no commentary.
 
   await recordLlmUsage({
     agent: "learning-synthesis",
+    workspaceId: args.workspaceId,
     usage,
     providerMetadata: experimental_providerMetadata,
   });
@@ -151,9 +158,11 @@ async function persistStep(args: {
   summary: LearningSummary;
   collectionSlug: string;
   windowDays: number;
+  workspaceId: string;
 }): Promise<{ documentId: string; documentSlug: string }> {
   "use step";
   const collectionId = await ensureCollection({
+    workspaceId: args.workspaceId,
     slug: args.collectionSlug,
     name: "Learning Loop",
     kind: "playbook",
@@ -167,6 +176,7 @@ async function persistStep(args: {
   const body = buildPlaybookBody(args.themes, args.summary, args.windowDays);
 
   const doc = await upsertDocument({
+    workspaceId: args.workspaceId,
     collectionId,
     slug: docSlug,
     title: `Learning loop lessons — ${args.windowDays}d window`,

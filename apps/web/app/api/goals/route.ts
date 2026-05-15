@@ -23,6 +23,7 @@ import { start } from "workflow/api";
 import { eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { getRequestActor } from "@/lib/auth";
+import { getWorkspaceContext } from "@/lib/billing";
 import { errorResponse, parseJson } from "@/lib/http";
 import { goalLoopWorkflow } from "@/workflows/goal-loop";
 import { appendEvent } from "@/lib/goals/event-log";
@@ -55,6 +56,7 @@ const CreateGoal = z.object({
 export async function POST(request: Request) {
   try {
     await getRequestActor();
+    const ctx = await getWorkspaceContext();
     const input = await parseJson(request, CreateGoal);
     const db = getDb();
 
@@ -65,6 +67,7 @@ export async function POST(request: Request) {
     const inserted = await db
       .insert(schema.campaigns)
       .values({
+        workspaceId: ctx.workspaceId,
         slug,
         name,
         status: "active",
@@ -91,7 +94,11 @@ export async function POST(request: Request) {
     });
 
     const run = await start(goalLoopWorkflow, [
-      { campaignId, maxIterations: input.maxIterations },
+      {
+        campaignId,
+        workspaceId: ctx.workspaceId,
+        maxIterations: input.maxIterations,
+      },
     ]);
 
     return Response.json(

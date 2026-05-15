@@ -19,6 +19,8 @@ function extractImageMarkers(body: string | null | undefined): string[] {
 
 export type GenerateAssetVariantsInput = {
   contentId: string;
+  /** Workspace scope; mandatory from PR 4. Threaded by caller. */
+  workspaceId: string;
   /** Optional override for the subject prompt; defaults to the content title. */
   subject?: string;
 };
@@ -37,6 +39,7 @@ export async function kickVideoVariant(contentId: string): Promise<void> {
         type: schema.contentItems.type,
         bodyMd: schema.contentItems.bodyMd,
         campaignId: schema.contentItems.campaignId,
+        workspaceId: schema.contentItems.workspaceId,
       })
       .from(schema.contentItems)
       .where(eq(schema.contentItems.id, contentId))
@@ -49,6 +52,7 @@ export async function kickVideoVariant(contentId: string): Promise<void> {
       subject: (row.title ?? "").slice(0, 240),
       firstImageMarker: markers[0] ?? null,
       campaignId: row.campaignId,
+      workspaceId: row.workspaceId,
     }).catch((err) => {
       console.warn(
         `[asset-variants] video variant failed for ${contentId}:`,
@@ -78,9 +82,15 @@ export async function generateAssetVariants(
   // routes, after() callbacks). start() enqueues it as its own run; we
   // await returnValue so callers keep their synchronous semantics.
   const run = await start(assetPipelineWorkflow, [
-    { contentId: input.contentId, request: input.subject },
+    {
+      workspaceId: input.workspaceId,
+      contentId: input.contentId,
+      request: input.subject,
+    },
   ]);
-  const result = await run.returnValue;
+  // run.returnValue is typed as `unknown` by the workflow SDK overloads; cast
+  // to the workflow's declared output now that we passed a concrete input.
+  const result = (await run.returnValue) as { candidatesGenerated: number };
   void kickVideoVariant(input.contentId);
   return { inserted: result.candidatesGenerated };
 }

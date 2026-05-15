@@ -12,8 +12,31 @@ import { recordLlmUsage } from "../usage";
 
 const log = pino({ name: "strategist" });
 
+/**
+ * Campaign-level visual identity. Set once per campaign by the Strategist;
+ * reused by the Art Director when refining every per-post image brief into a
+ * model prompt. Stored on `campaigns.visual_identity` (jsonb).
+ *
+ * The point: keep image direction CONSISTENT across all posts in a campaign
+ * (recurring motifs, color/mood, art style) instead of letting each post
+ * drift into a different look. Banned aesthetics are the failure modes the
+ * Strategist wants the model to never produce for this brand.
+ */
+export type VisualIdentity = {
+  /** Recurring motifs the brand wants in every campaign image. */
+  recurring_motifs: string[];
+  /** Lighting/mood/temperature in plain language. */
+  color_mood: string;
+  /** Art style label ("editorial illustration", "documentary photo"). */
+  art_style: string;
+  /** Failure modes the model must NOT produce. */
+  banned_aesthetics: string[];
+};
+
 export type StrategistInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   campaignId?: string;
   cp: CpClient;
   model?: LlmModel;
@@ -22,7 +45,7 @@ export type StrategistInput = {
   workflowRunId?: string | null;
 };
 
-export async function runStrategist({ request, campaignId, cp, model, threadRef, jobId, workflowRunId }: StrategistInput): Promise<string> {
+export async function runStrategist({ request, workspaceId, campaignId, cp, model, threadRef, jobId, workflowRunId }: StrategistInput): Promise<string> {
   const baseMemory = await buildBaseMemory();
 
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
@@ -70,7 +93,7 @@ export async function runStrategist({ request, campaignId, cp, model, threadRef,
           limit: z.number().int().min(1).max(6).optional().default(4),
         }),
         execute: async ({ topic, limit }) => {
-          return findBrandGuidance({ topic, limit });
+          return findBrandGuidance({ topic, workspaceId, limit });
         },
       }),
 
@@ -100,6 +123,44 @@ export async function runStrategist({ request, campaignId, cp, model, threadRef,
           const result = await cp.patchCampaign(id, fields);
           log.info({ id }, "updated campaign");
           return result;
+        },
+      }),
+
+      set_visual_identity: tool({
+        description:
+          "Set the campaign's visual identity — recurring motifs, color/mood, art style, " +
+          "and banned aesthetics. Call this ONCE per campaign, after the brief is written " +
+          "and before scheduling content. Every post's image will be art-directed against " +
+          "this identity to keep the campaign visually consistent. " +
+          "Be specific and concrete: 'isometric dashboard screenshots' beats 'modern UI'. " +
+          "Banned aesthetics should name the AI-slop failure modes you want avoided " +
+          "('no AI faces', 'no generic crypto coins', 'no rainbow gradients').",
+        parameters: z.object({
+          campaignId: z.string(),
+          recurring_motifs: z
+            .array(z.string())
+            .min(1)
+            .describe(
+              "Motifs that should appear across all campaign images (e.g. 'editorial line illustration of a single product flow', 'warm desk-top photography with one device')",
+            ),
+          color_mood: z
+            .string()
+            .min(4)
+            .describe("Lighting + mood + palette in plain language"),
+          art_style: z
+            .string()
+            .min(4)
+            .describe(
+              "One concrete style label ('editorial illustration, not stock photo', 'documentary photo, natural light')",
+            ),
+          banned_aesthetics: z
+            .array(z.string())
+            .describe("Failure modes the model must NOT produce"),
+        }),
+        execute: async ({ campaignId: cid, ...identity }) => {
+          await cp.patchCampaign(cid, { visualIdentity: identity });
+          log.info({ cid }, "visual identity set");
+          return { campaignId: cid, saved: true, identity };
         },
       }),
 
@@ -148,6 +209,7 @@ export async function runStrategist({ request, campaignId, cp, model, threadRef,
   log.info({ steps: steps.length }, "strategist finished");
   await recordLlmUsage({
     agent: "strategist",
+    workspaceId,
     model,
     threadRef,
     jobId,

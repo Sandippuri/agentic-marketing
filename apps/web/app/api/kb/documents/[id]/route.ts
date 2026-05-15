@@ -56,6 +56,7 @@ export async function PATCH(
     const input = await parseJson(request, PatchDocument);
 
     const updated = await upsertDocument({
+      workspaceId: existing.workspaceId,
       collectionId: existing.collectionId,
       slug: existing.slug,
       title: input.title ?? existing.title,

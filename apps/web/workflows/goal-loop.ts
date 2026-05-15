@@ -44,6 +44,8 @@ export const goalApprovalHook = defineHook({
 
 export type GoalLoopInput = {
   campaignId: string;
+  /** Workspace scope; mandatory from PR 4. Threaded via dispatchStart. */
+  workspaceId: string;
   /** Maximum iterations before halting; defaults to 6. */
   maxIterations?: number;
   /** When set, the dispatcher updates this workflow_runs row at terminal states. */
@@ -98,7 +100,11 @@ export async function goalLoopWorkflow(
         };
       }
 
-      const briefs = await planStep({ campaignId: input.campaignId, iteration });
+      const briefs = await planStep({
+        campaignId: input.campaignId,
+        workspaceId: input.workspaceId,
+        iteration,
+      });
       if (briefs.length === 0) {
         await terminateStep({
           campaignId: input.campaignId,
@@ -126,6 +132,7 @@ export async function goalLoopWorkflow(
         briefs.map((brief, idx) =>
           draftStep({
             campaignId: input.campaignId,
+            workspaceId: input.workspaceId,
             iteration,
             briefIndex: idx,
             brief,
@@ -145,6 +152,7 @@ export async function goalLoopWorkflow(
         if (decision.decision === "approved") {
           await publishStep({
             campaignId: input.campaignId,
+            workspaceId: input.workspaceId,
             iteration,
             contentId: draft.contentId,
             channel: draft.channel,
@@ -154,6 +162,7 @@ export async function goalLoopWorkflow(
           // wait to the next iteration to keep this iteration bounded.
           await reviseStep({
             campaignId: input.campaignId,
+            workspaceId: input.workspaceId,
             iteration,
             contentId: draft.contentId,
             reason: decision.reason ?? "",
@@ -260,6 +269,7 @@ type Brief = {
 
 async function planStep(args: {
   campaignId: string;
+  workspaceId: string;
   iteration: number;
 }): Promise<Brief[]> {
   "use step";
@@ -293,6 +303,7 @@ async function planStep(args: {
   // JSON block from its output.
   const out = await runStrategist({
     request,
+    workspaceId: args.workspaceId,
     campaignId: args.campaignId,
     cp,
   });
@@ -346,6 +357,7 @@ function parseBriefsFromStrategist(text: string): Brief[] {
 
 async function draftStep(args: {
   campaignId: string;
+  workspaceId: string;
   iteration: number;
   briefIndex: number;
   brief: Brief;
@@ -369,6 +381,7 @@ async function draftStep(args: {
   // row when it calls submit_for_review internally.
   await runContent({
     request: args.brief.prompt,
+    workspaceId: args.workspaceId,
     campaignId: args.campaignId,
     cp,
   });
@@ -439,6 +452,7 @@ async function waitApproval(
 
 async function publishStep(args: {
   campaignId: string;
+  workspaceId: string;
   iteration: number;
   contentId: string;
   channel: Brief["channel"];
@@ -455,6 +469,7 @@ async function publishStep(args: {
   const [job] = await db
     .insert(schema.publishJobs)
     .values({
+      workspaceId: args.workspaceId,
       contentId: args.contentId,
       channel: args.channel,
       status: "queued",
@@ -466,6 +481,7 @@ async function publishStep(args: {
   await publishWorkflow({
     publishJobId: job.id,
     contentId: args.contentId,
+    workspaceId: args.workspaceId,
     channel: args.channel,
   });
 
@@ -484,6 +500,7 @@ async function publishStep(args: {
 
 async function reviseStep(args: {
   campaignId: string;
+  workspaceId: string;
   iteration: number;
   contentId: string;
   reason: string;
@@ -496,6 +513,7 @@ async function reviseStep(args: {
   const cp = buildCpClient();
   await runContent({
     request: `Revise the prior draft. Reviewer requested changes: ${args.reason}`,
+    workspaceId: args.workspaceId,
     campaignId: args.campaignId,
     contentId: args.contentId,
     cp,

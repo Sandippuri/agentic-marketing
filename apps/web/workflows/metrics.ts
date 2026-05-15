@@ -20,6 +20,7 @@ import { CpClient } from "@marketing/cp-client";
 export type MetricsFetchInput = {
   publishJobId: string;
   contentId: string;
+  workspaceId: string;
   channel: Channel;
   externalId: string;
   /** When omitted, defaults to 24h after publish. */
@@ -57,6 +58,7 @@ async function fetchAndRecordStep(
   const now = new Date();
   for (const [metric, value] of entries) {
     await db.insert(schema.metrics).values({
+      workspaceId: input.workspaceId,
       scopeType: "content",
       scopeId: input.contentId,
       channel: input.channel,
@@ -116,6 +118,7 @@ async function listDueMetricsJobsStep(): Promise<MetricsFetchInput[]> {
     .select({
       publishJobId: schema.publishJobs.id,
       contentId: schema.publishJobs.contentId,
+      workspaceId: schema.publishJobs.workspaceId,
       channel: schema.publishJobs.channel,
       externalId: schema.publishJobs.externalId,
     })
@@ -127,6 +130,7 @@ async function listDueMetricsJobsStep(): Promise<MetricsFetchInput[]> {
     .map((r) => ({
       publishJobId: r.publishJobId,
       contentId: r.contentId,
+      workspaceId: r.workspaceId,
       channel: r.channel,
       externalId: r.externalId!,
       delaySeconds: 0,

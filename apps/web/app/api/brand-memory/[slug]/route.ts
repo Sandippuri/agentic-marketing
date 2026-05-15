@@ -10,6 +10,7 @@ import { isInternal } from "@/lib/internal-auth";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +67,7 @@ export async function PUT(
     const parsed: BrandMemorySlug = SlugParam.parse(slug);
 
     const actor = await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const input = await parseJson(request, PutBody);
     const db = getDb();
     const title = input.title ?? BRAND_MEMORY_TITLES[parsed];
@@ -89,6 +91,7 @@ export async function PUT(
         const [row] = await db
           .insert(schema.brandMemory)
           .values({
+            workspaceId,
             slug: parsed,
             title,
             body: input.body,

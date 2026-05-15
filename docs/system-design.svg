@@ -1,0 +1,827 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 3200" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Inter, sans-serif">
+  <defs>
+    <!-- arrow marker -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowDim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0ea5e9"/>
+    </marker>
+    <!-- soft drop shadow -->
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <!-- gradient strips for section headers -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#eef2ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0" y="0" width="2400" height="3200" fill="url(#bgGrad)"/>
+
+  <!-- ========== TITLE ========== -->
+  <g>
+    <text x="1200" y="60" text-anchor="middle" font-size="38" font-weight="700" fill="#0f172a">Marketing-Agent — System Design</text>
+    <text x="1200" y="92" text-anchor="middle" font-size="16" fill="#475569">Next.js admin UI · Vercel Workflows · Multi-agent content pipeline · Supabase (Postgres+pgvector+Storage) · Multi-channel publishing</text>
+    <text x="1200" y="114" text-anchor="middle" font-size="13" fill="#64748b">monorepo: apps/web · packages/{agents,db,shared-types,cp-client,prompts} · infra/supabase</text>
+  </g>
+
+  <!-- ========== L1: CLIENTS / TRIGGERS ========== -->
+  <g>
+    <rect x="40" y="140" width="2320" height="170" rx="14" fill="#eef2ff" stroke="#c7d2fe" stroke-width="1"/>
+    <text x="60" y="170" font-size="14" font-weight="700" fill="#3730a3" letter-spacing="1">CLIENTS &amp; TRIGGERS</text>
+
+    <!-- Admin UI -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="190" width="540" height="100" rx="10" fill="white" stroke="#6366f1" stroke-width="1.5"/>
+      <text x="80" y="215" font-size="15" font-weight="700" fill="#1e1b4b">Admin UI (Next.js App Router)</text>
+      <text x="80" y="237" font-size="12" fill="#475569">/creation-workflow · /campaigns · /posts · /approvals · /gallery</text>
+      <text x="80" y="254" font-size="12" fill="#475569">/brand · /knowledge · /insights · /learning · /research · /runs</text>
+      <text x="80" y="271" font-size="12" fill="#475569">/publish-jobs · /test-chat · /settings · /integrations · /audit-log</text>
+    </g>
+
+    <!-- Slack / Discord bots -->
+    <g filter="url(#cardShadow)">
+      <rect x="620" y="190" width="540" height="100" rx="10" fill="white" stroke="#6366f1" stroke-width="1.5"/>
+      <text x="640" y="215" font-size="15" font-weight="700" fill="#1e1b4b">Slack &amp; Discord</text>
+      <text x="640" y="237" font-size="12" fill="#475569">Approval cards · @marketing mentions · weekly analyst posts</text>
+      <text x="640" y="254" font-size="12" fill="#475569">Ops alerts (OPS_ALERT_WEBHOOK_URL): quota / rate-limit / auth</text>
+      <text x="640" y="271" font-size="12" fill="#475569">Routed via lib/chat/orchestrator.ts (thread-notify)</text>
+    </g>
+
+    <!-- Vercel Cron -->
+    <g filter="url(#cardShadow)">
+      <rect x="1180" y="190" width="540" height="100" rx="10" fill="white" stroke="#6366f1" stroke-width="1.5"/>
+      <text x="1200" y="215" font-size="15" font-weight="700" fill="#1e1b4b">Vercel Cron (scheduled)</text>
+      <text x="1200" y="237" font-size="12" fill="#475569">/api/cron/research (02:00 UTC)  ·  /api/cron/metrics-fetch</text>
+      <text x="1200" y="254" font-size="12" fill="#475569">/api/cron/outcomes-rollup  ·  /api/cron/asset-promotion</text>
+      <text x="1200" y="271" font-size="12" fill="#475569">/api/cron/learning-synthesis &amp; weekly-analyst (Mon)</text>
+    </g>
+
+    <!-- Internal callers -->
+    <g filter="url(#cardShadow)">
+      <rect x="1740" y="190" width="600" height="100" rx="10" fill="white" stroke="#6366f1" stroke-width="1.5"/>
+      <text x="1760" y="215" font-size="15" font-weight="700" fill="#1e1b4b">Internal callers · CP-Client</text>
+      <text x="1760" y="237" font-size="12" fill="#475569">Sub-agents call back into apps/web via packages/cp-client</text>
+      <text x="1760" y="254" font-size="12" fill="#475569">Header: INTERNAL_API_TOKEN  ·  Base: CP_BASE_URL</text>
+      <text x="1760" y="271" font-size="12" fill="#475569">Used for: KB search, brand guidance, metrics, similar/mistakes</text>
+    </g>
+  </g>
+
+  <!-- ========== L2: AUTH / API LAYER ========== -->
+  <g>
+    <rect x="40" y="340" width="2320" height="330" rx="14" fill="#ecfeff" stroke="#a5f3fc" stroke-width="1"/>
+    <text x="60" y="370" font-size="14" font-weight="700" fill="#0e7490" letter-spacing="1">API LAYER  ·  apps/web/app/api/**  +  apps/web/app/auth</text>
+
+    <!-- Auth -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="390" width="360" height="252" rx="10" fill="white" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="80" y="415" font-size="14" font-weight="700" fill="#164e63">Auth · Workspaces · RLS</text>
+      <text x="80" y="438" font-size="11" fill="#475569">app/auth/callback → Supabase magic link</text>
+      <text x="80" y="455" font-size="11" fill="#475569">AUTH_ALLOWLIST validation</text>
+      <text x="80" y="472" font-size="11" fill="#475569">getWorkspaceContext() + cookie</text>
+      <text x="80" y="489" font-size="11" fill="#475569">whereInWorkspace() query scoping</text>
+      <text x="80" y="506" font-size="11" fill="#475569">lib/billing/* (plans, limits, usage)</text>
+      <text x="80" y="528" font-size="13" font-weight="600" fill="#164e63">Middleware</text>
+      <text x="80" y="548" font-size="11" fill="#475569">lib/http.ts · withAuth · withWorkspace</text>
+      <text x="80" y="565" font-size="11" fill="#475569">lib/internal-auth.ts (INTERNAL_API_TOKEN)</text>
+      <text x="80" y="582" font-size="11" fill="#475569">lib/llm-preflight.ts (1-token validate)</text>
+      <text x="80" y="599" font-size="11" fill="#475569">lib/audit.ts · lib/alerts.ts (ops)</text>
+      <text x="80" y="621" font-size="11" font-style="italic" fill="#0891b2">RLS scope: every row carries workspace_id</text>
+    </g>
+
+    <!-- Content / Campaign -->
+    <g filter="url(#cardShadow)">
+      <rect x="440" y="390" width="360" height="252" rx="10" fill="white" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="460" y="415" font-size="14" font-weight="700" fill="#164e63">Content &amp; Campaigns</text>
+      <text x="460" y="437" font-size="11" fill="#334155">/api/content  ·  /[id]  ·  /[id]/submit</text>
+      <text x="460" y="454" font-size="11" fill="#334155">/api/content/[id]/generate-assets</text>
+      <text x="460" y="471" font-size="11" fill="#334155">/api/content/similar (RAG)</text>
+      <text x="460" y="488" font-size="11" fill="#334155">/api/content/common-mistakes</text>
+      <text x="460" y="505" font-size="11" fill="#334155">/api/campaigns  ·  /[id]</text>
+      <text x="460" y="527" font-size="13" font-weight="600" fill="#164e63">Approvals (HITL gate)</text>
+      <text x="460" y="547" font-size="11" fill="#334155">/api/approvals  ·  /[id]  ·  /[id]/resume</text>
+      <text x="460" y="566" font-size="11" fill="#334155">/api/workflows/approve</text>
+      <text x="460" y="588" font-size="13" font-weight="600" fill="#164e63">Assets &amp; Publish</text>
+      <text x="460" y="608" font-size="11" fill="#334155">/api/assets · /[id] · /[id]/select</text>
+      <text x="460" y="625" font-size="11" fill="#334155">/api/publish-jobs · /[id] · /today-count</text>
+    </g>
+
+    <!-- Generation Jobs / Workflows -->
+    <g filter="url(#cardShadow)">
+      <rect x="820" y="390" width="360" height="252" rx="10" fill="white" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="840" y="415" font-size="14" font-weight="700" fill="#164e63">Generation &amp; Workflows</text>
+      <text x="840" y="437" font-size="11" fill="#334155">/api/generation-jobs/start  ← main entry</text>
+      <text x="840" y="454" font-size="11" fill="#334155">/api/generation-jobs · /[id] · /steps</text>
+      <text x="840" y="471" font-size="11" fill="#334155">/api/workflow-runs · /[id] · /retry</text>
+      <text x="840" y="488" font-size="11" fill="#334155">/api/workflow-runs/start · /engines</text>
+      <text x="840" y="505" font-size="11" fill="#334155">/api/workflows/single-post</text>
+      <text x="840" y="527" font-size="13" font-weight="600" fill="#164e63">Goals &amp; Experiments</text>
+      <text x="840" y="547" font-size="11" fill="#334155">/api/goals · /[id]  (loop_status)</text>
+      <text x="840" y="566" font-size="11" fill="#334155">starts goal-loop workflow</text>
+      <text x="840" y="588" font-size="13" font-weight="600" fill="#164e63">Chat (debug)</text>
+      <text x="840" y="608" font-size="11" fill="#334155">/api/test-chat · /stream · /models</text>
+      <text x="840" y="625" font-size="11" fill="#334155">/api/thread-notify (Slack/Discord)</text>
+    </g>
+
+    <!-- Brand / KB -->
+    <g filter="url(#cardShadow)">
+      <rect x="1200" y="390" width="360" height="252" rx="10" fill="white" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="1220" y="415" font-size="14" font-weight="700" fill="#164e63">Brand &amp; Knowledge Base</text>
+      <text x="1220" y="437" font-size="11" fill="#334155">/api/brand-documents · /[id]</text>
+      <text x="1220" y="454" font-size="11" fill="#334155">/api/brand-design-system · /logos</text>
+      <text x="1220" y="471" font-size="11" fill="#334155">/api/brand-extract</text>
+      <text x="1220" y="488" font-size="11" fill="#334155">/api/brand-memory · /[slug]</text>
+      <text x="1220" y="510" font-size="13" font-weight="600" fill="#164e63">Knowledge Base (RAG)</text>
+      <text x="1220" y="530" font-size="11" fill="#334155">/api/kb/collections</text>
+      <text x="1220" y="547" font-size="11" fill="#334155">/api/kb/documents · /[id]</text>
+      <text x="1220" y="564" font-size="11" fill="#334155">/api/kb/search  ← pgvector cosine</text>
+      <text x="1220" y="581" font-size="11" fill="#334155">/api/kb/visual-references</text>
+      <text x="1220" y="603" font-size="11" fill="#334155">/api/admin/embeddings/backfill</text>
+      <text x="1220" y="624" font-size="11" font-style="italic" fill="#0891b2">Triggers embed workflow</text>
+    </g>
+
+    <!-- Metrics / Learning / Research / Cron / Settings -->
+    <g filter="url(#cardShadow)">
+      <rect x="1580" y="390" width="380" height="252" rx="10" fill="white" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="1600" y="415" font-size="14" font-weight="700" fill="#164e63">Metrics · Learning · Research</text>
+      <text x="1600" y="437" font-size="11" fill="#334155">/api/metrics (record + fetch)</text>
+      <text x="1600" y="454" font-size="11" fill="#334155">/api/insights/top-performers</text>
+      <text x="1600" y="471" font-size="11" fill="#334155">/api/learning/insights · /synthesis</text>
+      <text x="1600" y="488" font-size="11" fill="#334155">/api/research/run (manual trigger)</text>
+      <text x="1600" y="510" font-size="13" font-weight="600" fill="#164e63">Cron handlers</text>
+      <text x="1600" y="530" font-size="11" fill="#334155">/api/cron/research · /metrics-fetch</text>
+      <text x="1600" y="547" font-size="11" fill="#334155">/api/cron/outcomes-rollup</text>
+      <text x="1600" y="564" font-size="11" fill="#334155">/api/cron/learning-synthesis</text>
+      <text x="1600" y="581" font-size="11" fill="#334155">/api/cron/weekly-analyst · /asset-promotion</text>
+      <text x="1600" y="603" font-size="13" font-weight="600" fill="#164e63">Config / Audit / Usage</text>
+      <text x="1600" y="623" font-size="11" fill="#334155">/api/settings · /audit-log · /usage</text>
+    </g>
+
+    <!-- Right pane: usage -->
+    <g filter="url(#cardShadow)">
+      <rect x="1980" y="390" width="360" height="252" rx="10" fill="white" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="2000" y="415" font-size="14" font-weight="700" fill="#164e63">Usage · Billing · Audit</text>
+      <text x="2000" y="437" font-size="11" fill="#334155">/api/usage  (today/7d/30d/all)</text>
+      <text x="2000" y="454" font-size="11" fill="#334155">/api/usage/by-workflow/[id]</text>
+      <text x="2000" y="471" font-size="11" fill="#334155">/api/audit-log</text>
+      <text x="2000" y="488" font-size="11" fill="#334155">Plans: free / pro / enterprise</text>
+      <text x="2000" y="505" font-size="11" fill="#334155">usageEvents · usageCounters · billingEvents</text>
+      <text x="2000" y="527" font-size="13" font-weight="600" fill="#164e63">Observability</text>
+      <text x="2000" y="547" font-size="11" fill="#334155">OpenTelemetry → Grafana Cloud OTLP</text>
+      <text x="2000" y="564" font-size="11" fill="#334155">OPS_ALERT_WEBHOOK_URL (Slack)</text>
+      <text x="2000" y="586" font-size="13" font-weight="600" fill="#164e63">Feature flags</text>
+      <text x="2000" y="606" font-size="11" fill="#334155">WORKFLOW_PUBLISH · _EMBED · _CHAT</text>
+      <text x="2000" y="623" font-size="11" fill="#334155">(0 = legacy BullMQ · 1 = Vercel workflow)</text>
+    </g>
+  </g>
+
+  <!-- ========== L3: WORKFLOW DISPATCH ========== -->
+  <g>
+    <rect x="40" y="700" width="2320" height="150" rx="14" fill="#ecfdf5" stroke="#a7f3d0" stroke-width="1"/>
+    <text x="60" y="730" font-size="14" font-weight="700" fill="#065f46" letter-spacing="1">WORKFLOW DISPATCHER  ·  apps/web/lib/workflow-engines</text>
+
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="750" width="640" height="85" rx="10" fill="white" stroke="#10b981" stroke-width="1.5"/>
+      <text x="80" y="775" font-size="14" font-weight="700" fill="#064e3b">dispatch.ts</text>
+      <text x="80" y="795" font-size="11" fill="#334155">1. validate engine capability  ·  2. resolveSubAgentModel (override→settings→default)</text>
+      <text x="80" y="812" font-size="11" fill="#334155">3. preflight LLM (1-token call)  ·  4. insert workflow_runs row (status=running)</text>
+      <text x="80" y="829" font-size="11" fill="#334155">5. engine.start(workflow, input)  ·  returns { workflowRunId, engineRunRef, engine }</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="720" y="750" width="420" height="85" rx="10" fill="white" stroke="#10b981" stroke-width="1.5"/>
+      <text x="740" y="775" font-size="14" font-weight="700" fill="#064e3b">registry.ts  ·  engines/*</text>
+      <text x="740" y="795" font-size="11" fill="#334155">VercelEngine — start() via Vercel Workflows SDK</text>
+      <text x="740" y="812" font-size="11" fill="#334155">CloudflareEngine — fallback adapter</text>
+      <text x="740" y="829" font-size="11" fill="#334155">get-default-model.ts  ·  runs.ts (workflow_runs CRUD)</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="1160" y="750" width="560" height="85" rx="10" fill="white" stroke="#10b981" stroke-width="1.5"/>
+      <text x="1180" y="775" font-size="14" font-weight="700" fill="#064e3b">Chat orchestrator  ·  lib/chat</text>
+      <text x="1180" y="795" font-size="11" fill="#334155">orchestrator.ts — Slack/Discord/web @mentions → agent routing</text>
+      <text x="1180" y="812" font-size="11" fill="#334155">chat-handler · history-store · generation-tracker (in-flight jobs)</text>
+      <text x="1180" y="829" font-size="11" fill="#334155">learn-from-conversation — extract feedback → agent_feedback</text>
+    </g>
+    <g filter="url(#cardShadow)">
+      <rect x="1740" y="750" width="600" height="85" rx="10" fill="white" stroke="#10b981" stroke-width="1.5"/>
+      <text x="1760" y="775" font-size="14" font-weight="700" fill="#064e3b">Publish queue  ·  lib/publish-queue.ts</text>
+      <text x="1760" y="795" font-size="11" fill="#334155">Enqueues publish_jobs · channel cap check · kill-switch</text>
+      <text x="1760" y="812" font-size="11" fill="#334155">lib/asset-variants · video-variant · asset-renderer · asset-learning</text>
+      <text x="1760" y="829" font-size="11" fill="#334155">lib/cost (token cost calc)  ·  lib/goals/event-log</text>
+    </g>
+  </g>
+
+  <!-- ========== L4: WORKFLOWS ========== -->
+  <g>
+    <rect x="40" y="880" width="2320" height="340" rx="14" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+    <text x="60" y="910" font-size="14" font-weight="700" fill="#92400e" letter-spacing="1">VERCEL WORKFLOWS  ·  apps/web/workflows/**  ·  durable steps with "use workflow" / "use step"</text>
+
+    <!-- single-post -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="930" width="360" height="270" rx="10" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="80" y="955" font-size="14" font-weight="700" fill="#78350f">single-post.ts  ⭐ main flow</text>
+      <text x="80" y="977" font-size="11" fill="#475569">1. Content draft (kb·brand·mistakes)</text>
+      <text x="80" y="994" font-size="11" fill="#475569">2. Approval gate (Slack/Discord/web)</text>
+      <text x="80" y="1011" font-size="11" fill="#475569">3. content_items row insert</text>
+      <text x="80" y="1028" font-size="11" fill="#475569">4. asset-pipeline → image</text>
+      <text x="80" y="1045" font-size="11" fill="#475569">5. publish → channel adapter</text>
+      <text x="80" y="1062" font-size="11" fill="#475569">6. schedule metrics fetch</text>
+      <text x="80" y="1090" font-size="13" font-weight="600" fill="#78350f">campaign-plan.ts</text>
+      <text x="80" y="1110" font-size="11" fill="#475569">Strategist → calendar (phase/stage)</text>
+      <text x="80" y="1127" font-size="11" fill="#475569">Sets visual_identity (campaign-level)</text>
+      <text x="80" y="1155" font-size="13" font-weight="600" fill="#78350f">goal-loop.ts</text>
+      <text x="80" y="1175" font-size="11" fill="#475569">plan → execute → measure → reevaluate</text>
+      <text x="80" y="1192" font-size="11" fill="#475569">loop_status: planning..converged</text>
+    </g>
+
+    <!-- asset-pipeline -->
+    <g filter="url(#cardShadow)">
+      <rect x="440" y="930" width="360" height="270" rx="10" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="460" y="955" font-size="14" font-weight="700" fill="#78350f">asset-pipeline.ts  (post-0029)</text>
+      <text x="460" y="977" font-size="11" fill="#475569">1. load-context (content + campaign)</text>
+      <text x="460" y="994" font-size="11" fill="#475569">2. art-direction (REFINER, no LLM)</text>
+      <text x="460" y="1011" font-size="11" fill="#475569">3. persistBrief (durable)</text>
+      <text x="460" y="1028" font-size="11" fill="#475569">4. generatePass v1 (one image)</text>
+      <text x="460" y="1045" font-size="11" fill="#475569">5. judge (vision LLM accepts/rejects)</text>
+      <text x="460" y="1062" font-size="11" fill="#475569">6. retry once if rejected → v2</text>
+      <text x="460" y="1079" font-size="11" fill="#475569">7. upload + insert assets row</text>
+      <text x="460" y="1101" font-size="11" font-style="italic" fill="#a16207">Was: fanout-3 + LLM concept ~$0.22</text>
+      <text x="460" y="1118" font-size="11" font-style="italic" fill="#a16207">Now: single gen ~$0.07 (~$0.13 retry)</text>
+      <text x="460" y="1146" font-size="13" font-weight="600" fill="#78350f">asset.ts (lightweight)</text>
+      <text x="460" y="1166" font-size="11" fill="#475569">Pure generation path, no LLM concept</text>
+      <text x="460" y="1188" font-size="11" fill="#475569">Storage path: pipeline/&lt;ws&gt;/&lt;c&gt;/v1-N.png</text>
+    </g>
+
+    <!-- publish -->
+    <g filter="url(#cardShadow)">
+      <rect x="820" y="930" width="360" height="270" rx="10" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="840" y="955" font-size="14" font-weight="700" fill="#78350f">publish.ts</text>
+      <text x="840" y="977" font-size="11" fill="#475569">Test mode short-circuit (status=test)</text>
+      <text x="840" y="994" font-size="11" fill="#475569">Gates: daily cap · workspace · kill-switch</text>
+      <text x="840" y="1011" font-size="11" fill="#475569">Channel adapter (LinkedIn / X / HubSpot</text>
+      <text x="840" y="1028" font-size="11" fill="#475569">/ Mailchimp / Meta / internal blog)</text>
+      <text x="840" y="1045" font-size="11" fill="#475569">Mark publish_jobs row (external_id, url)</text>
+      <text x="840" y="1062" font-size="11" fill="#475569">Notify origin thread (Slack/Discord link)</text>
+      <text x="840" y="1079" font-size="11" fill="#475569">Schedule metrics fetch 24h later</text>
+      <text x="840" y="1107" font-size="13" font-weight="600" fill="#78350f">metrics.ts</text>
+      <text x="840" y="1127" font-size="11" fill="#475569">Fetch from GA4 / X / LinkedIn APIs</text>
+      <text x="840" y="1144" font-size="11" fill="#475569">Record metrics rows (ctr, impressions…)</text>
+      <text x="840" y="1166" font-size="13" font-weight="600" fill="#78350f">outcomes-rollup.ts</text>
+      <text x="840" y="1186" font-size="11" fill="#475569">Aggregate metrics → outcomes (goal eval)</text>
+    </g>
+
+    <!-- KB / embed / research -->
+    <g filter="url(#cardShadow)">
+      <rect x="1200" y="930" width="360" height="270" rx="10" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="1220" y="955" font-size="14" font-weight="700" fill="#78350f">kb-ingest.ts  ·  embed.ts</text>
+      <text x="1220" y="977" font-size="11" fill="#475569">Chunk body_md → kbChunks rows</text>
+      <text x="1220" y="994" font-size="11" fill="#475569">Embed via Gemini or OpenAI</text>
+      <text x="1220" y="1011" font-size="11" fill="#475569">Generic embeddings table (multi-source)</text>
+      <text x="1220" y="1028" font-size="11" fill="#475569">Sources: content, brand_doc, rejected_draft,</text>
+      <text x="1220" y="1045" font-size="11" fill="#475569">kb_chunk → pgvector 1536d index</text>
+      <text x="1220" y="1073" font-size="13" font-weight="600" fill="#78350f">research.ts (daily)</text>
+      <text x="1220" y="1093" font-size="11" fill="#475569">Researcher agent + Tavily/Brave search</text>
+      <text x="1220" y="1110" font-size="11" fill="#475569">+ x_profile tool (public timeline scrape)</text>
+      <text x="1220" y="1127" font-size="11" fill="#475569">→ markdown report → Slack/Discord</text>
+      <text x="1220" y="1149" font-size="13" font-weight="600" fill="#78350f">learning-synthesis.ts (weekly)</text>
+      <text x="1220" y="1169" font-size="11" fill="#475569">Aggregate agent_feedback (rejected, change)</text>
+      <text x="1220" y="1186" font-size="11" fill="#475569">→ synth into learnings for future drafts</text>
+    </g>
+
+    <!-- weekly-analyst & misc -->
+    <g filter="url(#cardShadow)">
+      <rect x="1580" y="930" width="380" height="270" rx="10" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="1600" y="955" font-size="14" font-weight="700" fill="#78350f">weekly-analyst.ts (Mon)</text>
+      <text x="1600" y="977" font-size="11" fill="#475569">Analyst agent + top-performers query</text>
+      <text x="1600" y="994" font-size="11" fill="#475569">→ markdown report w/ recs + trends</text>
+      <text x="1600" y="1011" font-size="11" fill="#475569">→ MARKETING_SLACK_CHANNEL_ID / Discord</text>
+      <text x="1600" y="1039" font-size="13" font-weight="600" fill="#78350f">asset-promotion.ts (cron)</text>
+      <text x="1600" y="1059" font-size="11" fill="#475569">Promote high-judge-score assets into</text>
+      <text x="1600" y="1076" font-size="11" fill="#475569">campaign KB visual_reference collection</text>
+      <text x="1600" y="1098" font-size="11" fill="#475569">→ Art Director reference loop</text>
+      <text x="1600" y="1126" font-size="13" font-weight="600" fill="#78350f">brand-extract (api-triggered)</text>
+      <text x="1600" y="1146" font-size="11" fill="#475569">Parse brand docs → brandMemoryDrafts</text>
+      <text x="1600" y="1163" font-size="11" fill="#475569">→ user approves → brandMemory</text>
+      <text x="1600" y="1185" font-size="11" font-style="italic" fill="#a16207">extractionRuns tracks each pass</text>
+    </g>
+
+    <!-- step persistence -->
+    <g filter="url(#cardShadow)">
+      <rect x="1980" y="930" width="360" height="270" rx="10" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="2000" y="955" font-size="14" font-weight="700" fill="#78350f">Durable step model</text>
+      <text x="2000" y="977" font-size="11" fill="#475569">Each "use step" persists to:</text>
+      <text x="2000" y="994" font-size="11" font-weight="600" fill="#1e293b">generation_jobs (top-level)</text>
+      <text x="2000" y="1011" font-size="11" fill="#475569">  kind, input_json, status, timing</text>
+      <text x="2000" y="1028" font-size="11" font-weight="600" fill="#1e293b">generation_job_steps</text>
+      <text x="2000" y="1045" font-size="11" fill="#475569">  load-context, art-direction, judge…</text>
+      <text x="2000" y="1062" font-size="11" font-weight="600" fill="#1e293b">workflow_runs (engine view)</text>
+      <text x="2000" y="1079" font-size="11" fill="#475569">  engine, engine_run_ref, model_snapshot</text>
+      <text x="2000" y="1107" font-size="13" font-weight="600" fill="#78350f">Retry semantics</text>
+      <text x="2000" y="1127" font-size="11" fill="#475569">Judge-reject → 1 retry (asset-pipeline)</text>
+      <text x="2000" y="1144" font-size="11" fill="#475569">Generation_job step failure → manual retry</text>
+      <text x="2000" y="1166" font-size="11" fill="#475569">api/workflow-runs/[id]/retry  ↺</text>
+      <text x="2000" y="1188" font-size="11" font-style="italic" fill="#a16207">Vercel Workflows handles idempotency</text>
+    </g>
+  </g>
+
+  <!-- ========== L5: AGENTS ========== -->
+  <g>
+    <rect x="40" y="1250" width="2320" height="430" rx="14" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>
+    <text x="60" y="1280" font-size="14" font-weight="700" fill="#991b1b" letter-spacing="1">SUB-AGENTS &amp; SHARED PRIMITIVES  ·  packages/agents</text>
+
+    <!-- Strategist -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="1300" width="290" height="170" rx="10" fill="white" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="80" y="1325" font-size="14" font-weight="700" fill="#7f1d1d">Strategist</text>
+      <text x="80" y="1345" font-size="11" fill="#475569">In: brand voice/ICP, product, learnings</text>
+      <text x="80" y="1362" font-size="11" fill="#475569">Out: campaign brief, calendar, visualIdentity</text>
+      <text x="80" y="1379" font-size="11" fill="#475569">  (recurring_motifs, art_style, banned)</text>
+      <text x="80" y="1396" font-size="11" fill="#475569">Tools: read_memory, find_brand_guidance,</text>
+      <text x="80" y="1413" font-size="11" fill="#475569">find_similar_content, create_campaign,</text>
+      <text x="80" y="1430" font-size="11" fill="#475569">set_visual_identity, write_calendar</text>
+      <text x="80" y="1455" font-size="11" font-style="italic" fill="#991b1b">Stages: pull · explain · reinforce · push</text>
+    </g>
+
+    <!-- Content -->
+    <g filter="url(#cardShadow)">
+      <rect x="370" y="1300" width="290" height="170" rx="10" fill="white" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="390" y="1325" font-size="14" font-weight="700" fill="#7f1d1d">Content</text>
+      <text x="390" y="1345" font-size="11" fill="#475569">In: campaign, request, stage, learnings</text>
+      <text x="390" y="1362" font-size="11" fill="#475569">Out: body_md, image_brief, rationale</text>
+      <text x="390" y="1379" font-size="11" fill="#475569">Tools: kb_search, find_brand_guidance,</text>
+      <text x="390" y="1396" font-size="11" fill="#475569">find_similar_content, find_common_mistakes,</text>
+      <text x="390" y="1413" font-size="11" fill="#475569">submit_for_approval, read_memory</text>
+      <text x="390" y="1440" font-size="11" font-style="italic" fill="#991b1b">HITL: rewrites on changes_requested</text>
+      <text x="390" y="1457" font-size="11" font-style="italic" fill="#991b1b">embeds rejected drafts for mistake search</text>
+    </g>
+
+    <!-- Art Director -->
+    <g filter="url(#cardShadow)">
+      <rect x="680" y="1300" width="290" height="170" rx="10" fill="white" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="700" y="1325" font-size="14" font-weight="700" fill="#7f1d1d">Art Director (refiner)</text>
+      <text x="700" y="1345" font-size="11" fill="#475569">Post-0029: deterministic refiner — no LLM</text>
+      <text x="700" y="1362" font-size="11" fill="#475569">In: imageBrief (Content) + visualIdentity</text>
+      <text x="700" y="1379" font-size="11" fill="#475569">     (Strategist, campaign-level)</text>
+      <text x="700" y="1396" font-size="11" fill="#475569">Out: VisualConceptBrief</text>
+      <text x="700" y="1413" font-size="11" fill="#475569">Fallback: LLM synthesis if brief missing</text>
+      <text x="700" y="1440" font-size="11" font-style="italic" fill="#991b1b">→ concept-to-prompt.ts → image prompt</text>
+      <text x="700" y="1457" font-size="11" font-style="italic" fill="#991b1b">  (single variant + brand prefix)</text>
+    </g>
+
+    <!-- Asset Judge -->
+    <g filter="url(#cardShadow)">
+      <rect x="990" y="1300" width="290" height="170" rx="10" fill="white" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="1010" y="1325" font-size="14" font-weight="700" fill="#7f1d1d">Asset Judge (vision)</text>
+      <text x="1010" y="1345" font-size="11" fill="#475569">Vision LLM scores accept/reject</text>
+      <text x="1010" y="1362" font-size="11" fill="#475569">Criteria: visual quality, brand alignment,</text>
+      <text x="1010" y="1379" font-size="11" fill="#475569">  text legibility, composition</text>
+      <text x="1010" y="1396" font-size="11" fill="#475569">In: brief + candidate signed URL + prompt</text>
+      <text x="1010" y="1413" font-size="11" fill="#475569">Out: { verdict, total, reason, sub-scores }</text>
+      <text x="1010" y="1430" font-size="11" fill="#475569">judgeScore persisted on assets row</text>
+      <text x="1010" y="1457" font-size="11" font-style="italic" fill="#991b1b">Feeds learning loop (Phase D)</text>
+    </g>
+
+    <!-- Asset agent -->
+    <g filter="url(#cardShadow)">
+      <rect x="1300" y="1300" width="290" height="170" rx="10" fill="white" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="1320" y="1325" font-size="14" font-weight="700" fill="#7f1d1d">Asset agent</text>
+      <text x="1320" y="1345" font-size="11" fill="#475569">Tools: load_configured_image_model,</text>
+      <text x="1320" y="1362" font-size="11" fill="#475569">  load_configured_video_model,</text>
+      <text x="1320" y="1379" font-size="11" fill="#475569">  generate_image, generate_video,</text>
+      <text x="1320" y="1396" font-size="11" fill="#475569">  upload_asset, upload_generated_media</text>
+      <text x="1320" y="1413" font-size="11" fill="#475569">Resolves model from settings (override→default)</text>
+      <text x="1320" y="1440" font-size="11" font-style="italic" fill="#991b1b">image: Gemini NB2 · SDXL · Flux (Replicate)</text>
+      <text x="1320" y="1457" font-size="11" font-style="italic" fill="#991b1b">video: Gemini Veo 3.1</text>
+    </g>
+
+    <!-- Analyst -->
+    <g filter="url(#cardShadow)">
+      <rect x="1610" y="1300" width="290" height="170" rx="10" fill="white" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="1630" y="1325" font-size="14" font-weight="700" fill="#7f1d1d">Analyst</text>
+      <text x="1630" y="1345" font-size="11" fill="#475569">Weekly performance report</text>
+      <text x="1630" y="1362" font-size="11" fill="#475569">In: top-performers, channel metrics,</text>
+      <text x="1630" y="1379" font-size="11" fill="#475569">    engagement trends</text>
+      <text x="1630" y="1396" font-size="11" fill="#475569">Out: markdown (insights + recs)</text>
+      <text x="1630" y="1413" font-size="11" fill="#475569">→ Slack/Discord channel + /learning feed</text>
+      <text x="1630" y="1440" font-size="11" font-style="italic" fill="#991b1b">Closes outer loop with Strategist</text>
+    </g>
+
+    <!-- Researcher / SEO / Lifecycle / Experiment -->
+    <g filter="url(#cardShadow)">
+      <rect x="1920" y="1300" width="420" height="170" rx="10" fill="white" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="1940" y="1325" font-size="14" font-weight="700" fill="#7f1d1d">Researcher · SEO · Lifecycle · Experiment</text>
+      <text x="1940" y="1347" font-size="11" fill="#475569">Researcher: daily web_search (Tavily/Brave),</text>
+      <text x="1940" y="1364" font-size="11" fill="#475569">  x_profile tool → trend digest</text>
+      <text x="1940" y="1381" font-size="11" fill="#475569">SEO: meta tags, headings, keyword density</text>
+      <text x="1940" y="1398" font-size="11" fill="#475569">  (internal blog only)</text>
+      <text x="1940" y="1415" font-size="11" fill="#475569">Lifecycle: email sequence planning</text>
+      <text x="1940" y="1432" font-size="11" fill="#475569">  (awareness → consideration → retention)</text>
+      <text x="1940" y="1449" font-size="11" fill="#475569">Experiment: A/B variant design + winner pick</text>
+    </g>
+
+    <!-- Shared agent primitives row -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="1490" width="700" height="170" rx="10" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+      <text x="80" y="1515" font-size="14" font-weight="700" fill="#7c2d12">Shared agent primitives</text>
+      <text x="80" y="1537" font-size="11" fill="#475569">brand-prompt.ts → buildBrandPromptPrefix (voice/style/visual)</text>
+      <text x="80" y="1554" font-size="11" fill="#475569">brand-store.ts · design-system-store.ts — brand memory + tokens</text>
+      <text x="80" y="1571" font-size="11" fill="#475569">concept-to-prompt.ts → brief → variants → image prompts</text>
+      <text x="80" y="1588" font-size="11" fill="#475569">image-gen.ts · video-gen.ts · asset-uploader.ts</text>
+      <text x="80" y="1605" font-size="11" fill="#475569">memory.ts — load brand/* learnings/* product/* files</text>
+      <text x="80" y="1622" font-size="11" fill="#475569">llm-registry.ts — model name → AI SDK language model</text>
+      <text x="80" y="1639" font-size="11" fill="#475569">usage.ts — records llmUsage rows per call</text>
+      <text x="80" y="1657" font-size="11" font-style="italic" fill="#7c2d12">find-similar · find-common-mistakes · brand-guidance (CP-Client calls)</text>
+    </g>
+
+    <!-- KB module -->
+    <g filter="url(#cardShadow)">
+      <rect x="780" y="1490" width="700" height="170" rx="10" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+      <text x="800" y="1515" font-size="14" font-weight="700" fill="#7c2d12">Knowledge Base · packages/agents/src/kb</text>
+      <text x="800" y="1537" font-size="11" fill="#475569">index.ts — search · list · upsert · archive</text>
+      <text x="800" y="1554" font-size="11" fill="#475569">store.ts — kb_collections + kb_documents CRUD</text>
+      <text x="800" y="1571" font-size="11" fill="#475569">ingest.ts — chunk body_md (token-aware) → kb_chunks rows</text>
+      <text x="800" y="1588" font-size="11" fill="#475569">embed-client.ts — provider abstraction (Gemini · OpenAI)</text>
+      <text x="800" y="1605" font-size="11" fill="#475569">retrieve.ts — pgvector cosine similarity top-N</text>
+      <text x="800" y="1622" font-size="11" fill="#475569">rerank.ts — optional cross-encoder rerank step</text>
+      <text x="800" y="1645" font-size="11" font-style="italic" fill="#7c2d12">Collection kinds: brand · product · persona · competitor · sop</text>
+      <text x="800" y="1659" font-size="11" font-style="italic" fill="#7c2d12">  · playbook · past_content · asset_caption · visual_reference · external_doc</text>
+    </g>
+
+    <!-- Channel adapters -->
+    <g filter="url(#cardShadow)">
+      <rect x="1500" y="1490" width="840" height="170" rx="10" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+      <text x="1520" y="1515" font-size="14" font-weight="700" fill="#7c2d12">Channel adapters · packages/agents/src/adapters</text>
+      <text x="1520" y="1538" font-size="11" fill="#475569">LinkedInAdapter — UGC posts via LINKEDIN_ACCESS_TOKEN + ORGANIZATION_URN</text>
+      <text x="1520" y="1555" font-size="11" fill="#475569">XAdapter — tweets/threads via X API v2 (OAuth 1.0a)</text>
+      <text x="1520" y="1572" font-size="11" fill="#475569">HubspotEmailAdapter — Marketing Email API (single-send + lists)</text>
+      <text x="1520" y="1589" font-size="11" fill="#475569">MailchimpAdapter — campaigns API + audience list</text>
+      <text x="1520" y="1606" font-size="11" fill="#475569">FacebookAdapter · InstagramAdapter — Meta Graph API (page + IG business)</text>
+      <text x="1520" y="1623" font-size="11" fill="#475569">InternalBlogAdapter — POST into internal blog DB / static site rebuild</text>
+      <text x="1520" y="1645" font-size="11" font-style="italic" fill="#7c2d12">Each adapter writes external_id + external_url back to publish_jobs row</text>
+      <text x="1520" y="1659" font-size="11" font-style="italic" fill="#7c2d12">Approval cards: packages/agents/src/cards (Slack · Discord · web UI)</text>
+    </g>
+  </g>
+
+  <!-- ========== L6: DATA & EXTERNAL ========== -->
+  <g>
+    <rect x="40" y="1710" width="1180" height="660" rx="14" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1"/>
+    <text x="60" y="1740" font-size="14" font-weight="700" fill="#5b21b6" letter-spacing="1">DATA LAYER  ·  Supabase (Postgres+pgvector, Storage, Auth)  ·  packages/db schema (36 Drizzle tables)</text>
+
+    <!-- Campaign/Content -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="1760" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="80" y="1785" font-size="13" font-weight="700" fill="#4c1d95">Campaign &amp; Content</text>
+      <text x="80" y="1805" font-size="11" fill="#475569">campaigns  (phase, visualIdentity jsonb)</text>
+      <text x="80" y="1822" font-size="11" fill="#475569">content_items  (type, stage, imageBrief,</text>
+      <text x="80" y="1839" font-size="11" fill="#475569">  visualBrief, body_md, rationale, status)</text>
+      <text x="80" y="1856" font-size="11" fill="#475569">content_revisions  (edit history)</text>
+      <text x="80" y="1873" font-size="11" fill="#475569">approvals  (status, decision_by, agent_feedback)</text>
+      <text x="80" y="1895" font-size="11" font-style="italic" fill="#6d28d9">FK: workspace_id → workspaces (every table)</text>
+    </g>
+
+    <!-- Assets & Publish -->
+    <g filter="url(#cardShadow)">
+      <rect x="445" y="1760" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="465" y="1785" font-size="13" font-weight="700" fill="#4c1d95">Assets &amp; Publishing</text>
+      <text x="465" y="1805" font-size="11" fill="#475569">assets  (kind, storage_path, size_variants,</text>
+      <text x="465" y="1822" font-size="11" fill="#475569">  judgeScore jsonb, judgeTotal, judgeVerdict)</text>
+      <text x="465" y="1839" font-size="11" fill="#475569">publish_jobs  (channel, status, external_id,</text>
+      <text x="465" y="1856" font-size="11" fill="#475569">  external_url, scheduled_at, published_at, mode)</text>
+      <text x="465" y="1873" font-size="11" fill="#475569">publish_job_assets  (map asset → job)</text>
+      <text x="465" y="1895" font-size="11" font-style="italic" fill="#6d28d9">Storage bucket: pipeline/&lt;ws&gt;/&lt;c&gt;/v1-N.png</text>
+    </g>
+
+    <!-- Brand/KB -->
+    <g filter="url(#cardShadow)">
+      <rect x="830" y="1760" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="850" y="1785" font-size="13" font-weight="700" fill="#4c1d95">Brand · KB · Embeddings</text>
+      <text x="850" y="1805" font-size="11" fill="#475569">brand_memory · brand_memory_drafts</text>
+      <text x="850" y="1822" font-size="11" fill="#475569">brand_design_system · brand_documents</text>
+      <text x="850" y="1839" font-size="11" fill="#475569">extraction_runs</text>
+      <text x="850" y="1856" font-size="11" fill="#475569">kb_collections · kb_documents · kb_chunks</text>
+      <text x="850" y="1873" font-size="11" fill="#475569">embeddings  (1536-d pgvector, multi-source)</text>
+      <text x="850" y="1895" font-size="11" font-style="italic" fill="#6d28d9">embedding_source_type: content, brand_doc,</text>
+    </g>
+
+    <!-- Generation/Workflow -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="1925" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="80" y="1950" font-size="13" font-weight="700" fill="#4c1d95">Generation · Workflow runs</text>
+      <text x="80" y="1970" font-size="11" fill="#475569">generation_jobs  (kind, input, status)</text>
+      <text x="80" y="1987" font-size="11" fill="#475569">generation_job_steps  (name, input/output,</text>
+      <text x="80" y="2004" font-size="11" fill="#475569">  duration_ms, status, step_index)</text>
+      <text x="80" y="2021" font-size="11" fill="#475569">workflow_runs  (engine, engine_run_ref,</text>
+      <text x="80" y="2038" font-size="11" fill="#475569">  model_snapshot, started_at, completed_at)</text>
+      <text x="80" y="2060" font-size="11" font-style="italic" fill="#6d28d9">Single durable record across retries</text>
+    </g>
+
+    <!-- Metrics/Outcomes -->
+    <g filter="url(#cardShadow)">
+      <rect x="445" y="1925" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="465" y="1950" font-size="13" font-weight="700" fill="#4c1d95">Metrics · Outcomes · Feedback</text>
+      <text x="465" y="1970" font-size="11" fill="#475569">metrics  (scope_type, scope_id, metric,</text>
+      <text x="465" y="1987" font-size="11" fill="#475569">  value, channel, observed_at, period)</text>
+      <text x="465" y="2004" font-size="11" fill="#475569">outcomes  (campaign-level aggregates)</text>
+      <text x="465" y="2021" font-size="11" fill="#475569">agent_feedback  (kind, rationale, embedding)</text>
+      <text x="465" y="2038" font-size="11" fill="#475569">  → fuels find_common_mistakes</text>
+      <text x="465" y="2060" font-size="11" font-style="italic" fill="#6d28d9">Goal evaluation reads outcomes vs target</text>
+    </g>
+
+    <!-- Goals/Experiments/Lifecycle -->
+    <g filter="url(#cardShadow)">
+      <rect x="830" y="1925" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="850" y="1950" font-size="13" font-weight="700" fill="#4c1d95">Goals · Experiments · Lifecycle</text>
+      <text x="850" y="1970" font-size="11" fill="#475569">goal_events  (plan_drafted, fanout_started,</text>
+      <text x="850" y="1987" font-size="11" fill="#475569">  approval_resolved, reevaluated, converged…)</text>
+      <text x="850" y="2004" font-size="11" fill="#475569">experiments  (variant_a, variant_b, winner)</text>
+      <text x="850" y="2021" font-size="11" fill="#475569">lifecycle_sequences · lifecycle_steps</text>
+      <text x="850" y="2038" font-size="11" fill="#475569">  (awareness · consideration · decision · retention)</text>
+      <text x="850" y="2060" font-size="11" font-style="italic" fill="#6d28d9">Drives email nurture &amp; A/B routing</text>
+    </g>
+
+    <!-- Usage / Billing / Workspaces -->
+    <g filter="url(#cardShadow)">
+      <rect x="60" y="2090" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="80" y="2115" font-size="13" font-weight="700" fill="#4c1d95">Usage · Billing</text>
+      <text x="80" y="2135" font-size="11" fill="#475569">llm_usage  (agent, model, tokens, cost_cents)</text>
+      <text x="80" y="2152" font-size="11" fill="#475569">usage_events  (event_type, quantity, cents)</text>
+      <text x="80" y="2169" font-size="11" fill="#475569">usage_counters  (today/7d/30d windows)</text>
+      <text x="80" y="2186" font-size="11" fill="#475569">subscriptions · billing_events · plans</text>
+      <text x="80" y="2208" font-size="11" font-style="italic" fill="#6d28d9">Plans: free · pro · enterprise</text>
+      <text x="80" y="2225" font-size="11" font-style="italic" fill="#6d28d9">Quota gates: lib/billing on every API call</text>
+    </g>
+
+    <!-- Workspaces / Auth -->
+    <g filter="url(#cardShadow)">
+      <rect x="445" y="2090" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="465" y="2115" font-size="13" font-weight="700" fill="#4c1d95">Workspaces · Auth · Audit</text>
+      <text x="465" y="2135" font-size="11" fill="#475569">workspaces  (id, owner, plan_id)</text>
+      <text x="465" y="2152" font-size="11" fill="#475569">workspace_members  (role: owner/editor/viewer)</text>
+      <text x="465" y="2169" font-size="11" fill="#475569">admin_users  (superadmin, permissions)</text>
+      <text x="465" y="2186" font-size="11" fill="#475569">audit_log  (actor, entity, action, changes)</text>
+      <text x="465" y="2208" font-size="11" fill="#475569">settings  (per-workspace model overrides)</text>
+      <text x="465" y="2225" font-size="11" font-style="italic" fill="#6d28d9">Active workspace via cookie (active_workspace_id)</text>
+    </g>
+
+    <!-- Storage / RLS -->
+    <g filter="url(#cardShadow)">
+      <rect x="830" y="2090" width="370" height="155" rx="10" fill="white" stroke="#8b5cf6" stroke-width="1.5"/>
+      <text x="850" y="2115" font-size="13" font-weight="700" fill="#4c1d95">Storage · RLS · pgvector</text>
+      <text x="850" y="2135" font-size="11" fill="#475569">Supabase Storage bucket: assets</text>
+      <text x="850" y="2152" font-size="11" fill="#475569">  path: pipeline/&lt;workspaceId&gt;/&lt;contentId&gt;/…</text>
+      <text x="850" y="2169" font-size="11" fill="#475569">Signed URLs for judge + UI preview</text>
+      <text x="850" y="2186" font-size="11" fill="#475569">pgvector ext for embeddings.embedding</text>
+      <text x="850" y="2203" font-size="11" fill="#475569">RLS policies enforce workspace_id (PR 9)</text>
+      <text x="850" y="2225" font-size="11" font-style="italic" fill="#6d28d9">Migrations in infra/supabase/migrations/</text>
+    </g>
+
+    <!-- Mini ERD legend -->
+    <g>
+      <text x="60" y="2275" font-size="12" font-weight="600" fill="#4c1d95">Key relations</text>
+      <text x="60" y="2295" font-size="11" fill="#334155">campaigns 1—N content_items 1—N (approvals · assets · publish_jobs · content_revisions)</text>
+      <text x="60" y="2312" font-size="11" fill="#334155">workspaces 1—N every business table  ·  kb_collections 1—N kb_documents 1—N kb_chunks 1—1 embeddings</text>
+      <text x="60" y="2329" font-size="11" fill="#334155">workflow_runs 1—1 generation_jobs 1—N generation_job_steps  ·  publish_jobs 1—N metrics → outcomes</text>
+      <text x="60" y="2346" font-size="11" fill="#334155">agent_feedback.embedding ← used by Content.find_common_mistakes (pgvector lookup)</text>
+    </g>
+  </g>
+
+  <!-- ====== EXTERNAL SERVICES (right column) ====== -->
+  <g>
+    <rect x="1240" y="1710" width="1120" height="660" rx="14" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>
+    <text x="1260" y="1740" font-size="14" font-weight="700" fill="#991b1b" letter-spacing="1">EXTERNAL SERVICES  ·  see .env.example</text>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1260" y="1760" width="350" height="200" rx="10" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="1280" y="1785" font-size="13" font-weight="700" fill="#7f1d1d">LLM providers</text>
+      <text x="1280" y="1807" font-size="11" fill="#334155">Anthropic — Claude 3.5 Sonnet (default for sub-agents)</text>
+      <text x="1280" y="1824" font-size="11" fill="#334155">  ANTHROPIC_API_KEY</text>
+      <text x="1280" y="1841" font-size="11" fill="#334155">Google Gemini — text (fallback), image, video, embed</text>
+      <text x="1280" y="1858" font-size="11" fill="#334155">  GEMINI_API_KEY</text>
+      <text x="1280" y="1875" font-size="11" fill="#334155">OpenAI — GPT models + embedding fallback</text>
+      <text x="1280" y="1892" font-size="11" fill="#334155">  OPENAI_API_KEY</text>
+      <text x="1280" y="1914" font-size="11" font-style="italic" fill="#7f1d1d">Selection: settings.llm_model + per-agent override</text>
+      <text x="1280" y="1931" font-size="11" font-style="italic" fill="#7f1d1d">Preflight call before dispatch (lib/llm-preflight)</text>
+      <text x="1280" y="1948" font-size="11" font-style="italic" fill="#7f1d1d">Errors → Slack ops alert + workflow fail-fast</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1620" y="1760" width="350" height="200" rx="10" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="1640" y="1785" font-size="13" font-weight="700" fill="#7f1d1d">Image · Video generation</text>
+      <text x="1640" y="1807" font-size="11" fill="#334155">Gemini Nano Banana 2 (default image model)</text>
+      <text x="1640" y="1824" font-size="11" fill="#334155">  native overlay text → no template post-0029</text>
+      <text x="1640" y="1841" font-size="11" fill="#334155">Gemini Veo 3.1 (video)</text>
+      <text x="1640" y="1858" font-size="11" fill="#334155">Replicate — SDXL · Flux · legacy NB (fallback)</text>
+      <text x="1640" y="1875" font-size="11" fill="#334155">  REPLICATE_API_TOKEN</text>
+      <text x="1640" y="1897" font-size="11" font-style="italic" fill="#7f1d1d">Legacy: Bannerbear · Placid (poster rendering)</text>
+      <text x="1640" y="1914" font-size="11" font-style="italic" fill="#7f1d1d">POSTER_TEMPLATE_ID_* per channel (deprecated)</text>
+      <text x="1640" y="1936" font-size="11" fill="#334155">Selection: settings.image_model · video_model</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1980" y="1760" width="350" height="200" rx="10" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="2000" y="1785" font-size="13" font-weight="700" fill="#7f1d1d">Publishing channels</text>
+      <text x="2000" y="1807" font-size="11" fill="#334155">LinkedIn — UGC + org URN posts</text>
+      <text x="2000" y="1824" font-size="11" fill="#334155">X / Twitter — tweets &amp; threads (OAuth 1.0a)</text>
+      <text x="2000" y="1841" font-size="11" fill="#334155">Meta — Facebook Page + Instagram Business</text>
+      <text x="2000" y="1858" font-size="11" fill="#334155">HubSpot — marketing email + lists</text>
+      <text x="2000" y="1875" font-size="11" fill="#334155">Mailchimp — campaigns + audience</text>
+      <text x="2000" y="1892" font-size="11" fill="#334155">Internal blog — direct DB write + rebuild</text>
+      <text x="2000" y="1914" font-size="11" font-style="italic" fill="#7f1d1d">Gates: daily channel cap · workspace limits ·</text>
+      <text x="2000" y="1931" font-size="11" font-style="italic" fill="#7f1d1d">  global kill-switch · test-mode short-circuit</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1260" y="1980" width="350" height="190" rx="10" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="1280" y="2005" font-size="13" font-weight="700" fill="#7f1d1d">Research · Search</text>
+      <text x="1280" y="2027" font-size="11" fill="#334155">Tavily — answer + page extraction</text>
+      <text x="1280" y="2044" font-size="11" fill="#334155">  TAVILY_API_KEY (1k free / mo)</text>
+      <text x="1280" y="2061" font-size="11" fill="#334155">Brave Search — independent index</text>
+      <text x="1280" y="2078" font-size="11" fill="#334155">  BRAVE_SEARCH_API_KEY (2k free / mo)</text>
+      <text x="1280" y="2095" font-size="11" fill="#334155">X bearer token — public timeline read</text>
+      <text x="1280" y="2117" font-size="11" font-style="italic" fill="#7f1d1d">Provider toggle: settings.research_provider</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1620" y="1980" width="350" height="190" rx="10" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="1640" y="2005" font-size="13" font-weight="700" fill="#7f1d1d">Analytics · Telemetry</text>
+      <text x="1640" y="2027" font-size="11" fill="#334155">GA4 — metrics fetch (service account JSON)</text>
+      <text x="1640" y="2044" font-size="11" fill="#334155">  GA4_PROPERTY_ID</text>
+      <text x="1640" y="2061" font-size="11" fill="#334155">OpenTelemetry → Grafana Cloud OTLP</text>
+      <text x="1640" y="2078" font-size="11" fill="#334155">  traces · llm_usage histograms</text>
+      <text x="1640" y="2095" font-size="11" fill="#334155">Ops alerts → Slack webhook</text>
+      <text x="1640" y="2117" font-size="11" font-style="italic" fill="#7f1d1d">Channel-side metrics also via LinkedIn/X APIs</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1980" y="1980" width="350" height="190" rx="10" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="2000" y="2005" font-size="13" font-weight="700" fill="#7f1d1d">Comms · Cron · Internal</text>
+      <text x="2000" y="2027" font-size="11" fill="#334155">Slack — bot + signing secret · approval cards</text>
+      <text x="2000" y="2044" font-size="11" fill="#334155">  · weekly analyst · ops alerts</text>
+      <text x="2000" y="2061" font-size="11" fill="#334155">Discord — bot + guild · same surface</text>
+      <text x="2000" y="2078" font-size="11" fill="#334155">Vercel Cron — schedule in vercel.json</text>
+      <text x="2000" y="2095" font-size="11" fill="#334155">  CRON_SECRET bearer (x-vercel-cron)</text>
+      <text x="2000" y="2117" font-size="11" font-style="italic" fill="#7f1d1d">Inter-service: MANAGER_BASE_URL · CP_BASE_URL</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1260" y="2190" width="1070" height="170" rx="10" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="1280" y="2215" font-size="13" font-weight="700" fill="#7f1d1d">Feature flags &amp; migration toggles</text>
+      <text x="1280" y="2237" font-size="11" fill="#334155">WORKFLOW_PUBLISH  ·  WORKFLOW_EMBED  ·  WORKFLOW_CHAT   →   0 = legacy BullMQ/Manager  ·  1 = Vercel Workflow path</text>
+      <text x="1280" y="2257" font-size="11" fill="#334155">EMBEDDING_PROVIDER + EMBEDDING_MODEL  →  switch between Gemini and OpenAI (re-embed via /api/admin/embeddings/backfill)</text>
+      <text x="1280" y="2277" font-size="11" fill="#334155">settings.image_model · video_model · research_provider · llm_model  →  workspace-level overrides (resolveSubAgentModel)</text>
+      <text x="1280" y="2297" font-size="11" fill="#334155">AUTH_ALLOWLIST  →  comma-separated email allowlist for app/auth/callback</text>
+      <text x="1280" y="2317" font-size="11" fill="#334155">LEGACY_WORKSPACE_ID  →  single-tenant fallback for legacy callers (still honored by lib/billing)</text>
+      <text x="1280" y="2337" font-size="11" font-style="italic" fill="#7f1d1d">Goal of phased flags: cut over from apps/manager (BullMQ workers) to Vercel Workflows per surface, with rollback.</text>
+    </g>
+  </g>
+
+  <!-- ========== L7: SINGLE-POST SEQUENCE ========== -->
+  <g>
+    <rect x="40" y="2400" width="2320" height="700" rx="14" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="60" y="2430" font-size="14" font-weight="700" fill="#0f172a" letter-spacing="1">DETAIL  ·  SINGLE-POST WORKFLOW SEQUENCE  (apps/web/workflows/single-post.ts → asset-pipeline.ts → publish.ts)</text>
+
+    <!-- Lanes header -->
+    <g font-size="13" font-weight="700" fill="#0f172a">
+      <rect x="60" y="2455" width="180" height="34" rx="6" fill="#6366f1"/>
+      <text x="150" y="2477" text-anchor="middle" fill="white">UI / Client</text>
+      <rect x="250" y="2455" width="180" height="34" rx="6" fill="#0ea5e9"/>
+      <text x="340" y="2477" text-anchor="middle" fill="white">API + dispatch</text>
+      <rect x="440" y="2455" width="180" height="34" rx="6" fill="#10b981"/>
+      <text x="530" y="2477" text-anchor="middle" fill="white">Vercel Workflow</text>
+      <rect x="630" y="2455" width="320" height="34" rx="6" fill="#f59e0b"/>
+      <text x="790" y="2477" text-anchor="middle" fill="white">Sub-agents (CP-Client / LLM / image)</text>
+      <rect x="960" y="2455" width="240" height="34" rx="6" fill="#8b5cf6"/>
+      <text x="1080" y="2477" text-anchor="middle" fill="white">Postgres + Storage</text>
+      <rect x="1210" y="2455" width="200" height="34" rx="6" fill="#ef4444"/>
+      <text x="1310" y="2477" text-anchor="middle" fill="white">External channels</text>
+      <rect x="1420" y="2455" width="320" height="34" rx="6" fill="#0f172a"/>
+      <text x="1580" y="2477" text-anchor="middle" fill="white">Slack/Discord (humans)</text>
+    </g>
+
+    <!-- Lifelines (dotted vertical) -->
+    <g stroke="#cbd5e1" stroke-dasharray="3,5" stroke-width="1">
+      <line x1="150" y1="2495" x2="150" y2="3070"/>
+      <line x1="340" y1="2495" x2="340" y2="3070"/>
+      <line x1="530" y1="2495" x2="530" y2="3070"/>
+      <line x1="790" y1="2495" x2="790" y2="3070"/>
+      <line x1="1080" y1="2495" x2="1080" y2="3070"/>
+      <line x1="1310" y1="2495" x2="1310" y2="3070"/>
+      <line x1="1580" y1="2495" x2="1580" y2="3070"/>
+    </g>
+
+    <!-- Step rows -->
+    <g font-size="11" fill="#0f172a">
+      <!-- 1. dispatch -->
+      <text x="80" y="2520" font-weight="600">1</text>
+      <line x1="150" y1="2517" x2="340" y2="2517" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="160" y="2510" font-size="10" fill="#475569">POST /api/generation-jobs/start  {request, campaignId}</text>
+
+      <text x="350" y="2548" font-size="10" fill="#475569">dispatch: resolveModel → preflight LLM (1-token) → insert workflow_runs</text>
+      <line x1="340" y1="2560" x2="530" y2="2560" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="360" y="2575" font-size="10" fill="#475569">engine.start("single-post", input)</text>
+
+      <!-- 2. Content draft -->
+      <text x="80" y="2615" font-weight="600">2</text>
+      <text x="60" y="2632" font-size="10" fill="#475569">Content draft</text>
+      <line x1="530" y1="2620" x2="790" y2="2620" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="540" y="2613" font-size="10" fill="#475569">runContent({campaign, request, stage})</text>
+      <line x1="790" y1="2650" x2="1080" y2="2650" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowDim)"/>
+      <text x="800" y="2643" font-size="10" fill="#64748b">kb_search · find_similar · find_common_mistakes · find_brand_guidance (CP-Client)</text>
+      <line x1="1080" y1="2680" x2="790" y2="2680" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowDim)"/>
+      <text x="800" y="2673" font-size="10" fill="#64748b">top-N chunks · brand voice · prior rejects</text>
+      <line x1="790" y1="2710" x2="530" y2="2710" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="540" y="2703" font-size="10" fill="#475569">return { body_md, image_brief, rationale }</text>
+
+      <!-- 3. Approval gate -->
+      <text x="80" y="2745" font-weight="600">3</text>
+      <text x="60" y="2762" font-size="10" fill="#475569">Approval gate (HITL)</text>
+      <line x1="530" y1="2745" x2="1080" y2="2745" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="540" y="2738" font-size="10" fill="#475569">insert approvals row (status=pending)</text>
+      <line x1="530" y1="2772" x2="1580" y2="2772" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="540" y="2765" font-size="10" fill="#475569">post approval card (Slack/Discord/web UI)</text>
+      <line x1="1580" y1="2800" x2="340" y2="2800" stroke="#0ea5e9" stroke-width="2" marker-end="url(#arrowAccent)"/>
+      <text x="350" y="2793" font-size="10" fill="#0369a1">PATCH /api/approvals/[id] (approve | changes_requested | reject)</text>
+      <line x1="340" y1="2828" x2="530" y2="2828" stroke="#0ea5e9" stroke-width="2" marker-end="url(#arrowAccent)"/>
+      <text x="350" y="2820" font-size="10" fill="#0369a1">POST /api/approvals/[id]/resume → workflow resumes</text>
+      <text x="540" y="2843" font-size="10" fill="#94a3b8" font-style="italic">if changes_requested → loop back to step 2 with comments as feedback</text>
+
+      <!-- 4. Asset pipeline -->
+      <text x="80" y="2880" font-weight="600">4</text>
+      <text x="60" y="2897" font-size="10" fill="#475569">asset-pipeline.ts</text>
+      <line x1="530" y1="2880" x2="1080" y2="2880" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="540" y="2873" font-size="10" fill="#475569">insert content_items (status=approved, with imageBrief)</text>
+      <line x1="530" y1="2907" x2="790" y2="2907" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="540" y="2900" font-size="10" fill="#475569">Art Director REFINER (no LLM) → VisualConceptBrief</text>
+      <line x1="790" y1="2934" x2="1080" y2="2934" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="800" y="2927" font-size="10" fill="#475569">persist visualBrief on content_items</text>
+      <line x1="790" y1="2961" x2="1080" y2="2961" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="800" y="2954" font-size="10" fill="#475569">generateImage (Gemini NB2) → upload to Storage  →  signed URL</text>
+      <line x1="790" y1="2988" x2="790" y2="3000" stroke="#475569" stroke-width="2"/>
+      <text x="800" y="2986" font-size="10" fill="#475569">Judge (vision LLM) scores · retry once if rejected</text>
+      <line x1="790" y1="3010" x2="1080" y2="3010" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="800" y="3004" font-size="10" fill="#475569">insert assets row (judgeScore · winner=approved)</text>
+
+      <!-- 5. Publish + metrics -->
+      <text x="80" y="3045" font-weight="600">5</text>
+      <text x="60" y="3062" font-size="10" fill="#475569">publish.ts + metrics</text>
+      <line x1="530" y1="3045" x2="1310" y2="3045" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="540" y="3038" font-size="10" fill="#475569">channel adapter post  ·  gates: cap · kill-switch · test-mode</text>
+      <line x1="1310" y1="3068" x2="1080" y2="3068" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="1090" y="3062" font-size="10" fill="#475569">update publish_jobs (external_id, external_url, published_at)</text>
+      <line x1="1080" y1="3088" x2="1580" y2="3088" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="1090" y="3082" font-size="10" fill="#475569">notify origin thread + schedule metrics fetch (24h)</text>
+    </g>
+  </g>
+
+  <!-- ========== ARROWS BETWEEN MAIN LAYERS ========== -->
+  <g stroke="#0f172a" stroke-width="2" fill="none">
+    <!-- Clients → API -->
+    <path d="M 1200,310 L 1200,340" marker-end="url(#arrow)"/>
+    <!-- API → Workflow dispatch -->
+    <path d="M 1200,670 L 1200,700" marker-end="url(#arrow)"/>
+    <!-- Dispatch → Workflows -->
+    <path d="M 1200,850 L 1200,880" marker-end="url(#arrow)"/>
+    <!-- Workflows → Agents -->
+    <path d="M 1200,1220 L 1200,1250" marker-end="url(#arrow)"/>
+    <!-- Agents → Data + External -->
+    <path d="M 620,1680 L 620,1710" marker-end="url(#arrow)"/>
+    <path d="M 1780,1680 L 1780,1710" marker-end="url(#arrow)"/>
+    <!-- Sequence section -->
+    <path d="M 1200,2370 L 1200,2400" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- ========== LEGEND ========== -->
+  <g>
+    <rect x="40" y="3120" width="2320" height="70" rx="10" fill="white" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="60" y="3145" font-size="12" font-weight="700" fill="#0f172a">LEGEND</text>
+    <g font-size="11" fill="#334155">
+      <rect x="120" y="3132" width="14" height="14" fill="#eef2ff" stroke="#6366f1"/>
+      <text x="140" y="3144">Clients / Triggers</text>
+      <rect x="270" y="3132" width="14" height="14" fill="#ecfeff" stroke="#0891b2"/>
+      <text x="290" y="3144">API Layer (apps/web)</text>
+      <rect x="440" y="3132" width="14" height="14" fill="#ecfdf5" stroke="#10b981"/>
+      <text x="460" y="3144">Workflow dispatch</text>
+      <rect x="600" y="3132" width="14" height="14" fill="#fffbeb" stroke="#f59e0b"/>
+      <text x="620" y="3144">Vercel Workflows</text>
+      <rect x="760" y="3132" width="14" height="14" fill="#fef2f2" stroke="#ef4444"/>
+      <text x="780" y="3144">Sub-agents</text>
+      <rect x="880" y="3132" width="14" height="14" fill="#f5f3ff" stroke="#8b5cf6"/>
+      <text x="900" y="3144">Data (Postgres + Storage)</text>
+      <rect x="1070" y="3132" width="14" height="14" fill="#fef2f2" stroke="#dc2626"/>
+      <text x="1090" y="3144">External services</text>
+      <line x1="1220" y1="3139" x2="1260" y2="3139" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="1270" y="3144">Synchronous call / data flow</text>
+      <line x1="1480" y1="3139" x2="1520" y2="3139" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowDim)"/>
+      <text x="1530" y="3144">Tool call / RAG fetch</text>
+      <line x1="1700" y1="3139" x2="1740" y2="3139" stroke="#0ea5e9" stroke-width="2" marker-end="url(#arrowAccent)"/>
+      <text x="1750" y="3144">Human-in-the-loop callback</text>
+    </g>
+    <text x="2360" y="3175" text-anchor="end" font-size="10" fill="#94a3b8" font-style="italic">Generated for /Users/itspuri/Code/Ibriz/marketing-agent · main · 2026-05-15</text>
+  </g>
+</svg>

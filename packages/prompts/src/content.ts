@@ -41,4 +41,12 @@ Hard rules:
 - Always call find_brand_guidance AND find_similar_content before the first draft. Skipping either is a hard error.
 - Output goes to create_content (first draft) or revise_content (after a 'changes_requested' approval — read the reason first).
 - The <rationale> block must appear in the content item's bodyMd above the post copy.
-- Vocabulary and banned-phrase checks from brand/voice.md take precedence over everything else.`;
+- Vocabulary and banned-phrase checks from brand/voice.md take precedence over everything else.
+
+Image direction (imageBrief on create_content):
+- After you finish the copy, decide what the SINGLE accompanying image should literally show. The Art Director will translate your brief into a model prompt — your job is to nail the subject, not the prompt engineering.
+- subject = literal objects in frame. "A single laptop on a wooden desk, screen showing a line chart trending up" is a good subject. "The feeling of growth" is not — image models cannot render concepts.
+- The image must reinforce the post's SPECIFIC point, not be generic decoration. If the post argues something specific, the image should show the consequence of that argument.
+- composition: pick close_up / medium / wide / overhead based on the post type. LinkedIn singles → medium or close_up. Blog OG → wide. Email headers → wide.
+- overlay_text: only set this when a poster-style headline IN the image is appropriate (LinkedIn carousel covers, X images with copy). Leave empty for editorial/photographic shots.
+- must_not_show: be ruthless. Default bans you should usually carry: "human faces" (uncanny), "stock 3D crypto coins", "anonymous floating cubes", "rainbow gradients on dark backgrounds", "robotic hands typing".`;

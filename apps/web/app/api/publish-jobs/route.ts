@@ -127,6 +127,7 @@ export async function POST(request: Request) {
         const [row] = await db
           .insert(schema.publishJobs)
           .values({
+            workspaceId: content.workspaceId,
             contentId: input.contentId,
             channel: input.channel,
             scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
@@ -158,6 +159,7 @@ export async function POST(request: Request) {
       {
         publishJobId: created.id,
         contentId: created.contentId,
+        workspaceId: created.workspaceId,
         channel: created.channel,
         threadRef: created.threadRef ?? undefined,
         mode: created.mode,

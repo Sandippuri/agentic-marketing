@@ -1,50 +1,50 @@
 /**
- * asset-pipeline workflow — the sole image-generation path. Reads the post
- * body + KB, emits a grounded concept brief, judges candidates, writes one
- * winner + runners-up.
+ * asset-pipeline workflow — the sole image-generation path.
+ *
+ * Post-0029 redesign: visual direction comes UPSTREAM from the Content agent
+ * (per-post `imageBrief`) and the Strategist (campaign-level
+ * `visualIdentity`). The Art Director runs as a refiner — it composes the
+ * VisualConceptBrief deterministically from those inputs, no LLM call. We
+ * generate ONE image, judge it, and retry once if the judge rejects.
+ *
+ * Why: the previous fanout-of-3 + LLM-driven concept synthesis cost ~$0.22
+ * per post and produced generic visuals because the AD had to invent the
+ * concept from the body alone. The new path costs ~$0.07 (or ~$0.13 worst
+ * case with retry) and the image is grounded in what the writer actually
+ * meant.
  *
  * Flow per run:
- *   1. art-direction       — runArtDirector emits a structured concept brief
- *                            grounded in KB visual_reference + product +
- *                            brand collections.
- *   2. translate-prompt    — concept-to-prompt produces N candidate variants
- *                            with banned-aesthetic negative prompts and
- *                            reference image URLs.
- *   3. generate-candidates — fan out N image-gen calls in parallel, each
- *                            with imageInput passed through to providers
- *                            that support reference conditioning.
- *   4. judge               — vision-LLM scores every candidate, rejects the
- *                            generic ones, picks a winner.
- *   5. upload-and-record   — uploads the winner (and runners-up) to Supabase
- *                            and inserts assets rows.
+ *   1. load-context        — pull content_item (with imageBrief) and parent
+ *                            campaign (with visualIdentity).
+ *   2. art-direction       — runArtDirector in REFINER mode composes the
+ *                            VisualConceptBrief from imageBrief + identity.
+ *                            (Falls back to LLM synthesis if imageBrief is
+ *                            missing — legacy paths.)
+ *   3. translate-prompt    — concept-to-prompt produces ONE candidate (model
+ *                            renders overlay text natively; no template
+ *                            chrome step post-0029).
+ *   4. generate            — single image-gen call.
+ *   5. judge-and-retry     — vision-LLM scores the candidate. If rejected,
+ *                            regenerate ONCE with the rejection reason fed
+ *                            back into the prompt.
+ *   6. upload-and-record   — upload accepted (or best-effort) image to
+ *                            Supabase and insert one assets row.
  */
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { runArtDirector, type VisualConceptBrief } from "@marketing/agents/sub-agents/art-director";
+import type { ImageBrief } from "@marketing/agents/sub-agents/content";
+import type { VisualIdentity } from "@marketing/agents/sub-agents/strategist";
 import {
   conceptToVariants,
   variantToImageOpts,
-  type CandidateVariant,
 } from "@marketing/agents/concept-to-prompt";
 import { runAssetJudge, pickWinner, type CandidateScore } from "@marketing/agents/asset-judge";
 import { generateImage } from "@marketing/agents/image-gen";
-import {
-  uploadAssetBytes,
-  uploadGeneratedMedia,
-} from "@marketing/agents/asset-uploader";
+import { uploadGeneratedMedia } from "@marketing/agents/asset-uploader";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
 import { buildBrandPromptPrefix } from "@marketing/agents/brand-prompt";
 import { CpClient } from "@marketing/cp-client";
-import { getDesignSystem } from "@marketing/agents/design-system-store";
-import {
-  pickTemplate,
-  type AssetTemplate,
-} from "@marketing/agents/asset-templates";
-import {
-  resolveBrandTokens,
-  type ResolvedTokens,
-} from "@marketing/agents/asset-templates/tokens";
-import { renderAssetTemplate } from "@/lib/asset-renderer";
 import {
   resolveImageModel,
   type AssetKind,
@@ -53,12 +53,17 @@ import {
 } from "@marketing/shared-types";
 
 export type AssetPipelineInput = {
+  /** Workspace scope; mandatory from PR 4. Threaded via dispatchStart. */
+  workspaceId: string;
   contentId: string;
   /** Optional override; otherwise drawn from content_items.title. */
   request?: string;
   /** When set, used to override the channel inferred from content_items.type. */
   channel?: string;
-  /** Number of candidates to generate. Default 3. */
+  /**
+   * Number of candidates to generate. Default 1 (post-0029 — see workflow
+   * docstring). Pass >1 only for legacy / experimental fanout paths.
+   */
   variantCount?: number;
   /** Override the AD/judge model (vision-capable required for judge). */
   judgeModel?: LlmModel;
@@ -93,39 +98,71 @@ export async function assetPipelineWorkflow(
 
   const ctx = await loadContextStep(input);
   const brief = await artDirectionStep({
+    workspaceId: input.workspaceId,
     contentId: input.contentId,
     request: ctx.request,
     contentBody: ctx.bodyMd,
     channel: ctx.channel,
     campaignId: ctx.campaignId,
     judgeModel: input.judgeModel,
+    imageBrief: ctx.imageBrief,
+    visualIdentity: ctx.visualIdentity,
   });
   // Persist the brief immediately so the fire-and-forget video kickoff (and
   // any other modality) reads from one source. Done as its own step so the
   // write is durable independent of downstream image-gen / judging.
   await persistBriefStep({ contentId: input.contentId, brief });
-  const variants = await translatePromptStep({
+
+  const variantCount = input.variantCount ?? 1;
+  const firstPass = await generatePassStep({
+    workspaceId: input.workspaceId,
+    contentId: input.contentId,
     brief,
     channel: ctx.channel,
     brandPrefix: ctx.brandPrefix,
-    variantCount: input.variantCount ?? 3,
-  });
-  const candidates = await generateCandidatesStep({
-    contentId: input.contentId,
-    variants,
     imageModel: ctx.imageModel,
-    template: ctx.template,
-    tokens: ctx.tokens,
-    logos: ctx.logos,
-    brief,
+    variantCount,
+    passLabel: "v1",
   });
-  const scores = await judgeStep({
+  let scores = await judgeStep({
     brief,
-    candidates,
+    candidates: firstPass,
     judgeModel: input.judgeModel,
+    workspaceId: input.workspaceId,
   });
+  let candidates = firstPass;
+
+  // Retry-once-on-reject: if the judge rejected every candidate, regenerate
+  // a single image with the rejection reason fed back into the prompt. This
+  // is the only retry — we never spiral.
+  const allRejected =
+    scores.length > 0 && scores.every((s) => s.verdict === "reject");
+  if (allRejected) {
+    const reason = scores[0]?.reason ?? "candidate did not meet brief";
+    const retryPass = await generatePassStep({
+      workspaceId: input.workspaceId,
+      contentId: input.contentId,
+      brief,
+      channel: ctx.channel,
+      brandPrefix: ctx.brandPrefix,
+      imageModel: ctx.imageModel,
+      variantCount: 1,
+      passLabel: "v2",
+      retryReason: reason,
+    });
+    const retryScores = await judgeStep({
+      brief,
+      candidates: retryPass,
+      judgeModel: input.judgeModel,
+      workspaceId: input.workspaceId,
+    });
+    candidates = [...candidates, ...retryPass];
+    scores = [...scores, ...retryScores];
+  }
+
   const result = await uploadAndRecordStep({
     contentId: input.contentId,
+    workspaceId: input.workspaceId,
     kind: ctx.kind,
     candidates,
     scores,
@@ -158,9 +195,8 @@ type LoadedContext = {
   campaignId: string;
   brandPrefix: string;
   imageModel: ImageModel;
-  template: AssetTemplate;
-  tokens: ResolvedTokens;
-  logos: Partial<Record<"primary" | "mark" | "wordmark", string>>;
+  imageBrief: ImageBrief | null;
+  visualIdentity: VisualIdentity | null;
 };
 
 async function loadContextStep(input: AssetPipelineInput): Promise<LoadedContext> {
@@ -172,6 +208,7 @@ async function loadContextStep(input: AssetPipelineInput): Promise<LoadedContext
       bodyMd: schema.contentItems.bodyMd,
       type: schema.contentItems.type,
       campaignId: schema.contentItems.campaignId,
+      imageBrief: schema.contentItems.imageBrief,
     })
     .from(schema.contentItems)
     .where(eq(schema.contentItems.id, input.contentId))
@@ -182,31 +219,26 @@ async function loadContextStep(input: AssetPipelineInput): Promise<LoadedContext
   const channel = input.channel ?? fallbackChannel;
   const kind = KIND_BY_TYPE[row.type]?.kind ?? "poster";
 
-  const [settingsRow] = await db
-    .select()
-    .from(schema.settings)
-    .where(eq(schema.settings.key, "image_model"))
-    .limit(1);
+  const [settingsRow, campaignRow] = await Promise.all([
+    db
+      .select()
+      .from(schema.settings)
+      .where(eq(schema.settings.key, "image_model"))
+      .limit(1)
+      .then((rows) => rows[0]),
+    db
+      .select({ visualIdentity: schema.campaigns.visualIdentity })
+      .from(schema.campaigns)
+      .where(eq(schema.campaigns.id, row.campaignId))
+      .limit(1)
+      .then((rows) => rows[0]),
+  ]);
   const imageModel = resolveImageModel(settingsRow?.value);
 
   const { prefix: brandPrefix } = await buildBrandPromptPrefix({
     medium: "image",
     campaignId: row.campaignId,
   });
-
-  // Brand tokens + logo URLs for the slot renderer. Best-effort — the
-  // renderer's resolveColor / logo lookup both fall back gracefully when a
-  // value is missing.
-  const ds = await getDesignSystem(row.campaignId);
-  const tokens = resolveBrandTokens(ds);
-  const logos: Partial<Record<"primary" | "mark" | "wordmark", string>> = {};
-  for (const l of ds.logos) {
-    if (!l.signedUrl) continue;
-    if (l.variant === "primary" || l.variant === "mark" || l.variant === "wordmark") {
-      logos[l.variant] = l.signedUrl;
-    }
-  }
-  const template = pickTemplate(channel);
 
   return {
     request: input.request ?? row.title,
@@ -216,29 +248,35 @@ async function loadContextStep(input: AssetPipelineInput): Promise<LoadedContext
     campaignId: row.campaignId,
     brandPrefix,
     imageModel,
-    template,
-    tokens,
-    logos,
+    imageBrief: (row.imageBrief as ImageBrief | null) ?? null,
+    visualIdentity:
+      (campaignRow?.visualIdentity as VisualIdentity | null) ?? null,
   };
 }
 
 async function artDirectionStep(args: {
+  workspaceId: string;
   contentId: string;
   request: string;
   contentBody: string;
   channel: string;
   campaignId: string;
   judgeModel?: LlmModel;
+  imageBrief: ImageBrief | null;
+  visualIdentity: VisualIdentity | null;
 }): Promise<VisualConceptBrief> {
   "use step";
   const cp = buildCpClient();
   return runArtDirector({
     request: args.request,
+    workspaceId: args.workspaceId,
     contentBody: args.contentBody,
     channel: args.channel,
     campaignId: args.campaignId,
     cp,
     model: args.judgeModel,
+    imageBrief: args.imageBrief,
+    visualIdentity: args.visualIdentity,
   });
 }
 
@@ -254,20 +292,6 @@ async function persistBriefStep(args: {
     .where(eq(schema.contentItems.id, args.contentId));
 }
 
-async function translatePromptStep(args: {
-  brief: VisualConceptBrief;
-  channel: string;
-  brandPrefix: string;
-  variantCount: number;
-}): Promise<CandidateVariant[]> {
-  "use step";
-  return conceptToVariants(args.brief, {
-    brandPrefix: args.brandPrefix,
-    channel: args.channel,
-    variantCount: args.variantCount,
-  });
-}
-
 type GeneratedCandidate = {
   index: number;
   prompt: string;
@@ -276,70 +300,61 @@ type GeneratedCandidate = {
   bytesUrl: string | null;
 };
 
-async function generateCandidatesStep(args: {
+/**
+ * Translate the brief into prompts and generate the images in one step. The
+ * passLabel + retryReason let the retry pass run again with the same shape
+ * but a tightened prompt, while keeping each pass as a single durable step.
+ *
+ * Post-0029: no template renderer. The image model paints overlay text
+ * itself when brief.slots.headline is set (see concept-to-prompt.ts).
+ */
+async function generatePassStep(args: {
+  workspaceId: string;
   contentId: string;
-  variants: CandidateVariant[];
-  imageModel: ImageModel;
-  template: AssetTemplate;
-  tokens: ResolvedTokens;
-  logos: Partial<Record<"primary" | "mark" | "wordmark", string>>;
   brief: VisualConceptBrief;
+  channel: string;
+  brandPrefix: string;
+  imageModel: ImageModel;
+  variantCount: number;
+  passLabel: string;
+  retryReason?: string;
 }): Promise<GeneratedCandidate[]> {
   "use step";
+  const variants = conceptToVariants(args.brief, {
+    brandPrefix: args.brandPrefix,
+    channel: args.channel,
+    variantCount: args.variantCount,
+    retryReason: args.retryReason,
+  });
+
   const results = await Promise.allSettled(
-    args.variants.map(async (variant) => {
+    variants.map(async (variant) => {
       const opts = variantToImageOpts(variant);
       const result = await generateImage({ ...opts, model: args.imageModel });
 
-      // Materialize raw bytes — generateImage returns either bytes or url.
       let rawBytes: Uint8Array;
       if (result.bytes) {
         rawBytes = result.bytes;
       } else if (result.url) {
         const r = await fetch(result.url);
-        if (!r.ok) throw new Error(`download diagram: ${r.status}`);
+        if (!r.ok) throw new Error(`download generated image: ${r.status}`);
         rawBytes = new Uint8Array(await r.arrayBuffer());
       } else {
         throw new Error("generateImage returned neither bytes nor url");
       }
 
-      // Stash the raw diagram (model output, no chrome) for forensics — useful
-      // when the judge or human disagrees with the rendered version.
       const ext = (result.mimeType.split("/")[1] ?? "png").toLowerCase();
+      // Path layout: `pipeline/<workspaceId>/<contentId>/<pass>-<index>.<ext>`.
+      // Workspace segment at position 2 (1-indexed) keeps the Storage RLS
+      // policy from PR 9 working without migration changes.
+      const storagePath = `pipeline/${args.workspaceId}/${args.contentId}/${args.passLabel}-${variant.index}.${ext}`;
       await uploadGeneratedMedia(
         { bytes: rawBytes, mimeType: result.mimeType },
-        `pipeline/${args.contentId}/raw-${variant.index}.${ext}`,
+        storagePath,
       );
 
-      // Render through the template: deterministic chrome (eyebrow / headline
-      // / subline / logo) painted on top of the model's diagram. Failure here
-      // falls back to the raw model output so the candidate isn't lost.
-      let storagePath: string;
-      try {
-        const rendered = await renderAssetTemplate({
-          template: args.template,
-          brief: args.brief,
-          tokens: args.tokens,
-          logos: args.logos,
-          diagramBytes: rawBytes,
-        });
-        storagePath = `pipeline/${args.contentId}/${variant.index}.png`;
-        await uploadAssetBytes(rendered.bytes, rendered.mimeType, storagePath);
-      } catch (err) {
-        console.warn(
-          `[asset-pipeline] template render failed for variant=${variant.index}; falling back to raw model output:`,
-          err instanceof Error ? err.message : err,
-        );
-        storagePath = `pipeline/${args.contentId}/${variant.index}.${ext}`;
-        await uploadGeneratedMedia(
-          { bytes: rawBytes, mimeType: result.mimeType },
-          storagePath,
-        );
-      }
-
       // Sign the upload so the vision-LLM judge can read it. Best-effort —
-      // if signing fails we still record the path; the judge just won't
-      // score this candidate.
+      // if signing fails we still record the path; the judge just skips it.
       let signedUrl: string | null = null;
       try {
         signedUrl = await getSignedAssetUrl(storagePath);
@@ -347,7 +362,8 @@ async function generateCandidatesStep(args: {
         signedUrl = null;
       }
       return {
-        index: variant.index,
+        // Disambiguate retry candidates so judge results don't collide on index.
+        index: args.passLabel === "v1" ? variant.index : variant.index + 100,
         prompt: variant.prompt,
         storagePath,
         signedUrl,
@@ -355,6 +371,7 @@ async function generateCandidatesStep(args: {
       };
     }),
   );
+
   const out: GeneratedCandidate[] = [];
   const failures: Array<{ index: number; reason: string }> = [];
   for (let i = 0; i < results.length; i++) {
@@ -366,31 +383,27 @@ async function generateCandidatesStep(args: {
         r.reason instanceof Error
           ? `${r.reason.message}${r.reason.stack ? `\n${r.reason.stack}` : ""}`
           : String(r.reason);
-      // Without this, Promise.allSettled would swallow the failure entirely
-      // and the workflow would just write zero asset rows — the approval card
-      // then shows "Generate image variants" with no clue what went wrong.
       console.error(
-        `[asset-pipeline] candidate ${args.variants[i]!.index} failed:`,
+        `[asset-pipeline] candidate ${variants[i]!.index} (${args.passLabel}) failed:`,
         reason,
       );
-      failures.push({ index: args.variants[i]!.index, reason });
+      failures.push({ index: variants[i]!.index, reason });
       out.push({
-        index: args.variants[i]!.index,
-        prompt: args.variants[i]!.prompt,
+        index:
+          args.passLabel === "v1" ? variants[i]!.index : variants[i]!.index + 100,
+        prompt: variants[i]!.prompt,
         storagePath: null,
         signedUrl: null,
         bytesUrl: null,
       });
     }
   }
-  // Fail loudly when every candidate failed — the workflow will go to
-  // "failed" state instead of producing an approval with no images.
   if (out.every((c) => !c.storagePath)) {
     const summary = failures
       .map((f) => `[${f.index}] ${f.reason.split("\n")[0]}`)
       .join("; ");
     throw new Error(
-      `All ${args.variants.length} image candidates failed: ${summary}`,
+      `All ${variants.length} image candidates failed (${args.passLabel}): ${summary}`,
     );
   }
   return out;
@@ -400,6 +413,7 @@ async function judgeStep(args: {
   brief: VisualConceptBrief;
   candidates: GeneratedCandidate[];
   judgeModel?: LlmModel;
+  workspaceId: string;
 }): Promise<CandidateScore[]> {
   "use step";
   const judgeable = args.candidates.filter(
@@ -413,12 +427,14 @@ async function judgeStep(args: {
       imageUrl: c.signedUrl,
       prompt: c.prompt,
     })),
+    workspaceId: args.workspaceId,
     model: args.judgeModel,
   });
 }
 
 async function uploadAndRecordStep(args: {
   contentId: string;
+  workspaceId: string;
   kind: AssetKind;
   candidates: GeneratedCandidate[];
   scores: CandidateScore[];
@@ -438,6 +454,7 @@ async function uploadAndRecordStep(args: {
       const score = args.scores.find((s) => s.index === c.index);
       const isWinner = winner?.index === c.index;
       return {
+        workspaceId: args.workspaceId,
         contentId: args.contentId,
         kind: args.kind,
         storagePath: c.storagePath!,

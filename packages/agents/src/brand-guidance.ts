@@ -37,6 +37,8 @@ export type BrandGuidanceResult = {
 
 export type FindBrandGuidanceOptions = {
   topic: string;
+  /** Workspace to scope the KB search to. PR 4: cross-tenant safety. */
+  workspaceId: string;
   limit?: number;
 };
 
@@ -49,6 +51,7 @@ export async function findBrandGuidance(
   try {
     const hits = await kbSearch({
       query: opts.topic,
+      workspaceId: opts.workspaceId,
       collectionKinds: ["brand", "product", "sop", "playbook"],
       k: limit,
     });

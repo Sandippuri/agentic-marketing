@@ -21,6 +21,8 @@ const log = pino({ name: "seo" });
 
 export type SeoInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   contentId?: string;
   campaignId?: string;
   cp: CpClient;
@@ -32,6 +34,7 @@ export type SeoInput = {
 
 export async function runSeo({
   request,
+  workspaceId,
   contentId,
   campaignId,
   model,
@@ -39,7 +42,7 @@ export async function runSeo({
   jobId,
   workflowRunId,
 }: SeoInput): Promise<string> {
-  const kbTools = buildKbTools({ campaignId });
+  const kbTools = buildKbTools({ workspaceId, campaignId });
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
@@ -81,6 +84,7 @@ export async function runSeo({
 
   await recordLlmUsage({
     agent: "seo",
+    workspaceId,
     model,
     threadRef: threadRef ?? undefined,
     jobId: jobId ?? null,

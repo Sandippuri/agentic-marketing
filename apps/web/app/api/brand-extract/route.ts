@@ -20,6 +20,7 @@ import { recordLlmUsage } from "@marketing/agents/usage";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse } from "@/lib/http";
 import { downloadBrandDoc } from "@/lib/supabase/storage";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 // File parsing + a multi-doc LLM call can take a while.
@@ -114,6 +115,7 @@ const SYSTEM_PROMPT = [
 export async function POST(request: Request) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const db = getDb();
 
     const docs = await db
@@ -207,6 +209,7 @@ export async function POST(request: Request) {
 
     await recordLlmUsage({
       agent: "brand-extract",
+      workspaceId,
       model,
       usage: result.usage,
       providerMetadata: result.experimental_providerMetadata,

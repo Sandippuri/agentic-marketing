@@ -11,10 +11,10 @@ import { errorResponse, parseJson } from "@/lib/http";
 const PatchGenerationJob = z.object({
   status: z.enum(["running", "completed", "failed"]).optional(),
   kind: z
-    .enum(["campaign", "single_post", "asset", "analysis", "publish", "other"])
+    .enum(["campaign", "single_post", "asset", "analysis", "publish", "research", "other"])
     .optional(),
   currentStep: z
-    .enum(["strategist", "content", "asset", "analyst", "distributor"])
+    .enum(["strategist", "content", "asset", "analyst", "distributor", "researcher"])
     .nullable()
     .optional(),
   campaignId: z.string().uuid().nullable().optional(),

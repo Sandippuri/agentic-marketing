@@ -7,6 +7,7 @@ import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
+import { LEGACY_WORKSPACE_ID, getWorkspaceContext } from "@/lib/billing";
 
 const CreateAsset = z.object({
   contentId: z.string().uuid().optional(),
@@ -22,9 +23,13 @@ const CreateAsset = z.object({
 // POST /api/assets — create a new asset record.
 export async function POST(request: Request) {
   try {
-    const actor = isInternal(request)
+    const internal = isInternal(request);
+    const actor = internal
       ? { id: null, kind: "agent" as const }
       : await getRequestActor();
+    const workspaceId = internal
+      ? LEGACY_WORKSPACE_ID
+      : (await getWorkspaceContext()).workspaceId;
     const input = await parseJson(request, CreateAsset);
     const db = getDb();
 
@@ -35,6 +40,7 @@ export async function POST(request: Request) {
         const [row] = await db
           .insert(schema.assets)
           .values({
+            workspaceId,
             contentId: input.contentId ?? null,
             kind: input.kind,
             storagePath: input.storagePath,

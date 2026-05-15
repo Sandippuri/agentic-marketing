@@ -24,6 +24,8 @@ const log = pino({ name: "chat-handler" });
 export type HandleChatParams = {
   text: string;
   userId: string;
+  /** Workspace this chat operates against. PR 4: mandatory. */
+  workspaceId: string;
   threadRef: ThreadRef;
   cp: CpClient;
   model?: LlmModel;
@@ -36,7 +38,7 @@ export type HandleChatParams = {
 };
 
 export async function handleChat(params: HandleChatParams): Promise<string> {
-  const { text, userId, threadRef, cp, model, campaignId } = params;
+  const { text, userId, workspaceId, threadRef, cp, model, campaignId } = params;
   log.info({ userId, threadRef, text, model, campaignId }, "chat received");
 
   // Mode router: `/goal <body>` or `/goal:<json>` triggers the goal-loop
@@ -74,6 +76,7 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
   > = runOrchestrator({
     text,
     userId,
+    workspaceId,
     threadRef,
     history,
     cp,
@@ -101,6 +104,7 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
       learnFromConversation({
         threadRef,
         userId,
+        workspaceId,
         userMessage: text,
         assistantMessage: winner.outcome.text,
         history,
@@ -131,6 +135,7 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
         learnFromConversation({
           threadRef,
           userId,
+          workspaceId,
           userMessage: text,
           assistantMessage: outcome.text,
           history: finalHistory,
@@ -180,7 +185,7 @@ export type HandleChatStreamParams = HandleChatParams & {
 export async function handleChatStream(
   params: HandleChatStreamParams,
 ): Promise<void> {
-  const { text, userId, threadRef, cp, model, campaignId, onEvent } = params;
+  const { text, userId, workspaceId, threadRef, cp, model, campaignId, onEvent } = params;
   log.info({ userId, threadRef, text, model, campaignId }, "chat stream received");
 
   const mode = parseModeFromMessage(text);
@@ -223,6 +228,7 @@ export async function handleChatStream(
     {
       text,
       userId,
+      workspaceId,
       threadRef,
       history,
       cp,
@@ -259,6 +265,7 @@ export async function handleChatStream(
       learnFromConversation({
         threadRef,
         userId,
+        workspaceId,
         userMessage: text,
         assistantMessage: winner.outcome.text,
         history,
@@ -297,6 +304,7 @@ export async function handleChatStream(
         learnFromConversation({
           threadRef,
           userId,
+          workspaceId,
           userMessage: text,
           assistantMessage: outcome.text,
           history: finalHistory,
@@ -362,7 +370,7 @@ function parseModeFromMessage(text: string): ParsedMode {
 }
 
 async function handleGoalMode(params: HandleChatParams & { parsed: ParsedGoal }): Promise<string> {
-  const { threadRef, userId, text, parsed } = params;
+  const { threadRef, userId, workspaceId, text, parsed } = params;
   // Hit the in-process API route through fetch so we share validation +
   // workflow start logic with the public surface.
   const finish = async (reply: string) => {
@@ -375,6 +383,7 @@ async function handleGoalMode(params: HandleChatParams & { parsed: ParsedGoal })
     learnFromConversation({
       threadRef,
       userId,
+      workspaceId,
       userMessage: text,
       assistantMessage: reply,
       history,

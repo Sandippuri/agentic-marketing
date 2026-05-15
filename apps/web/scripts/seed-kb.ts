@@ -27,6 +27,7 @@ import {
   chunkAndEmbed,
   type CollectionKind,
 } from "@marketing/agents/kb";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 const args = new Set(process.argv.slice(2));
 const SKIP_EMBED = args.has("--skip-embed");
@@ -104,6 +105,7 @@ async function seedFromFiles(): Promise<{ docs: number; chunks: number }> {
       continue;
     }
     const collectionId = await ensureCollection({
+      workspaceId: LEGACY_WORKSPACE_ID,
       slug: spec.collectionSlug,
       name: spec.collectionName,
       kind: spec.collectionKind,
@@ -117,6 +119,7 @@ async function seedFromFiles(): Promise<{ docs: number; chunks: number }> {
       if (!body.trim()) continue;
       const slug = slugFromFilename(fname);
       const doc = await upsertDocument({
+        workspaceId: LEGACY_WORKSPACE_ID,
         collectionId,
         slug,
         title: titleFromBody(body, slug),
@@ -150,6 +153,7 @@ async function seedFromBrandMemory(): Promise<{ docs: number; chunks: number }> 
   }
   console.log(`  brand_memory → kb (${rows.length} row(s))`);
   const collectionId = await ensureCollection({
+    workspaceId: LEGACY_WORKSPACE_ID,
     slug: "brand-memory-legacy",
     name: "Brand Memory (legacy)",
     kind: "brand",
@@ -162,6 +166,7 @@ async function seedFromBrandMemory(): Promise<{ docs: number; chunks: number }> 
   for (const row of rows) {
     if (!row.body?.trim()) continue;
     const doc = await upsertDocument({
+      workspaceId: row.workspaceId ?? LEGACY_WORKSPACE_ID,
       collectionId,
       slug: row.slug,
       title: row.title || row.slug,

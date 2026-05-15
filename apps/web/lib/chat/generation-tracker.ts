@@ -15,13 +15,20 @@ import type { CpClient } from "@marketing/cp-client";
 
 const log = pino({ name: "generation-tracker" });
 
-export type StepName = "strategist" | "content" | "asset" | "analyst" | "distributor";
+export type StepName =
+  | "strategist"
+  | "content"
+  | "asset"
+  | "analyst"
+  | "distributor"
+  | "researcher";
 export type JobKind =
   | "campaign"
   | "single_post"
   | "asset"
   | "analysis"
   | "publish"
+  | "research"
   | "other";
 
 export type GenerationTracker = {
@@ -53,6 +60,7 @@ const STEP_TO_KIND: Record<StepName, JobKind> = {
   asset: "asset",
   analyst: "analysis",
   distributor: "publish",
+  researcher: "research",
 };
 
 // Order of preference when upgrading job kind: strategist (campaign) wins
@@ -64,6 +72,7 @@ const KIND_PRIORITY: Record<JobKind, number> = {
   publish: 3,
   asset: 2,
   analysis: 2,
+  research: 1,
   other: 0,
 };
 

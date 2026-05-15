@@ -31,6 +31,8 @@ const log = pino({ name: "asset" });
 
 export type AssetInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   contentId?: string;
   cp: CpClient;
   model?: LlmModel;
@@ -59,7 +61,7 @@ async function loadConfiguredVideoModel(cp: CpClient): Promise<VideoModel> {
   }
 }
 
-export async function runAsset({ request, contentId, cp, model, threadRef, jobId, workflowRunId }: AssetInput): Promise<string> {
+export async function runAsset({ request, workspaceId, contentId, cp, model, threadRef, jobId, workflowRunId }: AssetInput): Promise<string> {
   const imageModel = await loadConfiguredImageModel(cp);
   const videoModel = await loadConfiguredVideoModel(cp);
   log.info({ imageModel, videoModel }, "asset sub-agent using configured models");
@@ -267,6 +269,7 @@ export async function runAsset({ request, contentId, cp, model, threadRef, jobId
   log.info({ steps: steps.length }, "asset sub-agent finished");
   await recordLlmUsage({
     agent: "asset",
+    workspaceId,
     model,
     threadRef,
     jobId,

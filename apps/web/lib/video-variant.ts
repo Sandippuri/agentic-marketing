@@ -179,6 +179,8 @@ export type GenerateVideoVariantInput = {
   firstImageMarker?: string | null;
   /** Campaign id for campaign-scoped brand overrides. */
   campaignId?: string | null;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
 };
 
 export async function generateVideoVariant(
@@ -254,6 +256,7 @@ export async function generateVideoVariant(
 
   const db = getDb();
   await db.insert(schema.assets).values({
+    workspaceId: input.workspaceId,
     contentId: input.contentId,
     kind: "video_post",
     storagePath,

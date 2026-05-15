@@ -22,6 +22,7 @@ import { CpClient } from "@marketing/cp-client";
 export type PublishWorkflowInput = {
   publishJobId: string;
   contentId: string;
+  workspaceId: string;
   channel: Channel;
   threadRef?: string;
   mode?: "live" | "test";
@@ -85,6 +86,7 @@ export async function publishWorkflow(
     await scheduleMetricsFetchStep({
       publishJobId: input.publishJobId,
       contentId: input.contentId,
+      workspaceId: input.workspaceId,
       channel: input.channel,
       externalId: result.externalId,
     });
@@ -276,6 +278,7 @@ async function notifyThreadStep(payload: {
 async function scheduleMetricsFetchStep(payload: {
   publishJobId: string;
   contentId: string;
+  workspaceId: string;
   channel: Channel;
   externalId: string;
 }): Promise<void> {

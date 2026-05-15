@@ -1,11 +1,17 @@
 import { z } from "zod";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { CONTENT_TYPES, CONTENT_STAGES, CONTENT_STATUSES } from "@marketing/shared-types";
 import { withAudit } from "@/lib/audit";
 import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import {
+  LEGACY_WORKSPACE_ID,
+  getWorkspaceContext,
+  whereInWorkspace,
+  type WorkspaceContext,
+} from "@/lib/billing";
 
 const CreateContent = z.object({
   campaignId: z.string().uuid(),
@@ -13,6 +19,9 @@ const CreateContent = z.object({
   stage: z.enum(CONTENT_STAGES).optional(),
   title: z.string().min(1).max(300),
   bodyMd: z.string().default(""),
+  // Migration 0029. Free-form jsonb passthrough — schema lives in
+  // packages/agents/src/sub-agents/content.ts (ImageBrief).
+  imageBrief: z.unknown().optional(),
 });
 
 /**
@@ -23,9 +32,9 @@ const CreateContent = z.object({
 export async function GET(request: Request) {
   try {
     const isInternalCall = isInternal(request);
-    if (!isInternalCall) {
-      await getRequestActor();
-    }
+    const ctx: WorkspaceContext = isInternalCall
+      ? ({ workspaceId: LEGACY_WORKSPACE_ID } as WorkspaceContext)
+      : await getWorkspaceContext();
 
     const url = new URL(request.url);
     const campaignId = url.searchParams.get("campaignId");
@@ -35,30 +44,41 @@ export async function GET(request: Request) {
     const offset = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0", 10));
 
     const db = getDb();
-    const conditions = [];
-
-    if (campaignId) {
-      conditions.push(eq(schema.contentItems.campaignId, campaignId));
-    }
-    if (status && CONTENT_STATUSES.includes(status as (typeof CONTENT_STATUSES)[number])) {
-      conditions.push(eq(schema.contentItems.status, status as (typeof CONTENT_STATUSES)[number]));
-    }
-    if (type && CONTENT_TYPES.includes(type as (typeof CONTENT_TYPES)[number])) {
-      conditions.push(eq(schema.contentItems.type, type as (typeof CONTENT_TYPES)[number]));
-    }
+    const campaignFilter = campaignId
+      ? eq(schema.contentItems.campaignId, campaignId)
+      : undefined;
+    const statusFilter =
+      status &&
+      CONTENT_STATUSES.includes(status as (typeof CONTENT_STATUSES)[number])
+        ? eq(
+            schema.contentItems.status,
+            status as (typeof CONTENT_STATUSES)[number],
+          )
+        : undefined;
+    const typeFilter =
+      type && CONTENT_TYPES.includes(type as (typeof CONTENT_TYPES)[number])
+        ? eq(schema.contentItems.type, type as (typeof CONTENT_TYPES)[number])
+        : undefined;
+    const where = whereInWorkspace(
+      schema.contentItems,
+      ctx,
+      campaignFilter,
+      statusFilter,
+      typeFilter,
+    );
 
     const [rows, countResult] = await Promise.all([
       db
         .select()
         .from(schema.contentItems)
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .where(where)
         .orderBy(desc(schema.contentItems.createdAt))
         .limit(limit)
         .offset(offset),
       db
         .select({ total: sql<number>`count(*)::int` })
         .from(schema.contentItems)
-        .where(conditions.length > 0 ? and(...conditions) : undefined),
+        .where(where),
     ]);
 
     const total = countResult[0]?.total ?? 0;
@@ -70,11 +90,31 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const actor = isInternal(request)
+    const isInternalCall = isInternal(request);
+    const actor = isInternalCall
       ? { id: null, kind: "agent" as const }
       : await getRequestActor();
+    const ctx: WorkspaceContext = isInternalCall
+      ? ({ workspaceId: LEGACY_WORKSPACE_ID } as WorkspaceContext)
+      : await getWorkspaceContext();
     const input = await parseJson(request, CreateContent);
     const db = getDb();
+
+    // Cross-tenant guard: refuse to create content_items rows that point at
+    // a campaign in a different workspace. Avoids "agent forwards stale
+    // campaignId" → silent data leak.
+    const [parentCampaign] = await db
+      .select({ workspaceId: schema.campaigns.workspaceId })
+      .from(schema.campaigns)
+      .where(eq(schema.campaigns.id, input.campaignId))
+      .limit(1);
+    if (!parentCampaign || parentCampaign.workspaceId !== ctx.workspaceId) {
+      return Response.json(
+        { error: "campaign_not_in_workspace" },
+        { status: 404 },
+      );
+    }
+
     const created = await withAudit(
       { db, actor, action: "content.create", entityType: "content_items" },
       async () => null,
@@ -82,11 +122,13 @@ export async function POST(request: Request) {
         const [row] = await db
           .insert(schema.contentItems)
           .values({
+            workspaceId: ctx.workspaceId,
             campaignId: input.campaignId,
             type: input.type,
             stage: input.stage ?? "explain",
             title: input.title,
             bodyMd: input.bodyMd,
+            imageBrief: input.imageBrief ?? null,
           })
           .returning();
         return row!;

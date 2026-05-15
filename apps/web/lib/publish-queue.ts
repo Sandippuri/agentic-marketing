@@ -8,6 +8,7 @@ import type { Channel } from "@marketing/shared-types";
 export type PublishJobMessage = {
   publishJobId: string;
   contentId: string;
+  workspaceId: string;
   channel: Channel;
   threadRef?: string;
   mode?: "live" | "test";
@@ -24,6 +25,7 @@ export async function enqueuePublish(
       {
         publishJobId: msg.publishJobId,
         contentId: msg.contentId,
+        workspaceId: msg.workspaceId,
         channel: msg.channel,
         threadRef: msg.threadRef,
         mode: msg.mode,

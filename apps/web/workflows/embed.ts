@@ -26,6 +26,7 @@ export async function embedContentWorkflow(
   const embed = await providerEmbedStep(loaded.text);
   await upsertContentEmbeddingStep({
     contentId: input.contentId,
+    workspaceId: loaded.workspaceId,
     text: loaded.text,
     vector: embed.vector,
     model: embed.model,
@@ -36,7 +37,7 @@ export async function embedContentWorkflow(
 async function loadContentForEmbedStep(
   input: EmbedContentInput,
 ): Promise<
-  { found: false } | { found: true; text: string }
+  { found: false } | { found: true; text: string; workspaceId: string }
 > {
   "use step";
   const db = getDb();
@@ -44,17 +45,19 @@ async function loadContentForEmbedStep(
     .select({
       title: schema.contentItems.title,
       bodyMd: schema.contentItems.bodyMd,
+      workspaceId: schema.contentItems.workspaceId,
     })
     .from(schema.contentItems)
     .where(eq(schema.contentItems.id, input.contentId))
     .limit(1);
   if (!row) return { found: false };
   const text = `${row.title}\n\n${row.bodyMd}`.slice(0, 8_000);
-  return { found: true, text };
+  return { found: true, text, workspaceId: row.workspaceId };
 }
 
 async function upsertContentEmbeddingStep(payload: {
   contentId: string;
+  workspaceId: string;
   text: string;
   vector: number[];
   model: string;
@@ -64,6 +67,7 @@ async function upsertContentEmbeddingStep(payload: {
   await db
     .insert(embeddings)
     .values({
+      workspaceId: payload.workspaceId,
       sourceType: "content",
       sourceId: payload.contentId,
       chunkIndex: 0,
@@ -97,6 +101,7 @@ export async function embedRejectedDraftWorkflow(
   await upsertRejectedEmbeddingStep({
     feedbackId: input.feedbackId,
     contentId: loaded.contentId,
+    workspaceId: loaded.workspaceId,
     decision: loaded.decision,
     text: loaded.text,
     vector: embed.vector,
@@ -113,6 +118,7 @@ async function loadFeedbackForEmbedStep(
       found: true;
       text: string;
       contentId: string;
+      workspaceId: string;
       decision: NonNullable<typeof schema.agentFeedback.$inferSelect.decision>;
     }
 > {
@@ -124,6 +130,7 @@ async function loadFeedbackForEmbedStep(
       decision: schema.agentFeedback.decision,
       reason: schema.agentFeedback.reason,
       contentId: schema.agentFeedback.contentId,
+      workspaceId: schema.agentFeedback.workspaceId,
     })
     .from(schema.agentFeedback)
     .where(eq(schema.agentFeedback.id, input.feedbackId))
@@ -137,6 +144,7 @@ async function loadFeedbackForEmbedStep(
     found: true,
     text,
     contentId: fb.contentId,
+    workspaceId: fb.workspaceId,
     decision: fb.decision,
   };
 }
@@ -144,6 +152,7 @@ async function loadFeedbackForEmbedStep(
 async function upsertRejectedEmbeddingStep(payload: {
   feedbackId: string;
   contentId: string;
+  workspaceId: string;
   decision: string;
   text: string;
   vector: number[];
@@ -154,6 +163,7 @@ async function upsertRejectedEmbeddingStep(payload: {
   await db
     .insert(embeddings)
     .values({
+      workspaceId: payload.workspaceId,
       sourceType: "rejected_draft",
       sourceId: payload.feedbackId,
       chunkIndex: 0,

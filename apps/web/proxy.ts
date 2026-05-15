@@ -8,6 +8,11 @@ import { createServerClient } from "@supabase/ssr";
 // Internal-token callers (Manager / Distributor) bypass this by hitting
 // /api/* with the x-internal-token header — Route Handlers verify the token
 // themselves and don't depend on a Supabase session.
+//
+// Note: superadmin gating for /super/* lives in each route's
+// `requireSuperadmin()` call (lib/billing/admin.ts) — the proxy only verifies
+// that *some* session exists. We don't load the admin_users row at the edge
+// to keep the proxy fast and free of DB connections.
 
 const PUBLIC_PATHS = ["/", "/blog", "/login", "/auth"];
 
@@ -24,7 +29,9 @@ export async function proxy(request: NextRequest) {
   // API routes handle their own auth (Supabase session OR internal token).
   if (path.startsWith("/api/")) return NextResponse.next();
 
-  // Admin routes: require an authenticated Supabase session.
+  // Admin and superadmin routes: require an authenticated Supabase session.
+  // /super/* additionally requires an admin_users row — checked inside the
+  // route via requireSuperadmin() so we don't talk to the DB here.
   const response = NextResponse.next();
   const supabase = createServerClient(
     process.env.SUPABASE_URL!,

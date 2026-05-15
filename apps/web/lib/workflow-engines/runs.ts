@@ -49,6 +49,7 @@ export async function createRun(args: CreateRunArgs): Promise<{ id: string }> {
   const [row] = await db
     .insert(schema.workflowRuns)
     .values({
+      workspaceId: args.input.workspaceId,
       engine: args.engine,
       kind: args.kind,
       status: "running",

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { createDb, schema } from "@marketing/db";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 // Phase 1 Day 7 — full content lifecycle against the live Supabase database.
 // Each test creates uniquely-slugged campaigns and cleans up everything it
@@ -12,6 +13,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const db = databaseUrl ? createDb(databaseUrl) : null;
 
 const runId = `it-${Date.now().toString(36)}`;
+const WS_ID = LEGACY_WORKSPACE_ID;
 
 describe.skipIf(!db)("content lifecycle (live DB)", () => {
   const campaignIds: string[] = [];
@@ -47,13 +49,14 @@ describe.skipIf(!db)("content lifecycle (live DB)", () => {
     if (!db) return;
     const [campaign] = await db
       .insert(schema.campaigns)
-      .values({ slug: `${runId}-happy`, name: "Happy path" })
+      .values({ workspaceId: WS_ID, slug: `${runId}-happy`, name: "Happy path" })
       .returning();
     campaignIds.push(campaign!.id);
 
     const [content] = await db
       .insert(schema.contentItems)
       .values({
+        workspaceId: WS_ID,
         campaignId: campaign!.id,
         type: "blog",
         title: "Happy",
@@ -74,7 +77,7 @@ describe.skipIf(!db)("content lifecycle (live DB)", () => {
 
     const [job] = await db
       .insert(schema.publishJobs)
-      .values({ contentId: content!.id, channel: "internal_blog" })
+      .values({ workspaceId: WS_ID, contentId: content!.id, channel: "internal_blog" })
       .returning();
     expect(job!.status).toBe("queued");
     expect(job!.contentId).toBe(content!.id);
@@ -84,13 +87,14 @@ describe.skipIf(!db)("content lifecycle (live DB)", () => {
     if (!db) return;
     const [campaign] = await db
       .insert(schema.campaigns)
-      .values({ slug: `${runId}-gate`, name: "Gate probe" })
+      .values({ workspaceId: WS_ID, slug: `${runId}-gate`, name: "Gate probe" })
       .returning();
     campaignIds.push(campaign!.id);
 
     const [content] = await db
       .insert(schema.contentItems)
       .values({
+        workspaceId: WS_ID,
         campaignId: campaign!.id,
         type: "blog",
         title: "Gate",
@@ -101,7 +105,7 @@ describe.skipIf(!db)("content lifecycle (live DB)", () => {
     await expect(
       db
         .insert(schema.publishJobs)
-        .values({ contentId: content!.id, channel: "internal_blog" }),
+        .values({ workspaceId: WS_ID, contentId: content!.id, channel: "internal_blog" }),
     ).rejects.toThrow(/must be approved/);
   });
 
@@ -109,13 +113,14 @@ describe.skipIf(!db)("content lifecycle (live DB)", () => {
     if (!db) return;
     const [campaign] = await db
       .insert(schema.campaigns)
-      .values({ slug: `${runId}-dup`, name: "Dedup probe" })
+      .values({ workspaceId: WS_ID, slug: `${runId}-dup`, name: "Dedup probe" })
       .returning();
     campaignIds.push(campaign!.id);
 
     const [content] = await db
       .insert(schema.contentItems)
       .values({
+        workspaceId: WS_ID,
         campaignId: campaign!.id,
         type: "blog",
         title: "Dedup",
@@ -126,12 +131,12 @@ describe.skipIf(!db)("content lifecycle (live DB)", () => {
 
     await db
       .insert(schema.publishJobs)
-      .values({ contentId: content!.id, channel: "internal_blog" });
+      .values({ workspaceId: WS_ID, contentId: content!.id, channel: "internal_blog" });
 
     await expect(
       db
         .insert(schema.publishJobs)
-        .values({ contentId: content!.id, channel: "internal_blog" }),
+        .values({ workspaceId: WS_ID, contentId: content!.id, channel: "internal_blog" }),
     ).rejects.toThrow(/within last 24h/);
   });
 });

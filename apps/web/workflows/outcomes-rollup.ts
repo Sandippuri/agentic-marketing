@@ -38,6 +38,7 @@ async function rollupWindowStep(input: {
   const rows = await db
     .select({
       contentId: schema.metrics.scopeId,
+      workspaceId: schema.metrics.workspaceId,
       channel: schema.metrics.channel,
       metric: schema.metrics.metric,
       total: sql<string>`sum(${schema.metrics.value})`,
@@ -51,17 +52,28 @@ async function rollupWindowStep(input: {
     )
     .groupBy(
       schema.metrics.scopeId,
+      schema.metrics.workspaceId,
       schema.metrics.channel,
       schema.metrics.metric,
     );
 
-  type Pivot = { impressions: number; clicks: number; conversions: number };
+  type Pivot = {
+    workspaceId: string;
+    impressions: number;
+    clicks: number;
+    conversions: number;
+  };
   const pivoted = new Map<string, Pivot>();
   for (const row of rows) {
     if (!row.channel) continue;
     const key = `${row.contentId}::${row.channel}`;
     if (!pivoted.has(key)) {
-      pivoted.set(key, { impressions: 0, clicks: 0, conversions: 0 });
+      pivoted.set(key, {
+        workspaceId: row.workspaceId,
+        impressions: 0,
+        clicks: 0,
+        conversions: 0,
+      });
     }
     const p = pivoted.get(key)!;
     const val = parseFloat(row.total ?? "0");
@@ -82,6 +94,7 @@ async function rollupWindowStep(input: {
     await db
       .insert(outcomes)
       .values({
+        workspaceId: totals.workspaceId,
         contentId: contentId!,
         channel: channel as Channel,
         window: input.window,

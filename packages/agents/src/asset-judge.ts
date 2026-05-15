@@ -64,6 +64,8 @@ Output JSON only — no fence, no commentary.`;
 export type RunJudgeInput = {
   brief: VisualConceptBrief;
   candidates: JudgeCandidate[];
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   model?: LlmModel;
   threadRef?: string | null;
   jobId?: string | null;
@@ -80,6 +82,7 @@ export async function runAssetJudge(
       scores.push({ ...score, index: c.index, imageUrl: c.imageUrl });
       await recordLlmUsage({
         agent: "asset-judge",
+        workspaceId: input.workspaceId,
         model: input.model,
         threadRef: input.threadRef ?? undefined,
         jobId: input.jobId ?? null,

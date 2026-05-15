@@ -1,6 +1,7 @@
 import { start } from "workflow/api";
 import { researchWorkflow } from "@/workflows/research";
 import { errorResponse } from "@/lib/http";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 // Vercel Cron target — runs daily at 02:00 UTC (07:45 Asia/Kathmandu).
 // Schedule lives in apps/web/vercel.json: `0 2 * * *`.
@@ -16,7 +17,11 @@ export async function GET(request: Request) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
     }
-    const run = await start(researchWorkflow, [{}]);
+    // Daily research cron is currently single-tenant: runs against the
+    // Legacy workspace's keyword config. PR 5 will fan out per workspace.
+    const run = await start(researchWorkflow, [
+      { workspaceId: LEGACY_WORKSPACE_ID },
+    ]);
     return Response.json({ runId: run.runId, status: "started" });
   } catch (err) {
     return errorResponse(err);

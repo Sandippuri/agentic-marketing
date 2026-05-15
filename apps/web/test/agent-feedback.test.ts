@@ -12,10 +12,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, and, inArray } from "drizzle-orm";
 import { createDb, schema, levenshtein } from "@marketing/db";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 const databaseUrl = process.env.DATABASE_URL;
 const db = databaseUrl ? createDb(databaseUrl) : null;
 const runId = `fb-${Date.now().toString(36)}`;
+const WS_ID = LEGACY_WORKSPACE_ID;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,6 +27,7 @@ async function insertApprovedContent(campaignId: string, bodyMd: string) {
   const [c] = await db!
     .insert(schema.contentItems)
     .values({
+      workspaceId: WS_ID,
       campaignId,
       type: "blog",
       title: `Feedback test ${Math.random().toString(36).slice(2)}`,
@@ -38,7 +41,7 @@ async function insertApprovedContent(campaignId: string, bodyMd: string) {
 async function insertApproval(contentId: string) {
   const [a] = await db!
     .insert(schema.approvals)
-    .values({ contentId })
+    .values({ workspaceId: WS_ID, contentId })
     .returning();
   return a!;
 }
@@ -59,6 +62,7 @@ async function writeApprovalFeedback(opts: {
   const [row] = await db!
     .insert(schema.agentFeedback)
     .values({
+      workspaceId: WS_ID,
       contentId: opts.contentId,
       revisionId: opts.revisionId,
       aiDraftMd: opts.aiDraftMd,
@@ -83,7 +87,7 @@ describe.skipIf(!db)("agent_feedback capture (live DB)", () => {
     if (!db) return;
     const [campaign] = await db
       .insert(schema.campaigns)
-      .values({ slug: `${runId}-feedback`, name: "Feedback test campaign" })
+      .values({ workspaceId: WS_ID, slug: `${runId}-feedback`, name: "Feedback test campaign" })
       .returning();
     campaignIds.push(campaign!.id);
   });

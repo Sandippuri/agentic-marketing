@@ -27,8 +27,18 @@ export type ConceptToPromptOpts = {
   brandPrefix?: string;
   /** Channel — drives aspect ratio. */
   channel?: string;
-  /** Number of candidates to generate. Default 3. */
+  /**
+   * Number of candidates to generate. Default 1 (post-0029 — see asset-pipeline
+   * docstring). Pass >1 only when the caller actually wants a fanout (legacy
+   * paths or experiments).
+   */
   variantCount?: number;
+  /**
+   * Optional rejection reason from the judge. When set, the prompt prepends
+   * a "fix the following" instruction so the retry generates against the
+   * specific failure mode rather than a fresh roll of the dice.
+   */
+  retryReason?: string;
 };
 
 const VARIANT_PERSPECTIVES = [
@@ -53,7 +63,7 @@ export function conceptToVariants(
   brief: VisualConceptBrief,
   opts: ConceptToPromptOpts = {},
 ): CandidateVariant[] {
-  const variantCount = opts.variantCount ?? 3;
+  const variantCount = opts.variantCount ?? 1;
   const aspect = ASPECT_BY_CHANNEL[opts.channel ?? "linkedin"] ?? "square";
   const negative = buildNegative(brief);
 
@@ -67,18 +77,26 @@ export function conceptToVariants(
     brief.reference_image_urls.length > 0
       ? `Match the visual language of the reference images provided (composition, lighting, real product geometry).`
       : "";
-  const noNoise = `No text, no logos, no watermarks. No anonymous abstract shapes.`;
+  // Post-0029 the model renders overlay text natively (no template chrome
+  // step). Only suppress text when there's no headline to render.
+  const overlay = brief.slots.headline
+    ? `Render the headline text "${brief.slots.headline}" cleanly into the image with brand-appropriate typography. No other text, no logos, no watermarks.`
+    : `No text, no logos, no watermarks. No anonymous abstract shapes.`;
+  const retryFix = opts.retryReason
+    ? `Previous attempt was rejected for: ${opts.retryReason}. Fix this specifically.`
+    : "";
 
   return Array.from({ length: variantCount }).map((_, i) => {
     const perspective = VARIANT_PERSPECTIVES[i % VARIANT_PERSPECTIVES.length]!;
     const promptCore = [
+      retryFix,
       brief.concept_summary,
       `${perspective}.`,
       focal,
       subjects,
       style,
       refsHint,
-      noNoise,
+      overlay,
     ]
       .filter(Boolean)
       .join(" ");

@@ -31,6 +31,13 @@ import { runLifecycle } from "../sub-agents/lifecycle";
 import { buildKbTools, type KbToolContext } from "./kb-tools";
 
 export type ToolRegistryContext = {
+  /**
+   * Workspace whose data the entire tool stack is allowed to read/write.
+   * Required from PR 4 — kbSearch, sub-agents, brand-guidance all refuse
+   * to run without it. Orchestrator resolves it from the request
+   * WorkspaceContext; durable workflows thread it via StartInput.
+   */
+  workspaceId: string;
   cp: CpClient;
   threadRef?: ThreadRef | null;
   jobId?: string | null;
@@ -45,7 +52,11 @@ export type ToolRegistryContext = {
     input: Record<string, unknown>,
     fn: () => Promise<T>,
   ) => Promise<T>;
-  kb?: KbToolContext;
+  /**
+   * Optional KB context. workspaceId is inherited from ToolRegistryContext
+   * if not specified here.
+   */
+  kb?: Omit<KbToolContext, "workspaceId"> & { workspaceId?: string };
   /** When set, run_content posts the approval card here. */
   postToThread?: (payload: string | object) => Promise<void> | void;
 };
@@ -64,6 +75,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
         step("strategist", { request, campaignId }, () =>
           runStrategist({
             request,
+            workspaceId: ctx.workspaceId,
             campaignId,
             cp: ctx.cp,
             model: ctx.modelFor("strategist"),
@@ -86,6 +98,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
         step("content", { request, campaignId, contentId }, () =>
           runContent({
             request,
+            workspaceId: ctx.workspaceId,
             campaignId,
             contentId,
             cp: ctx.cp,
@@ -113,6 +126,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
         step("asset", { request, contentId }, () =>
           runAsset({
             request,
+            workspaceId: ctx.workspaceId,
             contentId,
             cp: ctx.cp,
             model: ctx.modelFor("asset"),
@@ -134,6 +148,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
         step("analyst", { request, campaignId }, () =>
           runAnalyst({
             request,
+            workspaceId: ctx.workspaceId,
             campaignId,
             cp: ctx.cp,
             model: ctx.modelFor("analyst"),
@@ -154,6 +169,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
       execute: async ({ request, campaignId }) =>
         runResearcher({
           request,
+          workspaceId: ctx.workspaceId,
           campaignId,
           cp: ctx.cp,
           model: ctx.modelFor("analyst"),
@@ -174,6 +190,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
       execute: async ({ request, contentId, campaignId }) =>
         runSeo({
           request,
+          workspaceId: ctx.workspaceId,
           contentId,
           campaignId,
           cp: ctx.cp,
@@ -194,6 +211,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
       execute: async ({ request, campaignId }) =>
         runExperiment({
           request,
+          workspaceId: ctx.workspaceId,
           campaignId,
           cp: ctx.cp,
           model: ctx.modelFor("strategist"),
@@ -213,6 +231,7 @@ export function buildSubAgentTools(ctx: ToolRegistryContext) {
       execute: async ({ request, campaignId }) =>
         runLifecycle({
           request,
+          workspaceId: ctx.workspaceId,
           campaignId,
           cp: ctx.cp,
           model: ctx.modelFor("strategist"),
@@ -310,9 +329,16 @@ export function buildCpQueryTools(ctx: ToolRegistryContext) {
 
 /** Build every tool the orchestrator needs (sub-agents + cp queries + kb). */
 export function buildAllTools(ctx: ToolRegistryContext) {
+  // Inherit workspace from the registry context when the caller didn't
+  // provide a kb override.
+  const kbCtx: KbToolContext = {
+    workspaceId: ctx.kb?.workspaceId ?? ctx.workspaceId,
+    campaignId: ctx.kb?.campaignId,
+    actorId: ctx.kb?.actorId,
+  };
   return {
     ...buildSubAgentTools(ctx),
     ...buildCpQueryTools(ctx),
-    ...buildKbTools(ctx.kb ?? {}),
+    ...buildKbTools(kbCtx),
   };
 }

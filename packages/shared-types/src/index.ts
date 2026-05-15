@@ -126,6 +126,8 @@ export const CHANNELS = [
   "internal_blog",
   "linkedin",
   "x",
+  "instagram",
+  "facebook",
   "email_hubspot",
   "email_mailchimp",
 ] as const;

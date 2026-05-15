@@ -27,6 +27,8 @@ import { buildKbTools } from "../tools/kb-tools";
 export type LifecycleInput = {
   request: string;
   campaignId: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   cp: CpClient;
   model?: LlmModel;
   threadRef?: string | null;
@@ -37,12 +39,13 @@ export type LifecycleInput = {
 export async function runLifecycle({
   request,
   campaignId,
+  workspaceId,
   model,
   threadRef,
   jobId,
   workflowRunId,
 }: LifecycleInput): Promise<string> {
-  const kbTools = buildKbTools({ campaignId });
+  const kbTools = buildKbTools({ workspaceId, campaignId });
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
@@ -77,7 +80,7 @@ export async function runLifecycle({
             .min(1)
             .max(7),
         }),
-        execute: async (input) => createSequence(campaignId, input),
+        execute: async (input) => createSequence(workspaceId, campaignId, input),
       }),
 
       list_sequences: tool({
@@ -90,6 +93,7 @@ export async function runLifecycle({
 
   await recordLlmUsage({
     agent: "lifecycle",
+    workspaceId,
     model,
     threadRef: threadRef ?? undefined,
     jobId: jobId ?? null,
@@ -102,6 +106,7 @@ export async function runLifecycle({
 }
 
 async function createSequence(
+  workspaceId: string,
   campaignId: string,
   input: {
     name: string;
@@ -122,6 +127,7 @@ async function createSequence(
 ) {
   const db = getDb();
   const seq: NewLifecycleSequence = {
+    workspaceId,
     campaignId,
     name: input.name,
     channel: input.channel,
@@ -135,6 +141,7 @@ async function createSequence(
   if (!seqRow) throw new Error("lifecycle_sequences insert returned no rows");
 
   const stepRows: NewLifecycleStep[] = input.steps.map((s) => ({
+    workspaceId,
     sequenceId: seqRow.id,
     stepIndex: s.stepIndex,
     contentId: s.contentId ?? null,

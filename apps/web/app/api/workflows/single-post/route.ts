@@ -6,6 +6,7 @@ import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { getDefaultWorkflowModel } from "@/lib/workflow-engines";
+import { LEGACY_WORKSPACE_ID, getWorkspaceContext } from "@/lib/billing";
 
 const Body = z.object({
   request: z.string().min(1).max(8000),
@@ -21,15 +22,20 @@ const Body = z.object({
 // can correlate (and so we can later show a status link).
 export async function POST(request: Request) {
   try {
-    const actor = isInternal(request)
+    const isInternalCall = isInternal(request);
+    const actor = isInternalCall
       ? { id: null, kind: "agent" as const }
       : await getRequestActor();
+    const workspaceId = isInternalCall
+      ? LEGACY_WORKSPACE_ID
+      : (await getWorkspaceContext()).workspaceId;
     const input = await parseJson(request, Body);
 
     const model = input.model ?? (await getDefaultWorkflowModel());
     const run = await start(singlePostWorkflow, [
       {
         request: input.request,
+        workspaceId,
         channel: input.channel,
         campaignId: input.campaignId,
         threadRef: input.threadRef,

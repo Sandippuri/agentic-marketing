@@ -30,6 +30,7 @@ export const revalidate = 0;
 // rendered as 'pending' placeholders so the visual progression is clear
 // even when only a subset fires.
 const PIPELINE: Array<StepView["name"]> = [
+  "researcher",
   "strategist",
   "content",
   "asset",
@@ -99,7 +100,7 @@ export default async function CreationWorkflowPage() {
     .map((r) => r.campaignId)
     .filter((v): v is string => !!v);
 
-  const [contentRows, campaignRows, contentAssetRows, approvalRows] = await Promise.all([
+  const [contentRows, campaignRows, contentAssetRows, approvalRows, agentRevisionRows] = await Promise.all([
     contentIds.length
       ? db
           .select({
@@ -150,6 +151,19 @@ export default async function CreationWorkflowPage() {
           .from(schema.approvals)
           .where(inArray(schema.approvals.contentId, contentIds))
       : Promise.resolve([]),
+    // Agent-authored revisions per content_id. The single-post workflow
+    // inserts one row each time it revises in response to a changes_requested
+    // approval, so counting them gives "this run is on revision N" without a
+    // dedicated workflow_runs column.
+    contentIds.length
+      ? db
+          .select({
+            contentId: schema.contentRevisions.contentId,
+            authorKind: schema.contentRevisions.authorKind,
+          })
+          .from(schema.contentRevisions)
+          .where(inArray(schema.contentRevisions.contentId, contentIds))
+      : Promise.resolve([]),
   ]);
 
   const contentById = new Map(contentRows.map((r) => [r.id, r]));
@@ -171,6 +185,18 @@ export default async function CreationWorkflowPage() {
       latestDecidedAtByContentId.set(a.contentId, ts);
       latestDecisionByContentId.set(a.contentId, a.decision);
     }
+  }
+
+  // Count agent revisions per content_id. Human edits via the UI also land
+  // in content_revisions; we only want the ones the workflow itself created
+  // so the card chip stays an honest "workflow revised this N times".
+  const agentRevisionCountByContentId = new Map<string, number>();
+  for (const r of agentRevisionRows) {
+    if (!r.contentId || r.authorKind !== "agent") continue;
+    agentRevisionCountByContentId.set(
+      r.contentId,
+      (agentRevisionCountByContentId.get(r.contentId) ?? 0) + 1,
+    );
   }
 
   // Sign each asset's storage path once, in parallel, then group by
@@ -312,6 +338,9 @@ export default async function CreationWorkflowPage() {
       latestApprovalDecision: r.contentId
         ? latestDecisionByContentId.get(r.contentId) ?? null
         : null,
+      agentRevisionCount: r.contentId
+        ? agentRevisionCountByContentId.get(r.contentId) ?? 0
+        : 0,
       linkedCampaign: linkedCampaign
         ? {
             id: linkedCampaign.id,

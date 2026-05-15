@@ -27,6 +27,7 @@ import {
 } from "@marketing/agents/kb";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -44,9 +45,11 @@ const Body = z.object({
 export async function POST(request: Request) {
   try {
     const actor = await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const input = await parseJson(request, Body);
 
     const collectionId = await ensureCollection({
+      workspaceId,
       slug: input.collectionSlug ?? "visual-references",
       name: input.collectionName ?? "Visual References",
       kind: "visual_reference",
@@ -57,6 +60,7 @@ export async function POST(request: Request) {
     });
 
     const doc = await upsertDocument({
+      workspaceId,
       collectionId,
       slug: input.slug,
       title: input.title,

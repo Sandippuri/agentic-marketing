@@ -51,6 +51,9 @@ const PatchCampaign = z.object({
   status: z.enum(["draft", "active", "paused", "completed", "archived"]).optional(),
   briefMd: z.string().optional(),
   calendarJson: z.unknown().optional(),
+  // Migration 0029. Free-form jsonb passthrough — schema lives in
+  // packages/agents/src/sub-agents/strategist.ts (VisualIdentity).
+  visualIdentity: z.unknown().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
 });

@@ -44,6 +44,7 @@ export type FindHighPerformingOpts = {
 export type HighPerformingAsset = {
   assetId: string;
   contentId: string;
+  workspaceId: string;
   storagePath: string;
   kind: string;
   judgeTotal: number;
@@ -87,6 +88,7 @@ export async function findHighPerformingAssets(
     .select({
       assetId: schema.assets.id,
       contentId: schema.assets.contentId,
+      workspaceId: schema.contentItems.workspaceId,
       storagePath: schema.assets.storagePath,
       kind: schema.assets.kind,
       judgeTotal: schema.assets.judgeTotal,
@@ -112,10 +114,14 @@ export async function findHighPerformingAssets(
     .limit(limit);
 
   return rows
-    .filter((r): r is typeof r & { contentId: string } => Boolean(r.contentId))
+    .filter(
+      (r): r is typeof r & { contentId: string; campaignId: string } =>
+        Boolean(r.contentId) && Boolean(r.campaignId),
+    )
     .map((r) => ({
       assetId: r.assetId,
       contentId: r.contentId,
+      workspaceId: r.workspaceId,
       storagePath: r.storagePath,
       kind: r.kind,
       judgeTotal: Number(r.judgeTotal ?? 0),
@@ -160,6 +166,7 @@ export async function promoteAssetToKb(
   }
 
   const collectionId = await ensureCollection({
+    workspaceId: asset.workspaceId,
     slug: approvedCollectionSlug(asset.campaignId),
     name: "Approved assets (auto-promoted)",
     kind: "visual_reference",
@@ -178,6 +185,7 @@ export async function promoteAssetToKb(
   ].join("\n");
 
   const doc = await upsertDocument({
+    workspaceId: asset.workspaceId,
     collectionId,
     slug,
     title: `Approved: ${asset.contentTitle.slice(0, 80)}`,

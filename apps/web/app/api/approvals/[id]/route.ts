@@ -103,6 +103,7 @@ export async function POST(
         const [feedback] = await db
           .insert(schema.agentFeedback)
           .values({
+            workspaceId: content.workspaceId,
             contentId: approval.contentId,
             revisionId: content.currentRevisionId ?? null,
             aiDraftMd,

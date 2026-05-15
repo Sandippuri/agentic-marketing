@@ -12,6 +12,7 @@ import { getDb, schema } from "@marketing/db";
 import { getRequestActor } from "@/lib/auth";
 import { assertInternal, isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 const GENERATION_JOB_STATUSES = ["running", "completed", "failed"] as const;
 const GENERATION_JOB_KINDS = [
@@ -20,6 +21,7 @@ const GENERATION_JOB_KINDS = [
   "asset",
   "analysis",
   "publish",
+  "research",
   "other",
 ] as const;
 
@@ -63,6 +65,7 @@ export async function GET(request: Request) {
 }
 
 const CreateGenerationJob = z.object({
+  workspaceId: z.string().uuid().optional(),
   threadRef: z.string().optional(),
   userId: z.string().optional(),
   userMessage: z.string().min(1).max(10_000),
@@ -77,6 +80,7 @@ export async function POST(request: Request) {
     const [row] = await db
       .insert(schema.generationJobs)
       .values({
+        workspaceId: input.workspaceId ?? LEGACY_WORKSPACE_ID,
         threadRef: input.threadRef ?? null,
         userId: input.userId ?? null,
         userMessage: input.userMessage,

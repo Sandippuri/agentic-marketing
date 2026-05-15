@@ -2,6 +2,13 @@ import { ZodError, type ZodSchema } from "zod";
 import { InvalidTransitionError } from "./state-machine";
 import { InternalAuthError } from "./internal-auth";
 import { UnauthorizedError } from "./auth";
+import {
+  EntitlementError,
+  NotWorkspaceMemberError,
+  QuotaExceededError,
+  SuperadminRequiredError,
+  WorkspaceNotFoundError,
+} from "./billing/errors";
 
 // Single error-mapping point for Route Handlers.
 export function errorResponse(err: unknown): Response {
@@ -19,6 +26,33 @@ export function errorResponse(err: unknown): Response {
   }
   if (err instanceof InternalAuthError) {
     return Response.json({ error: "forbidden" }, { status: 403 });
+  }
+  if (err instanceof SuperadminRequiredError) {
+    return Response.json({ error: "superadmin_required" }, { status: 403 });
+  }
+  if (err instanceof NotWorkspaceMemberError) {
+    return Response.json({ error: "not_workspace_member" }, { status: 403 });
+  }
+  if (err instanceof WorkspaceNotFoundError) {
+    return Response.json({ error: "workspace_not_found" }, { status: 404 });
+  }
+  if (err instanceof EntitlementError) {
+    return Response.json(
+      { error: "feature_not_available", feature: err.feature, plan: err.plan },
+      { status: 402 },
+    );
+  }
+  if (err instanceof QuotaExceededError) {
+    return Response.json(
+      {
+        error: "quota_exceeded",
+        metric: err.metric,
+        limit: err.limit,
+        used: err.used,
+        plan: err.plan,
+      },
+      { status: 429, headers: { "x-billing-quota": err.metric } },
+    );
   }
   if (err instanceof PublishGateError) {
     return Response.json({ error: "publish_gate", reason: err.message }, { status: 409 });

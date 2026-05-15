@@ -62,6 +62,8 @@ const InsightSchema = z.object({
 type LearnInput = {
   threadRef: string;
   userId: string;
+  /** Workspace scope; mandatory from PR 4 so insights don't bleed across tenants. */
+  workspaceId: string;
   userMessage: string;
   assistantMessage: string;
   history: Array<{ role: string; content: string }>;
@@ -109,6 +111,7 @@ async function runExtractor(input: LearnInput): Promise<void> {
   // two users can independently capture the same-sounding rule.
   const existing = await kbSearch({
     query: object.title,
+    workspaceId: input.workspaceId,
     collectionKinds: ["playbook"],
     k: 5,
     minSimilarity: 0.9,
@@ -129,6 +132,7 @@ async function runExtractor(input: LearnInput): Promise<void> {
   }
 
   const collectionId = await ensureCollection({
+    workspaceId: input.workspaceId,
     slug: COLLECTION.slug,
     name: COLLECTION.name,
     kind: COLLECTION.kind,
@@ -142,6 +146,7 @@ async function runExtractor(input: LearnInput): Promise<void> {
     scope === "personal" ? `${object.slug}-u-${shortHash(input.userId)}` : object.slug;
 
   const doc = await upsertDocument({
+    workspaceId: input.workspaceId,
     collectionId,
     slug: persistedSlug,
     title: object.title,

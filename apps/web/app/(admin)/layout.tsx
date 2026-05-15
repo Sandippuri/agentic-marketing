@@ -2,6 +2,8 @@ import Link from "next/link";
 import { isNull, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { RealtimeInvalidator } from "@/lib/realtime-invalidator";
+import { getSupabaseServer } from "@/lib/supabase/server";
+import { lookupAdminRole } from "@/lib/billing/admin";
 import { SidebarNav, type NavSection } from "./sidebar-nav";
 
 // Admin pages all read live Postgres state. Don't prerender.
@@ -18,6 +20,15 @@ export default async function AdminLayout({
     .from(schema.approvals)
     .where(isNull(schema.approvals.decision));
   const pendingCount = countRows[0]?.count ?? 0;
+
+  // Only superadmins see the /super link. Cheap read; lookupAdminRole hits a
+  // tiny indexed table.
+  const sb = await getSupabaseServer();
+  const { data: userData } = await sb.auth.getUser();
+  const adminRole = userData.user
+    ? await lookupAdminRole(userData.user.id)
+    : null;
+  const isSuperadmin = adminRole === "superadmin";
 
   const sections: NavSection[] = [
     {
@@ -62,6 +73,13 @@ export default async function AdminLayout({
       ],
     },
   ];
+
+  if (isSuperadmin) {
+    sections.push({
+      label: "Operator",
+      items: [{ href: "/super", label: "Superadmin", icon: "settings" }],
+    });
+  }
 
   return (
     <div className="min-h-dvh grid grid-cols-[240px_1fr] bg-[var(--bg)]">

@@ -41,9 +41,14 @@ export function getResearchStore(): ResearchStore {
 
 function buildRedisStore(url: string): ResearchStore {
   const redis = new IORedis(url, {
-    maxRetriesPerRequest: null,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectTimeout: 1500,
     lazyConnect: true,
   });
+  // Without a listener, IORedis logs "Unhandled error event" on every connect
+  // failure. We already catch per-call; swallow connection-error noise here.
+  redis.on("error", () => {});
   return {
     async saveReport(report) {
       const payload = JSON.stringify(report);

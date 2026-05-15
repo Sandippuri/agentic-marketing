@@ -164,6 +164,7 @@ export const generationJobKindEnum = pgEnum("generation_job_kind", [
   "asset",
   "analysis",
   "publish",
+  "research",
   "other",
 ] as const);
 export const generationStepNameEnum = pgEnum("generation_step_name", [
@@ -172,6 +173,7 @@ export const generationStepNameEnum = pgEnum("generation_step_name", [
   "asset",
   "analyst",
   "distributor",
+  "researcher",
 ] as const);
 export const generationStepStatusEnum = pgEnum("generation_step_status", [
   "running",
@@ -215,11 +217,13 @@ export const campaigns = pgTable(
   "campaigns",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    // SaaS tenant. Nullable in PR 1 so the migration is non-breaking; PR 3
-    // backfills the Legacy workspace then flips this NOT NULL.
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    // SaaS tenant. The DB column is NOT NULL after migration 0027; the TS
+    // type stays nullable until PR 5 plumbs workspace_id into every insert
+    // site (orchestrator, workflows, agents). Applies to every tenant
+    // table below — comment lives here so it isn't repeated 25 times.
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     status: campaignStatusEnum("status").notNull().default("draft"),
@@ -229,6 +233,11 @@ export const campaigns = pgTable(
     endDate: date("end_date"),
     briefMd: text("brief_md"),
     calendarJson: jsonb("calendar_json"),
+    // Campaign-level visual identity (migration 0029). Set by the Strategist
+    // alongside the calendar; consumed by the Art Director when refining
+    // per-post image briefs into prompts. Shape lives in
+    // packages/agents/src/sub-agents/strategist.ts as VisualIdentity.
+    visualIdentity: jsonb("visual_identity"),
     // Goal-loop fields (migration 0016). See apps/web/workflows/goal-loop.ts.
     goalDefinition: jsonb("goal_definition"),
     targetMetrics: jsonb("target_metrics"),
@@ -247,7 +256,12 @@ export const campaigns = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    slugUq: uniqueIndex("campaigns_slug_uq").on(t.slug),
+    // Slug uniqueness scoped per tenant — migrated from a global unique
+    // by 0027 so two workspaces can each have their own "summer-launch".
+    workspaceSlugUq: uniqueIndex("campaigns_workspace_slug_uq").on(
+      t.workspaceId,
+      t.slug,
+    ),
     statusIdx: index("campaigns_status_idx").on(t.status),
     loopStatusIdx: index("campaigns_loop_status_idx").on(t.loopStatus),
     workspaceIdx: index("campaigns_workspace_idx").on(t.workspaceId),
@@ -262,9 +276,9 @@ export const contentItems = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     // Denormalized from campaigns.workspace_id so RLS / scoped reads don't
     // need a join. Backfilled in PR 3 and kept in sync by app code.
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -296,6 +310,12 @@ export const contentItems = pgTable(
     // generators). Schema lives in art-director.ts as VisualConceptBrief —
     // free-form jsonb here so the brief shape can evolve without migrations.
     visualBrief: jsonb("visual_brief"),
+    // Per-post image brief (migration 0029) emitted by the Content agent at
+    // draft time. Names the literal subject + composition + must-show /
+    // must-not-show. The Art Director refines this into the model prompt
+    // instead of guessing visuals from the body. Shape lives in
+    // packages/agents/src/sub-agents/content.ts as ImageBrief.
+    imageBrief: jsonb("image_brief"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -319,9 +339,9 @@ export const contentRevisions = pgTable(
   "content_revisions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -345,9 +365,9 @@ export const approvals = pgTable(
   "approvals",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -371,9 +391,9 @@ export const publishJobs = pgTable(
   "publish_jobs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -417,9 +437,9 @@ export const assets = pgTable(
   "assets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     contentId: uuid("content_id").references(() => contentItems.id, {
       onDelete: "set null",
     }),
@@ -459,9 +479,9 @@ export const metrics = pgTable(
   "metrics",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     scopeType: scopeTypeEnum("scope_type").notNull(),
     scopeId: uuid("scope_id").notNull(),
     channel: channelEnum("channel"),
@@ -511,9 +531,9 @@ export const agentFeedback = pgTable(
   "agent_feedback",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -547,9 +567,9 @@ export const outcomes = pgTable(
   "outcomes",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     contentId: uuid("content_id")
       .notNull()
       .references(() => contentItems.id, { onDelete: "cascade" }),
@@ -591,9 +611,9 @@ export const embeddings = pgTable(
     // Critical for tenant isolation: a missing where-clause here would leak
     // RAG context across tenants. PR 9 adds an RLS policy specifically on
     // this column and runs ANN queries through a dedicated DB role.
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     sourceType: embeddingSourceTypeEnum("source_type").notNull(),
     sourceId: text("source_id").notNull(),
     chunkIndex: integer("chunk_index").notNull().default(0),
@@ -629,9 +649,9 @@ export const brandMemory = pgTable(
   "brand_memory",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     campaignId: uuid("campaign_id").references(() => campaigns.id, {
       onDelete: "cascade",
     }),
@@ -669,9 +689,9 @@ export const brandDesignSystem = pgTable(
   "brand_design_system",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     campaignId: uuid("campaign_id").references(() => campaigns.id, {
       onDelete: "cascade",
     }),
@@ -725,9 +745,9 @@ export const brandDocuments = pgTable(
   "brand_documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     filename: text("filename").notNull(),
     mimeType: text("mime_type").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
@@ -764,9 +784,9 @@ export const extractionRuns = pgTable(
   "extraction_runs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     triggeredBy: uuid("triggered_by"),
     status: extractionRunStatusEnum("status").notNull().default("running"),
     sourceDocIds: jsonb("source_doc_ids")
@@ -802,9 +822,9 @@ export const brandMemoryDrafts = pgTable(
   "brand_memory_drafts",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     runId: uuid("run_id")
       .notNull()
       .references(() => extractionRuns.id, { onDelete: "cascade" }),
@@ -844,9 +864,9 @@ export const generationJobs = pgTable(
   "generation_jobs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     threadRef: text("thread_ref"),
     // TODO PR 3: retype to uuid once backfill maps legacy literals like
     // "admin" to a real auth.users.id.
@@ -919,9 +939,9 @@ export const workflowRuns = pgTable(
   "workflow_runs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     engine: workflowEngineEnum("engine").notNull(),
     kind: generationJobKindEnum("kind").notNull(),
     status: workflowRunStatusEnum("status").notNull().default("queued"),
@@ -970,9 +990,9 @@ export const llmUsage = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     // Stamped at write time by recordLlmUsage once PR 5 lands. Without this
     // we can't attribute LLM spend to a tenant for cost dashboards.
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     occurredAt: timestamp("occurred_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1012,20 +1032,40 @@ export const llmUsage = pgTable(
 );
 
 // --- settings -----------------------------------------------------------------
-// `key` is the global setting name. PR1 keeps the table single-tenant; PR4
-// converts the PK to `(workspace_id, key)` with a partial unique on global
-// rows. Don't change this table here.
+// PR 4: per-workspace settings with a global fallback row (workspace_id IS NULL).
+// PK is the composite (workspace_id, key); a partial unique enforces "at most
+// one global row per key" because the composite PK alone would allow many
+// (NULL, key) duplicates. The legacy `settings_pkey` is dropped in 0028.
+//
+// Read path: SELECT workspace row first; if missing for that key, fall back
+// to the global row. The /api/settings handler does this merge in JS so the
+// shape returned to the UI stays a single flat object.
 
 export const settings = pgTable(
   "settings",
   {
-    key: text("key").primaryKey(),
+    // NULL is meaningful here: rows with a null workspace_id are the global
+    // default values that apply when a tenant hasn't overridden a setting.
+    // Do NOT add .notNull() — see migration 0028_settings_per_workspace.sql.
+    workspaceId: uuid("workspace_id")
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
     value: jsonb("value").notNull(),
     updatedBy: uuid("updated_by"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
+  (t) => ({
+    // Composite PK enforced via 0028's hand-written SQL because Drizzle
+    // doesn't model nullable-aware composite PKs well; the migration adds
+    // both a regular PK on (coalesce(workspace_id, '00000000'…), key) and
+    // a partial unique for the global-fallback semantic.
+    workspaceKeyIdx: index("settings_workspace_key_idx").on(
+      t.workspaceId,
+      t.key,
+    ),
+  }),
 );
 
 // --- SaaS foundation (PR 1) ---------------------------------------------------
@@ -1324,9 +1364,9 @@ export const kbCollections = pgTable(
   "kb_collections",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     kind: kbCollectionKindEnum("kind").notNull(),
@@ -1343,7 +1383,11 @@ export const kbCollections = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    slugUq: uniqueIndex("kb_collections_slug_uq").on(t.slug),
+    // Per-tenant slug uniqueness (migrated from global by 0027).
+    workspaceSlugUq: uniqueIndex("kb_collections_workspace_slug_uq").on(
+      t.workspaceId,
+      t.slug,
+    ),
     kindIdx: index("kb_collections_kind_idx").on(t.kind),
     campaignIdx: index("kb_collections_campaign_idx").on(t.campaignId),
     workspaceIdx: index("kb_collections_workspace_idx").on(t.workspaceId),
@@ -1354,9 +1398,9 @@ export const kbDocuments = pgTable(
   "kb_documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     collectionId: uuid("collection_id")
       .notNull()
       .references(() => kbCollections.id, { onDelete: "cascade" }),
@@ -1392,9 +1436,9 @@ export const kbChunks = pgTable(
   "kb_chunks",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     documentId: uuid("document_id")
       .notNull()
       .references(() => kbDocuments.id, { onDelete: "cascade" }),
@@ -1424,9 +1468,9 @@ export const goalEvents = pgTable(
   "goal_events",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -1453,9 +1497,9 @@ export const experiments = pgTable(
   "experiments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -1500,9 +1544,9 @@ export const lifecycleSequences = pgTable(
   "lifecycle_sequences",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     campaignId: uuid("campaign_id")
       .notNull()
       .references(() => campaigns.id, { onDelete: "cascade" }),
@@ -1528,9 +1572,9 @@ export const lifecycleSteps = pgTable(
   "lifecycle_steps",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     sequenceId: uuid("sequence_id")
       .notNull()
       .references(() => lifecycleSequences.id, { onDelete: "cascade" }),

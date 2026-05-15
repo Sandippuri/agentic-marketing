@@ -45,13 +45,15 @@ const COLLECTION_KINDS = [
 ] as const;
 
 export type KbToolContext = {
+  /** Workspace scope. Mandatory from PR 4 — kbSearch refuses without it. */
+  workspaceId: string;
   /** When set, kb_search filters to this campaign + global collections. */
   campaignId?: string;
   /** When set, write tools record this id as created_by. */
   actorId?: string;
 };
 
-export function buildKbTools(ctx: KbToolContext = {}) {
+export function buildKbTools(ctx: KbToolContext) {
   return {
     kb_search: tool({
       description:
@@ -66,6 +68,7 @@ export function buildKbTools(ctx: KbToolContext = {}) {
       execute: async ({ query, collectionKinds, k, mode, expandToSection }) => {
         const hits = await kbSearch({
           query,
+          workspaceId: ctx.workspaceId,
           collectionKinds: collectionKinds as CollectionKind[] | undefined,
           campaignId: ctx.campaignId,
           k,
@@ -148,6 +151,7 @@ export function buildKbTools(ctx: KbToolContext = {}) {
       }),
       execute: async ({ collectionSlug, collectionKind, slug, title, body_md, metadata }) => {
         const collectionId = await ensureCollection({
+          workspaceId: ctx.workspaceId,
           slug: collectionSlug,
           name: humanise(collectionSlug),
           kind: collectionKind as CollectionKind,
@@ -155,6 +159,7 @@ export function buildKbTools(ctx: KbToolContext = {}) {
           campaignId: ctx.campaignId ?? null,
         });
         const doc = await upsertDocument({
+          workspaceId: ctx.workspaceId,
           collectionId,
           slug,
           title,
@@ -184,6 +189,7 @@ export function buildKbTools(ctx: KbToolContext = {}) {
       }),
       execute: async ({ collectionSlug, collectionKind, slug, title, body_md, metadata }) => {
         const collectionId = await ensureCollection({
+          workspaceId: ctx.workspaceId,
           slug: collectionSlug,
           name: humanise(collectionSlug),
           kind: collectionKind as CollectionKind,
@@ -191,6 +197,7 @@ export function buildKbTools(ctx: KbToolContext = {}) {
           campaignId: ctx.campaignId ?? null,
         });
         const doc = await upsertDocument({
+          workspaceId: ctx.workspaceId,
           collectionId,
           slug,
           title,

@@ -9,7 +9,7 @@ import { assertInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
 
 const StartStep = z.object({
-  name: z.enum(["strategist", "content", "asset", "analyst", "distributor"]),
+  name: z.enum(["strategist", "content", "asset", "analyst", "distributor", "researcher"]),
   input: z.unknown().optional(),
 });
 

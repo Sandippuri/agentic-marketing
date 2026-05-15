@@ -4,6 +4,7 @@ import { researchWorkflow } from "@/workflows/research";
 import { errorResponse, parseJson } from "@/lib/http";
 import { isInternal } from "@/lib/internal-auth";
 import { getRequestActor } from "@/lib/auth";
+import { LEGACY_WORKSPACE_ID, getWorkspaceContext } from "@/lib/billing";
 import { RESEARCH_SEARCH_PROVIDERS } from "@marketing/shared-types";
 
 // On-demand trigger for the daily research workflow. Same workflow the cron
@@ -24,9 +25,13 @@ const RunBody = z.object({
 
 export async function POST(request: Request) {
   try {
-    if (!isInternal(request)) await getRequestActor();
+    const isInternalCall = isInternal(request);
+    if (!isInternalCall) await getRequestActor();
+    const workspaceId = isInternalCall
+      ? LEGACY_WORKSPACE_ID
+      : (await getWorkspaceContext()).workspaceId;
     const body = await parseJson(request, RunBody);
-    const run = await start(researchWorkflow, [body]);
+    const run = await start(researchWorkflow, [{ ...body, workspaceId }]);
     return Response.json({ runId: run.runId, status: "started" });
   } catch (err) {
     return errorResponse(err);

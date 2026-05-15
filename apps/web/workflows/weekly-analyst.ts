@@ -1,6 +1,7 @@
 import { runAnalyst } from "@marketing/agents/sub-agents/analyst";
 import { CpClient } from "@marketing/cp-client";
 import { resolveSubAgentModel } from "@/lib/workflow-engines";
+import { LEGACY_WORKSPACE_ID } from "@/lib/billing";
 
 // Phase 3 mirror of apps/manager/src/cron.ts. Triggered by Vercel Cron at
 // 03:15 UTC every Monday (= 09:00 Asia/Kathmandu). Runs runAnalyst and
@@ -28,6 +29,7 @@ async function runAnalystStep(): Promise<WeeklyAnalystOutput> {
       "Recommend one concrete change for next week.",
       "Then write the findings to learnings/{yyyy-mm}.md.",
     ].join(" "),
+    workspaceId: LEGACY_WORKSPACE_ID,
     cp,
     model: await resolveSubAgentModel("analyst"),
   });

@@ -14,9 +14,35 @@ import { recordLlmUsage } from "../usage";
 
 const log = pino({ name: "content" });
 
+/**
+ * Per-post image brief emitted by the Content agent at draft time.
+ * The Art Director refines this into the model prompt — it's NOT meant to be
+ * the prompt itself. Describe the LITERAL subject (what's in frame, what
+ * composition, what to avoid) — never the message ("show growth"). The model
+ * can't render abstract concepts; it can render specific things.
+ *
+ * Stored on `content_items.image_brief` (jsonb).
+ */
+export type ImageBrief = {
+  /** Literal subject in frame: "single laptop on wooden desk, screen showing line chart trending up". */
+  subject: string;
+  /** Camera framing. */
+  composition: "close_up" | "medium" | "wide" | "overhead";
+  /** Mood / atmosphere ("calm focused early-morning light"). */
+  mood: string;
+  /** Optional headline copy the model should render INTO the image. */
+  overlay_text?: string;
+  /** Concrete elements that MUST appear ("upward trend", "warm window light"). */
+  must_show: string[];
+  /** Concrete elements that must NOT appear ("human faces", "cluttered desk"). */
+  must_not_show: string[];
+};
+
 export type ContentInput = {
   request: string;
   campaignId: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   contentId?: string;
   cp: CpClient;
   /** For posting the approval card after submit */
@@ -31,6 +57,7 @@ export type ContentInput = {
 export async function runContent({
   request,
   campaignId,
+  workspaceId,
   contentId,
   cp,
   threadRef,
@@ -128,23 +155,69 @@ export async function runContent({
           limit: z.number().int().min(1).max(8).optional().default(4),
         }),
         execute: async ({ topic, limit }) => {
-          const results = await findBrandGuidance({ topic, limit });
+          const results = await findBrandGuidance({ topic, workspaceId, limit });
           log.info({ topic, count: results.length }, "brand guidance retrieved");
           return results;
         },
       }),
 
       create_content: tool({
-        description: "Create a new draft content item in the Control Plane",
+        description:
+          "Create a new draft content item in the Control Plane. " +
+          "MUST include an imageBrief — the asset pipeline uses it to direct image generation. " +
+          "Describe the LITERAL subject (what's in frame), not the abstract message. " +
+          "The model can render 'a single laptop on a wooden desk with a sharp upward line chart on screen' " +
+          "but cannot render 'the feeling of growth'.",
         parameters: z.object({
           title: z.string(),
           bodyMd: z.string(),
           type: z.enum(["blog", "linkedin", "x_thread", "x_post", "email"]),
           stage: z.enum(["pull", "explain", "reinforce", "push"]).optional(),
+          imageBrief: z
+            .object({
+              subject: z
+                .string()
+                .min(8)
+                .describe(
+                  "Literal subject in frame. Specific objects, no abstractions. Example: 'single laptop on a wooden desk, screen showing a line chart with sharp upward inflection at month 6'",
+                ),
+              composition: z
+                .enum(["close_up", "medium", "wide", "overhead"])
+                .describe("Camera framing"),
+              mood: z
+                .string()
+                .min(4)
+                .describe("Mood / atmosphere ('calm, focused, early-morning light')"),
+              overlay_text: z
+                .string()
+                .max(80)
+                .optional()
+                .describe(
+                  "Optional ≤8-word headline the image model should render INTO the image. Leave empty for blog OG images where text is added separately.",
+                ),
+              must_show: z
+                .array(z.string())
+                .describe("Concrete elements that MUST appear"),
+              must_not_show: z
+                .array(z.string())
+                .describe(
+                  "Concrete elements that must NOT appear (e.g. 'human faces', 'cluttered desk', 'stock 3D coins')",
+                ),
+            })
+            .describe(
+              "Image direction for the asset pipeline. Required — text-only posts still pass an empty must_show / must_not_show but must name a subject.",
+            ),
         }),
-        execute: async (input) => {
-          const item = await cp.createContent({ campaignId, ...input });
-          log.info({ contentId: item.id }, "created content item");
+        execute: async ({ imageBrief, ...input }) => {
+          const item = await cp.createContent({
+            campaignId,
+            ...input,
+            imageBrief,
+          });
+          log.info(
+            { contentId: item.id, hasImageBrief: Boolean(imageBrief) },
+            "created content item",
+          );
           return item;
         },
       }),
@@ -264,6 +337,7 @@ export async function runContent({
   log.info({ steps: steps.length, campaignId }, "content sub-agent finished");
   await recordLlmUsage({
     agent: "content",
+    workspaceId,
     model,
     threadRef: threadRef ?? null,
     jobId,

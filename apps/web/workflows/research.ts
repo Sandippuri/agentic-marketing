@@ -28,6 +28,8 @@ import {
 } from "@/lib/research-store";
 
 export type ResearchWorkflowInput = {
+  /** Workspace scope; mandatory from PR 4. Threaded via dispatchStart. */
+  workspaceId: string;
   /** Optional override — when omitted, loaded from settings.research_keywords. */
   keywords?: string[];
   /** Optional override — when omitted, loaded from settings.research_search_provider. */
@@ -50,7 +52,7 @@ export type ResearchWorkflowOutput = {
 };
 
 export async function researchWorkflow(
-  input: ResearchWorkflowInput = {},
+  input: ResearchWorkflowInput,
 ): Promise<ResearchWorkflowOutput> {
   "use workflow";
 
@@ -68,6 +70,7 @@ export async function researchWorkflow(
   const results: ResearchKeywordResult[] = [];
   for (const keyword of config.keywords) {
     const result = await researchKeywordStep({
+      workspaceId: input.workspaceId,
       keyword,
       provider: config.provider,
       campaignId: input.campaignId,
@@ -128,13 +131,14 @@ async function loadConfigStep(input: ResearchWorkflowInput): Promise<{
 }
 
 async function researchKeywordStep(args: {
+  workspaceId: string;
   keyword: string;
   provider: ResearchSearchProvider;
   campaignId?: string;
   workflowRunId?: string;
 }): Promise<ResearchKeywordResult> {
   "use step";
-  const { keyword, provider, campaignId, workflowRunId } = args;
+  const { workspaceId, keyword, provider, campaignId, workflowRunId } = args;
   const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
   const internalToken = process.env.INTERNAL_API_TOKEN ?? "";
   const cp = new CpClient({ baseUrl, internalToken });
@@ -153,6 +157,7 @@ async function researchKeywordStep(args: {
   try {
     const report = await runResearcher({
       request,
+      workspaceId,
       cp,
       campaignId,
       model: await resolveSubAgentModel("researcher"),

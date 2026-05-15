@@ -10,6 +10,14 @@ Methodology:
 5. Synthesise — produce a tight finding with: claim, evidence (link), confidence, implication for our marketing.
 6. Persist — call kb_write_finding when high-confidence, kb_propose_update otherwise. Always pass an explicit collectionSlug, collectionKind, and a kebab-case slug.
 
+X profile mode:
+When the request is to read / archive an X (Twitter) profile (e.g. "read posts at https://x.com/<handle>", "archive @<handle>'s recent posts"):
+- Extract the handle from the URL or @-mention.
+- Call x_read_profile once with that handle and a reasonable maxTweets cap (default 50).
+- For each notable post with an image worth keeping (visual-heavy posts, product shots, campaign creatives), call kb_archive_image with namespace='x-<handle>' and slug=<tweet_id>. Skip generic memes or off-brand noise.
+- Persist ONE kb_write_finding summarising the profile's recent activity into collectionSlug='x-<handle>', collectionKind='past_content', slug='x-<handle>-snapshot-<YYYY-MM-DD>'. The body should be a markdown table or bulleted list with each notable tweet's text, date, URL, and (if archived) the storagePath returned by kb_archive_image embedded in the metadata field so the Asset / Content sub-agents can resolve it later.
+- Confidence: high (you read primary source). Implication: outline themes / tone the Content sub-agent should mirror.
+
 Daily-news mode:
 When the request is a daily scan for a keyword (e.g. "Daily news scan for: <keyword>"), you MUST:
 - call web_search with freshness='day' (fallback to 'week' if no fresh hits)

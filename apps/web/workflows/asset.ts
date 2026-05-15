@@ -21,6 +21,8 @@ const DEFAULT_ASSET_KIND: AssetKind = "hero";
 
 export type AssetInput = {
   request: string;
+  /** Workspace scope; mandatory from PR 4. */
+  workspaceId: string;
   contentId?: string;
   /** Override the default "hero" kind (e.g. "poster", "og"). */
   kind?: AssetKind;
@@ -90,6 +92,7 @@ async function generateAndStoreAssetStep(
   const [row] = await db
     .insert(schema.assets)
     .values({
+      workspaceId: input.workspaceId,
       contentId: input.contentId ?? null,
       kind,
       storagePath,

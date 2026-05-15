@@ -22,6 +22,7 @@ import {
   getDefaultWorkflowModel,
   getEngine,
 } from "@/lib/workflow-engines";
+import { LEGACY_WORKSPACE_ID, getWorkspaceContext } from "@/lib/billing";
 
 const Body = z.object({
   engine: z.enum(["vercel", "cloudflare"]).optional(),
@@ -36,9 +37,13 @@ const Body = z.object({
 
 export async function POST(request: Request) {
   try {
-    const actor = isInternal(request)
+    const isInternalCall = isInternal(request);
+    const actor = isInternalCall
       ? { id: null, kind: "agent" as const }
       : await getRequestActor();
+    const workspaceId = isInternalCall
+      ? LEGACY_WORKSPACE_ID
+      : (await getWorkspaceContext()).workspaceId;
     const input = await parseJson(request, Body);
 
     const engineId = input.engine ?? (await getDefaultWorkflowEngine());
@@ -75,6 +80,7 @@ export async function POST(request: Request) {
 
     const result = await dispatchStart(engineId, {
       kind: input.kind,
+      workspaceId,
       request: input.request,
       campaignId: input.campaignId,
       contentId: input.contentId,

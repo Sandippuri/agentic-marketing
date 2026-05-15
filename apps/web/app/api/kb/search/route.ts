@@ -11,6 +11,7 @@ import { kbSearch, type CollectionKind } from "@marketing/agents/kb";
 import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import { LEGACY_WORKSPACE_ID, getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -38,10 +39,15 @@ const SearchRequest = z.object({
 
 export async function POST(request: Request) {
   try {
-    if (!isInternal(request)) await getRequestActor();
+    const isInternalCall = isInternal(request);
+    if (!isInternalCall) await getRequestActor();
+    const workspaceId = isInternalCall
+      ? LEGACY_WORKSPACE_ID
+      : (await getWorkspaceContext()).workspaceId;
     const input = await parseJson(request, SearchRequest);
     const hits = await kbSearch({
       query: input.query,
+      workspaceId,
       collectionKinds: input.collectionKinds as CollectionKind[] | undefined,
       collectionIds: input.collectionIds,
       campaignId: input.campaignId,

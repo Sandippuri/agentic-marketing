@@ -52,6 +52,7 @@ export async function chunkAndEmbed(
     .insert(kbChunks)
     .values(
       pieces.map((p, i) => ({
+        workspaceId: doc.workspaceId,
         documentId,
         chunkIndex: i,
         bodyMd: p.body,
@@ -75,6 +76,7 @@ export async function chunkAndEmbed(
       const vec = vectors[i];
       if (!vec) throw new Error(`missing vector at index ${i}`);
       return {
+        workspaceId: doc.workspaceId,
         sourceType: "kb_chunk" as const,
         sourceId: c.id,
         chunkIndex: c.chunkIndex,

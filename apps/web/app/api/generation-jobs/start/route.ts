@@ -11,6 +11,7 @@ import { CHANNELS } from "@marketing/shared-types";
 import { errorResponse, parseJson } from "@/lib/http";
 import { getRequestActor } from "@/lib/auth";
 import { dispatchStart, getDefaultWorkflowEngine } from "@/lib/workflow-engines";
+import { getWorkspaceContext } from "@/lib/billing";
 
 const log = pino({ name: "generation-jobs.start" });
 
@@ -30,11 +31,13 @@ const StartWorkflow = z
 export async function POST(request: Request) {
   try {
     const actor = await getRequestActor();
+    const ctx = await getWorkspaceContext();
     const input = await parseJson(request, StartWorkflow);
 
     const engineId = await getDefaultWorkflowEngine();
     const result = await dispatchStart(engineId, {
       kind: input.kind,
+      workspaceId: ctx.workspaceId,
       request: input.request,
       campaignId: input.campaignId,
       contentId: input.contentId,

@@ -35,6 +35,8 @@ export type AppendEventInput = {
   /** Idempotency key. When set + already exists, returns the prior row. */
   stepKey?: string;
   payload?: Record<string, unknown>;
+  /** Workspace scope. When omitted, looked up from the campaign row. */
+  workspaceId?: string;
 };
 
 export async function appendEvent(input: AppendEventInput): Promise<GoalEvent> {
@@ -53,9 +55,20 @@ export async function appendEvent(input: AppendEventInput): Promise<GoalEvent> {
       .limit(1);
     if (existing[0]) return existing[0];
   }
+  let workspaceId = input.workspaceId ?? null;
+  if (!workspaceId) {
+    const [campaign] = await db
+      .select({ workspaceId: schema.campaigns.workspaceId })
+      .from(schema.campaigns)
+      .where(eq(schema.campaigns.id, input.campaignId))
+      .limit(1);
+    if (!campaign) throw new Error(`campaign not found: ${input.campaignId}`);
+    workspaceId = campaign.workspaceId;
+  }
   const [row] = await db
     .insert(schema.goalEvents)
     .values({
+      workspaceId,
       campaignId: input.campaignId,
       iteration: input.iteration,
       kind: input.kind,
