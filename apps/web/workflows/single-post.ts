@@ -26,7 +26,11 @@ export const approvalHook = defineHook({
   }),
 });
 
-const CHANNEL_TO_CONTENT_TYPE: Record<Channel, "blog" | "linkedin" | "x_post" | "x_thread" | "email"> = {
+// Partial: instagram/facebook are valid channels but have no corresponding
+// content_type yet (the enum doesn't include instagram_post / facebook_post).
+// draftStep guards against the missing key and throws — far better than a
+// silent miscategorisation as "x_post" or similar.
+const CHANNEL_TO_CONTENT_TYPE: Partial<Record<Channel, "blog" | "linkedin" | "x_post" | "x_thread" | "email">> = {
   internal_blog: "blog",
   linkedin: "linkedin",
   x: "x_post",
@@ -368,6 +372,11 @@ async function draftStep(
 
   const { title, bodyMd } = parseDraftJson(text);
   const contentType = CHANNEL_TO_CONTENT_TYPE[input.channel];
+  if (!contentType) {
+    throw new Error(
+      `single-post: no content_type mapping for channel ${input.channel} — extend CONTENT_TYPES and CHANNEL_TO_CONTENT_TYPE before drafting`,
+    );
+  }
 
   // Stays in "draft" until the asset pipeline finishes — the approvals
   // queue filters on in_review, so reviewers won't see it until assets

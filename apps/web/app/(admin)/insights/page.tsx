@@ -19,6 +19,8 @@ const CHANNEL_LABEL: Record<(typeof CHANNELS)[number], string> = {
   internal_blog: "Blog",
   linkedin: "LinkedIn",
   x: "X",
+  instagram: "Instagram",
+  facebook: "Facebook",
   email_hubspot: "HubSpot",
   email_mailchimp: "Mailchimp",
 };
