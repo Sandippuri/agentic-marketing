@@ -1,13 +1,16 @@
 /**
- * /runs — Workflow run cost dashboard.
+ * /runs — Workflow run dashboard for the active workspace.
  *
- * Lists every workflow_runs row with a rolled-up llm_usage cost and token
- * total joined in. Click through to the detail view (existing
- * /api/usage/by-workflow/[id]) for the per-call breakdown.
+ * Lists this workspace's workflow_runs rows. For superadmins we also join
+ * the rolled-up llm_usage cost + token totals; platform users see the run
+ * list without cost internals.
  */
 import Link from "next/link";
-import { sql, eq, desc } from "drizzle-orm";
+import { sql, and, eq, desc } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
+import { getSupabaseServer } from "@/lib/supabase/server";
+import { lookupAdminRole } from "@/lib/billing/admin";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader, Badge } from "../ui";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +34,15 @@ export default async function RunsPage({
 }: {
   searchParams: Promise<{ status?: string; limit?: string }>;
 }) {
+  // Visible to every workspace member; reads scoped to ctx.workspaceId so
+  // tenants stay isolated. Token / cost columns render only for superadmins.
+  const ctx = await getWorkspaceContext();
+  const sb = await getSupabaseServer();
+  const { data: userData } = await sb.auth.getUser();
+  const isSuperadmin =
+    !!userData.user &&
+    (await lookupAdminRole(userData.user.id)) === "superadmin";
+
   const params = await searchParams;
   const limit = Math.min(200, Math.max(10, Number(params.limit ?? 50) || 50));
   const status = params.status;
@@ -39,7 +51,13 @@ export default async function RunsPage({
   const r = schema.workflowRuns;
   const u = schema.llmUsage;
 
-  const baseQuery = db
+  const statusCond = status
+    ? eq(r.status, status as "queued" | "running" | "completed" | "failed" | "cancelled")
+    : undefined;
+  const workspaceCond = eq(r.workspaceId, ctx.workspaceId);
+  const where = statusCond ? and(workspaceCond, statusCond) : workspaceCond;
+
+  const rows = await db
     .select({
       id: r.id,
       engine: r.engine,
@@ -58,13 +76,10 @@ export default async function RunsPage({
     })
     .from(r)
     .leftJoin(u, eq(u.workflowRunId, r.id))
-    .groupBy(r.id);
-
-  const filtered = status
-    ? baseQuery.where(eq(r.status, status as "queued" | "running" | "completed" | "failed" | "cancelled"))
-    : baseQuery;
-
-  const rows = await filtered.orderBy(desc(r.startedAt)).limit(limit);
+    .where(where)
+    .groupBy(r.id)
+    .orderBy(desc(r.startedAt))
+    .limit(limit);
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -79,10 +94,17 @@ export default async function RunsPage({
     <>
       <PageHeader
         title="Workflow runs"
-        description="Every workflow run with its rolled-up LLM cost. Click a row to see the per-call token breakdown."
+        description={
+          isSuperadmin
+            ? "Every workflow run with its rolled-up LLM cost. Click a row to see the per-call token breakdown."
+            : "Every workflow run in this workspace."
+        }
         meta={
           <span className="text-faint text-[12px]">
-            {totals.count} run(s) · ${totals.cost.toFixed(2)} · {totals.tokens.toLocaleString()} tokens
+            {totals.count} run(s)
+            {isSuperadmin
+              ? ` · $${totals.cost.toFixed(2)} · ${totals.tokens.toLocaleString()} tokens`
+              : ""}
           </span>
         }
       />
@@ -123,9 +145,13 @@ export default async function RunsPage({
                 <th className="text-left font-normal py-2 px-3">Engine</th>
                 <th className="text-left font-normal py-2 px-3">Status</th>
                 <th className="text-left font-normal py-2 px-3">Request</th>
-                <th className="text-right font-normal py-2 px-3">Calls</th>
-                <th className="text-right font-normal py-2 px-3">Tokens</th>
-                <th className="text-right font-normal py-2 px-3">Cost</th>
+                {isSuperadmin && (
+                  <>
+                    <th className="text-right font-normal py-2 px-3">Calls</th>
+                    <th className="text-right font-normal py-2 px-3">Tokens</th>
+                    <th className="text-right font-normal py-2 px-3">Cost</th>
+                  </>
+                )}
                 <th></th>
               </tr>
             </thead>
@@ -152,15 +178,19 @@ export default async function RunsPage({
                   <td className="py-2 px-3 text-mid max-w-[420px] truncate">
                     {row.request || "(empty)"}
                   </td>
-                  <td className="py-2 px-3 text-right">{row.llmCalls}</td>
-                  <td className="py-2 px-3 text-right">
-                    {Number(row.totalTokens).toLocaleString()}
-                  </td>
-                  <td className="py-2 px-3 text-right">
-                    {Number(row.costUsd) > 0
-                      ? `$${Number(row.costUsd).toFixed(4)}`
-                      : "—"}
-                  </td>
+                  {isSuperadmin && (
+                    <>
+                      <td className="py-2 px-3 text-right">{row.llmCalls}</td>
+                      <td className="py-2 px-3 text-right">
+                        {Number(row.totalTokens).toLocaleString()}
+                      </td>
+                      <td className="py-2 px-3 text-right">
+                        {Number(row.costUsd) > 0
+                          ? `$${Number(row.costUsd).toFixed(4)}`
+                          : "—"}
+                      </td>
+                    </>
+                  )}
                   <td className="py-2 px-3 text-right">
                     <Link
                       href={`/api/usage/by-workflow/${row.id}`}

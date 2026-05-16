@@ -148,8 +148,7 @@ export function StartForm({
             </span>
           ) : (
             <span className="text-xs text-mid truncate">
-              User-invoked. Runs unstoppably on{" "}
-              <strong className="font-semibold text-ink">{engineLabel}</strong>.
+              via <strong className="font-semibold text-ink">{engineLabel}</strong>
             </span>
           )}
         </div>

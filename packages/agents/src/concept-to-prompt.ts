@@ -25,6 +25,14 @@ export type CandidateVariant = {
 export type ConceptToPromptOpts = {
   /** Brand colour palette + tokens already formatted into a prompt-friendly prefix. */
   brandPrefix?: string;
+  /**
+   * Signed URLs for the brand's official logos. Passed FIRST in `imageInput`
+   * so providers that cap reference images (or weight earlier inputs more
+   * heavily, like Gemini) treat the logo as the priority reference. Without
+   * these, the model has only a text instruction telling it a logo is
+   * attached — and hallucinates a near-miss mark from the brand name.
+   */
+  brandReferenceImages?: string[];
   /** Channel — drives aspect ratio. */
   channel?: string;
   /**
@@ -41,11 +49,26 @@ export type ConceptToPromptOpts = {
   retryReason?: string;
 };
 
+// Cap the number of references we hand to the image model. Brand logos take
+// precedence (placed first); KB visual refs fill remaining slots. Most
+// providers degrade past 4 inputs.
+const MAX_IMAGE_INPUTS = 4;
+
+// Production runs use variantCount=1, so index 0 is the only perspective the
+// model ever sees. The previous default ("isometric 3/4 view") is what kept
+// producing crypto-cube-on-spokes layouts — replaced with editorial poster
+// framing. Isometric is still available at index 2 as an opt-in for fanouts.
 const VARIANT_PERSPECTIVES = [
+  "editorial poster composition, single hero subject occupying the lower two-thirds, generous negative space above for the headline, asymmetric balance — not symmetric, not radial",
+  "tight macro shot of the focal subject with the rest softly out of focus, magazine-cover framing",
   "isometric 3/4 view, hero composition with the focal point centred",
-  "tight macro shot of the focal subject with the rest blurred away",
-  "wide editorial framing, focal subject offset to the right with caption space",
 ];
+
+// Marketing-grade poster discipline. Injected into every prompt regardless of
+// perspective so the model treats the canvas as a poster (clear hierarchy,
+// breathable type, one idea) instead of a diagram (cubes, arrows, fake labels).
+const POSTER_DISCIPLINE =
+  "Treat this as a marketing POSTER, not a technical diagram. One clear focal subject. Strong typographic hierarchy with the headline as the dominant element. Generous negative space — let the composition breathe. Single light source, deliberate shadows. Photographic or rendered-product realism preferred over flat illustration. Do NOT invent on-canvas labels, fake percentages, fee tags, route arrows, or technical annotations the brief did not ask for.";
 
 const ASPECT_BY_CHANNEL: Record<string, ImageAspect> = {
   internal_blog: "landscape",
@@ -66,6 +89,13 @@ export function conceptToVariants(
   const variantCount = opts.variantCount ?? 1;
   const aspect = ASPECT_BY_CHANNEL[opts.channel ?? "linkedin"] ?? "square";
   const negative = buildNegative(brief);
+
+  // Logos first so they survive any provider-side cap; dedupe against KB refs
+  // in case a brand asset has also been indexed as a visual reference.
+  const imageInputs = dedupe([
+    ...(opts.brandReferenceImages ?? []),
+    ...brief.reference_image_urls,
+  ]).slice(0, MAX_IMAGE_INPUTS);
 
   const subjects =
     brief.real_subjects.length > 0
@@ -95,6 +125,7 @@ export function conceptToVariants(
       focal,
       subjects,
       style,
+      POSTER_DISCIPLINE,
       refsHint,
       overlay,
     ]
@@ -104,10 +135,14 @@ export function conceptToVariants(
       index: i,
       prompt: opts.brandPrefix ? `${opts.brandPrefix}${promptCore}` : promptCore,
       negativePrompt: negative,
-      imageInput: brief.reference_image_urls,
+      imageInput: imageInputs,
       aspect,
     };
   });
+}
+
+function dedupe(arr: string[]): string[] {
+  return Array.from(new Set(arr.filter(Boolean)));
 }
 
 export function variantToImageOpts(

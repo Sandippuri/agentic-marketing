@@ -60,6 +60,8 @@ export type LearningSummary = {
 };
 
 export type AggregateOptions = {
+  /** Workspace to scope feedback to. Required — pass LEGACY_WORKSPACE_ID for cross-tenant ops scripts. */
+  workspaceId: string;
   /** Cutoff in days (default 30). */
   windowDays?: number;
   /** When set, scope to a single channel. */
@@ -69,12 +71,13 @@ export type AggregateOptions = {
 };
 
 export async function aggregateLearningSignal(
-  opts: AggregateOptions = {},
+  opts: AggregateOptions,
 ): Promise<LearningSummary> {
   const db = getDb();
   const windowDays = opts.windowDays ?? 30;
   const limit = opts.limit ?? 10;
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+  const workspaceFilter = eq(schema.agentFeedback.workspaceId, opts.workspaceId);
 
   const [totalsRow] = await db
     .select({
@@ -88,7 +91,7 @@ export async function aggregateLearningSignal(
       p90Edit: sql<number | null>`percentile_cont(0.9) within group (order by edit_distance)::float`,
     })
     .from(schema.agentFeedback)
-    .where(gte(schema.agentFeedback.decidedAt, since));
+    .where(and(workspaceFilter, gte(schema.agentFeedback.decidedAt, since)));
 
   const t = totalsRow ?? {
     decisions: 0,
@@ -124,7 +127,7 @@ export async function aggregateLearningSignal(
       schema.publishJobs,
       eq(schema.publishJobs.contentId, schema.agentFeedback.contentId),
     )
-    .where(gte(schema.agentFeedback.decidedAt, since))
+    .where(and(workspaceFilter, gte(schema.agentFeedback.decidedAt, since)))
     .groupBy(schema.publishJobs.channel);
 
   const byChannel = channelRows.map((r) => {
@@ -146,7 +149,7 @@ export async function aggregateLearningSignal(
       changes: sql<number>`count(*) filter (where decision = 'changes_requested')::int`,
     })
     .from(schema.agentFeedback)
-    .where(gte(schema.agentFeedback.decidedAt, since))
+    .where(and(workspaceFilter, gte(schema.agentFeedback.decidedAt, since)))
     .groupBy(sql`date_trunc('day', ${schema.agentFeedback.decidedAt})`)
     .orderBy(sql`date_trunc('day', ${schema.agentFeedback.decidedAt})`);
 
@@ -160,6 +163,7 @@ export async function aggregateLearningSignal(
     .from(schema.agentFeedback)
     .where(
       and(
+        workspaceFilter,
         gte(schema.agentFeedback.decidedAt, since),
         sql`${schema.agentFeedback.decision} in ('rejected','changes_requested')`,
         isNotNull(schema.agentFeedback.reason),
@@ -195,6 +199,7 @@ export async function aggregateLearningSignal(
     )
     .where(
       and(
+        workspaceFilter,
         gte(schema.agentFeedback.decidedAt, since),
         sql`${schema.agentFeedback.decision} in ('rejected','changes_requested')`,
       ),

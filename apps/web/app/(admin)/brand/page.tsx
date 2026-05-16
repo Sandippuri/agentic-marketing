@@ -1,16 +1,20 @@
-import { desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import {
   BRAND_MEMORY_SLUGS,
   BRAND_MEMORY_TITLES,
   EMPTY_DESIGN_SYSTEM,
+  EMPTY_WORKSPACE_MARKET_CONTEXT,
   type BrandMemorySlug,
+  type WorkspaceMarketContext,
 } from "@marketing/shared-types";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader, Badge } from "../ui";
 import { BrandForm, type BrandDoc } from "./brand-form";
 import { DocumentsForm, type BrandDocRow } from "./documents-form";
 import { DesignSystemCard } from "./design-system-card";
+import { MarketForm } from "./market-form";
 import type { InitialDesignSystem } from "./design-system-form";
 
 export const dynamic = "force-dynamic";
@@ -26,15 +30,23 @@ const DESCRIPTIONS: Record<BrandMemorySlug, string> = {
     "What the product does today and what's NOT yet built. Used to keep drafts from claiming features that don't exist.",
   "product.positioning":
     "Category, core promise, against-frame, proof points. Used to align messaging with where the product sits in the market.",
+  "market.context":
+    "Free-form market nuance — pricing story, cultural notes, festival calendar, competitor framing, promotion mix. Pairs with the structured Market fields above.",
 };
 
 export default async function BrandPage() {
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   const memoryRows = await db
     .select()
     .from(schema.brandMemory)
-    .where(isNull(schema.brandMemory.campaignId));
+    .where(
+      and(
+        eq(schema.brandMemory.workspaceId, ctx.workspaceId),
+        isNull(schema.brandMemory.campaignId),
+      ),
+    );
   const bySlug = new Map(memoryRows.map((r) => [r.slug, r]));
 
   const docs: BrandDoc[] = BRAND_MEMORY_SLUGS.map((slug) => {
@@ -52,7 +64,12 @@ export default async function BrandPage() {
   const docRows = await db
     .select()
     .from(schema.brandDocuments)
-    .where(isNull(schema.brandDocuments.removedAt))
+    .where(
+      and(
+        eq(schema.brandDocuments.workspaceId, ctx.workspaceId),
+        isNull(schema.brandDocuments.removedAt),
+      ),
+    )
     .orderBy(desc(schema.brandDocuments.uploadedAt));
   const initialBrandDocs: BrandDocRow[] = docRows.map((r) => ({
     id: r.id,
@@ -64,10 +81,34 @@ export default async function BrandPage() {
     uploadedAt: r.uploadedAt.toISOString(),
   }));
 
+  const [workspaceRow] = await db
+    .select({
+      primaryCountry: schema.workspaces.primaryCountry,
+      targetRegions: schema.workspaces.targetRegions,
+      languages: schema.workspaces.languages,
+      primaryChannels: schema.workspaces.primaryChannels,
+    })
+    .from(schema.workspaces)
+    .where(eq(schema.workspaces.id, ctx.workspaceId))
+    .limit(1);
+  const initialMarket: WorkspaceMarketContext = workspaceRow
+    ? {
+        primaryCountry: workspaceRow.primaryCountry ?? null,
+        targetRegions: workspaceRow.targetRegions ?? [],
+        languages: workspaceRow.languages ?? [],
+        primaryChannels: workspaceRow.primaryChannels ?? [],
+      }
+    : EMPTY_WORKSPACE_MARKET_CONTEXT;
+
   const [dsRow] = await db
     .select()
     .from(schema.brandDesignSystem)
-    .where(eq(schema.brandDesignSystem.slug, "default"))
+    .where(
+      and(
+        eq(schema.brandDesignSystem.workspaceId, ctx.workspaceId),
+        eq(schema.brandDesignSystem.slug, "default"),
+      ),
+    )
     .limit(1);
   const colors = dsRow?.colors ?? EMPTY_DESIGN_SYSTEM.colors;
   const typography = dsRow?.typography ?? EMPTY_DESIGN_SYSTEM.typography;
@@ -119,13 +160,21 @@ export default async function BrandPage() {
       <Section
         index={2}
         title="Brand memory"
-        description="The five documents the agents read before drafting anything. Edit directly, or accept the AI-generated drafts that will appear once you've uploaded source docs."
+        description="The six documents the agents read before drafting anything. Edit directly, or accept the AI-generated drafts that will appear once you've uploaded source docs."
       >
         <BrandForm initialDocs={docs} />
       </Section>
 
       <Section
         index={3}
+        title="Market context"
+        description="Where this business sells — country, regions, languages, primary channels. The Strategist injects these into every brief so content stops being geo-generic. Freeform nuance (pricing story, festivals, competitor framing) lives in the 'market.context' card under Brand memory above."
+      >
+        <MarketForm initial={initialMarket} />
+      </Section>
+
+      <Section
+        index={4}
         title="Design system"
         description="Structured palette, typography, and logos. The asset sub-agent reads these tokens verbatim — keep hex values exact."
       >

@@ -160,10 +160,22 @@ export async function POST(
   } catch (err) {
     if (err instanceof Error) {
       if (err.message === "not_found") {
-        return Response.json({ error: "not_found" }, { status: 404 });
+        return Response.json(
+          {
+            error: "not_found",
+            message: "This approval no longer exists. It may have been resolved by someone else — refresh the list.",
+          },
+          { status: 404 },
+        );
       }
       if (err.message === "already_decided") {
-        return Response.json({ error: "already_decided" }, { status: 409 });
+        return Response.json(
+          {
+            error: "already_decided",
+            message: "This approval has already been decided by another reviewer. Refresh to see the current state.",
+          },
+          { status: 409 },
+        );
       }
     }
     return errorResponse(err);

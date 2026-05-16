@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getDb, schema } from "@marketing/db";
+import { getWorkspaceContext } from "@/lib/billing";
 import { DraftCalendarItemButton } from "./draft-button";
 import { RedraftButton } from "./redraft-button";
 import { CampaignChat } from "./campaign-chat";
@@ -25,11 +26,17 @@ export default async function CampaignDetail({
 }) {
   const { id } = await params;
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   const [campaign] = await db
     .select()
     .from(schema.campaigns)
-    .where(eq(schema.campaigns.id, id))
+    .where(
+      and(
+        eq(schema.campaigns.id, id),
+        eq(schema.campaigns.workspaceId, ctx.workspaceId),
+      ),
+    )
     .limit(1);
   if (!campaign) notFound();
 
@@ -37,7 +44,12 @@ export default async function CampaignDetail({
     db
       .select()
       .from(schema.contentItems)
-      .where(eq(schema.contentItems.campaignId, id))
+      .where(
+        and(
+          eq(schema.contentItems.workspaceId, ctx.workspaceId),
+          eq(schema.contentItems.campaignId, id),
+        ),
+      )
       .orderBy(desc(schema.contentItems.createdAt)),
     db
       .select({
@@ -45,7 +57,12 @@ export default async function CampaignDetail({
         count: sql<number>`count(*)::int`,
       })
       .from(schema.contentItems)
-      .where(eq(schema.contentItems.campaignId, id))
+      .where(
+        and(
+          eq(schema.contentItems.workspaceId, ctx.workspaceId),
+          eq(schema.contentItems.campaignId, id),
+        ),
+      )
       .groupBy(schema.contentItems.status),
   ]);
 
@@ -61,7 +78,12 @@ export default async function CampaignDetail({
         decision: schema.approvals.decision,
       })
       .from(schema.approvals)
-      .where(inArray(schema.approvals.contentId, itemIds));
+      .where(
+        and(
+          eq(schema.approvals.workspaceId, ctx.workspaceId),
+          inArray(schema.approvals.contentId, itemIds),
+        ),
+      );
     for (const d of decisions) {
       if (d.decision === "changes_requested" || d.decision === "rejected") {
         reviseable.add(d.contentId);

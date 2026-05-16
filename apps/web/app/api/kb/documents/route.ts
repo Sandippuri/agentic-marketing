@@ -35,6 +35,7 @@ const UpsertDocument = z.object({
 export async function GET(request: Request) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const url = new URL(request.url);
     const collectionId = url.searchParams.get("collectionId") ?? undefined;
     const status = url.searchParams.get("status") as
@@ -45,6 +46,7 @@ export async function GET(request: Request) {
       | null;
     const limit = Number(url.searchParams.get("limit") ?? "100");
     const docs = await listDocuments({
+      workspaceId,
       collectionId,
       status: status ?? undefined,
       limit,

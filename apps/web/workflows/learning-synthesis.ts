@@ -91,6 +91,7 @@ async function aggregateStep(
 ): Promise<LearningSummary> {
   "use step";
   return aggregateLearningSignal({
+    workspaceId: input.workspaceId ?? LEGACY_WORKSPACE_ID,
     windowDays: input.windowDays ?? 30,
     limit: 30,
   });

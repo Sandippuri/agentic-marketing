@@ -8,10 +8,12 @@
  * Auth: admin session cookie or internal token (matches /api/settings).
  */
 
-import { sql, desc } from "drizzle-orm";
+import { sql, desc, eq } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { isInternal } from "@/lib/internal-auth";
 import { getRequestActor } from "@/lib/auth";
+import { lookupAdminRole } from "@/lib/billing/admin";
 import { errorResponse } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
@@ -56,9 +58,34 @@ function emptyBucket(): Bucket {
 
 export async function GET(request: Request) {
   try {
-    if (!isInternal(request)) await getRequestActor();
+    const internal = isInternal(request);
+    const actor = internal ? null : await getRequestActor();
+
+    // Optional ?workspaceId scopes the aggregate to a single tenant. Only
+    // superadmins and internal callers may pass it — workspace users get
+    // their per-tenant view through the workspace-scoped pages and have no
+    // need to peek at other tenants here.
+    const url = new URL(request.url);
+    const wsParam = url.searchParams.get("workspaceId");
+    let workspaceId: string | null = null;
+    if (wsParam) {
+      if (!internal) {
+        const role = actor?.id ? await lookupAdminRole(actor.id) : null;
+        if (role !== "superadmin") {
+          return Response.json(
+            { error: "superadmin_required" },
+            { status: 403 },
+          );
+        }
+      }
+      workspaceId = wsParam;
+    }
+
     const db = getDb();
     const t = schema.llmUsage;
+    const wsFilter: SQL | undefined = workspaceId
+      ? eq(t.workspaceId, workspaceId)
+      : undefined;
 
     const aggCols = {
       inputTokens: sql<number>`coalesce(sum(${t.inputTokens}), 0)::int`,
@@ -102,7 +129,8 @@ export async function GET(request: Request) {
         allCost: aggCols.costUsd,
         allCalls: aggCols.calls,
       })
-      .from(t);
+      .from(t)
+      .where(wsFilter);
 
     const r = totalsRow[0] ?? {
       todayInput: 0, todayOutput: 0, todayCached: 0, todayTotal: 0, todayCost: 0, todayCalls: 0,
@@ -141,6 +169,7 @@ export async function GET(request: Request) {
         ...aggCols,
       })
       .from(t)
+      .where(wsFilter)
       .groupBy(t.model, t.provider)
       .orderBy(desc(sql`coalesce(sum(${t.costUsd}), 0)`));
 
@@ -150,6 +179,7 @@ export async function GET(request: Request) {
         ...aggCols,
       })
       .from(t)
+      .where(wsFilter)
       .groupBy(t.agent)
       .orderBy(desc(sql`coalesce(sum(${t.costUsd}), 0)`));
 
@@ -167,6 +197,7 @@ export async function GET(request: Request) {
         costUsd: t.costUsd,
       })
       .from(t)
+      .where(wsFilter)
       .orderBy(desc(t.occurredAt))
       .limit(20);
 

@@ -22,7 +22,7 @@ export default async function SuperUserDetailPage({
   const detail = await getSuperUserDetail(id);
   if (!detail) notFound();
 
-  const { user, isSuperadmin, adminRole, memberships } = detail;
+  const { user, isSuperadmin, adminRole, memberships, currentPeriodUsage } = detail;
   const ownedCount = memberships.filter((m) => m.isOwner).length;
   const acceptedCount = memberships.filter((m) => m.acceptedAt !== null).length;
   const pendingCount = memberships.length - acceptedCount;
@@ -84,6 +84,46 @@ export default async function SuperUserDetailPage({
         </Card>
 
         <Card className="lg:col-span-2">
+          <CardHeader
+            title={`Usage — ${currentPeriodUsage.periodStart} → ${currentPeriodUsage.periodEnd}`}
+            description="Sum of usage_counters across this user's workspaces for the current month. 'Owned' isolates workspaces the user owns from ones they're only a member of (multi-member workspaces attribute the same counter to every member)."
+          />
+          <div className="mt-3">
+            {currentPeriodUsage.rows.length === 0 ? (
+              <EmptyState
+                title="No usage this period"
+                description="Nothing has been metered for any of this user's workspaces in the current billing month."
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Metric</th>
+                      <th className="text-right">Owned</th>
+                      <th className="text-right">Member-of</th>
+                      <th className="text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {currentPeriodUsage.rows.map((r) => (
+                      <tr key={r.metric}>
+                        <td className="mono text-xs">{r.metric}</td>
+                        <td className="text-right mono">{r.owned}</td>
+                        <td className="text-right mono text-mid">{r.member}</td>
+                        <td className="text-right mono font-semibold">
+                          {r.owned + r.member}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card className="lg:col-span-3">
           <CardHeader
             title="Workspace memberships"
             description="Every tenant this user belongs to."

@@ -5,6 +5,7 @@ import { getDb, schema } from "@marketing/db";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { lookupAdminRole } from "@/lib/billing/admin";
 import { SuperSidebarNav, type SuperNavSection } from "./sidebar-nav";
+import { SignoutButton } from "../(admin)/signout-button";
 
 // /super/* is the cross-tenant operator console. Every page reads global state
 // — never tenant-scoped. requireSuperadmin() throws inside route handlers; in
@@ -64,6 +65,13 @@ export default async function SuperLayout({
       ],
     },
     {
+      label: "Configuration",
+      items: [
+        { href: "/super/models", label: "Models & processes" },
+        { href: "/super/usage", label: "Usage" },
+      ],
+    },
+    {
       label: "Operations",
       items: [
         {
@@ -110,12 +118,19 @@ export default async function SuperLayout({
 
         <SuperSidebarNav sections={sections} />
 
-        <div className="px-4 py-3 border-t border-[var(--border)] text-[11px] text-faint flex items-center justify-between">
-          <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--danger)] live-dot" />
-            Operator
-          </span>
-          <span className="mono">{data.user.email ?? "—"}</span>
+        <div className="px-4 py-3 border-t border-[var(--border)] text-[11px] text-faint flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="mono truncate" title={data.user.email ?? undefined}>
+              {data.user.email ?? "—"}
+            </span>
+            <SignoutButton />
+          </div>
+          <div className="flex items-center">
+            <span className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--danger)] live-dot" />
+              Operator
+            </span>
+          </div>
         </div>
       </aside>
 

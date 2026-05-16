@@ -1,5 +1,9 @@
+import { redirect } from "next/navigation";
 import { desc, eq, and, gte, lte, type SQL } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
+import { getSupabaseServer } from "@/lib/supabase/server";
+import { lookupAdminRole } from "@/lib/billing/admin";
+import { getWorkspaceContext } from "@/lib/billing";
 import { AuditLogTable } from "./audit-log-table";
 import { PageHeader } from "../ui";
 
@@ -17,20 +21,28 @@ type SearchParams = Promise<{
 const PAGE_SIZE = 50;
 
 export default async function AuditLogPage({ searchParams }: { searchParams: SearchParams }) {
+  // Operator-only: security/audit trail.
+  const sb = await getSupabaseServer();
+  const { data: userData } = await sb.auth.getUser();
+  if (!userData.user) redirect("/login?next=/audit-log");
+  const role = await lookupAdminRole(userData.user.id);
+  if (role !== "superadmin") redirect("/campaigns");
+
   const params = await searchParams;
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   const page = Math.max(1, Number(params.page ?? 1));
   const offset = (page - 1) * PAGE_SIZE;
 
-  const filters: SQL[] = [];
+  const filters: SQL[] = [eq(schema.auditLog.workspaceId, ctx.workspaceId)];
   if (params.actor) filters.push(eq(schema.auditLog.actorKind, params.actor as "human" | "agent" | "system"));
   if (params.action) filters.push(eq(schema.auditLog.action, params.action));
   if (params.entity) filters.push(eq(schema.auditLog.entityType, params.entity));
   if (params.from) filters.push(gte(schema.auditLog.at, new Date(params.from)));
   if (params.to) filters.push(lte(schema.auditLog.at, new Date(params.to)));
 
-  const whereClause = filters.length > 0 ? and(...filters) : undefined;
+  const whereClause = and(...filters);
 
   const rows = await db
     .select()
@@ -40,10 +52,11 @@ export default async function AuditLogPage({ searchParams }: { searchParams: Sea
     .limit(PAGE_SIZE)
     .offset(offset);
 
-  // Distinct action values for the filter dropdown.
+  // Distinct action values for the filter dropdown (scoped to this workspace).
   const actionRows = await db
     .selectDistinct({ action: schema.auditLog.action })
     .from(schema.auditLog)
+    .where(eq(schema.auditLog.workspaceId, ctx.workspaceId))
     .orderBy(schema.auditLog.action);
   const actions = actionRows.map((r) => r.action);
 

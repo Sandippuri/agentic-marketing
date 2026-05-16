@@ -1,8 +1,9 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { ASSET_KINDS, ASSET_STATUSES } from "@marketing/shared-types";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
 import { isVideoAsset } from "@/lib/asset-media";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader, Badge, EmptyState, statusTone } from "../ui";
 
 export const dynamic = "force-dynamic";
@@ -15,17 +16,16 @@ export default async function GalleryPage({
 }) {
   const params = await searchParams;
   const db = getDb();
+  const ctx = await getWorkspaceContext();
   const page = Math.max(1, Number(params.page ?? 1));
   const pageSize = 24;
   const offset = (page - 1) * pageSize;
 
-  const conditions = [];
+  const conditions = [eq(schema.assets.workspaceId, ctx.workspaceId)];
   if (params.kind) conditions.push(eq(schema.assets.kind, params.kind as never));
   if (params.status) conditions.push(eq(schema.assets.status, params.status as never));
 
-  const where = conditions.length
-    ? conditions.reduce((a, b) => sql`${a} AND ${b}`)
-    : undefined;
+  const where = and(...conditions);
 
   const [rows, countResult] = await Promise.all([
     db

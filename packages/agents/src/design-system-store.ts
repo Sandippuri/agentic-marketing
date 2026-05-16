@@ -32,11 +32,14 @@ type CacheEntry = { doc: DesignSystemDoc; loadedAt: number };
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<DesignSystemDoc>>();
 
-function scopeKey(campaignId?: string | null): string {
-  return campaignId ?? GLOBAL_KEY;
+function scopeKey(workspaceId?: string | null, campaignId?: string | null): string {
+  return `${workspaceId ?? GLOBAL_KEY}::${campaignId ?? GLOBAL_KEY}`;
 }
 
-async function fetchFromCp(campaignId?: string | null): Promise<DesignSystemDoc | null> {
+async function fetchFromCp(
+  workspaceId?: string | null,
+  campaignId?: string | null,
+): Promise<DesignSystemDoc | null> {
   const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
   const token = process.env.INTERNAL_API_TOKEN ?? "";
   if (!token) {
@@ -47,13 +50,14 @@ async function fetchFromCp(campaignId?: string | null): Promise<DesignSystemDoc 
   const url = new URL(`${baseUrl}/api/brand-design-system`);
   if (campaignId) url.searchParams.set("campaign_id", campaignId);
 
+  const headers: Record<string, string> = { "x-internal-token": token };
+  if (workspaceId) headers["x-workspace-id"] = workspaceId;
+
   try {
-    const res = await fetch(url, {
-      headers: { "x-internal-token": token },
-    });
+    const res = await fetch(url, { headers });
     if (!res.ok) {
       log.warn(
-        { status: res.status, campaignId },
+        { status: res.status, workspaceId, campaignId },
         "CP /api/brand-design-system non-2xx",
       );
       return null;
@@ -62,24 +66,31 @@ async function fetchFromCp(campaignId?: string | null): Promise<DesignSystemDoc 
     return json;
   } catch (err) {
     log.warn(
-      { err: (err as Error).message, campaignId },
+      { err: (err as Error).message, workspaceId, campaignId },
       "CP /api/brand-design-system fetch failed",
     );
     return null;
   }
 }
 
+export type DesignSystemScope = {
+  /** Workspace whose design system to load. Required for multi-tenant correctness. */
+  workspaceId?: string | null;
+  campaignId?: string | null;
+};
+
 export async function getDesignSystem(
-  campaignId?: string | null,
+  scope: DesignSystemScope = {},
 ): Promise<DesignSystemDoc> {
-  const key = scopeKey(campaignId);
+  const { workspaceId, campaignId } = scope;
+  const key = scopeKey(workspaceId, campaignId);
   const now = Date.now();
   const hit = cache.get(key);
   if (hit && now - hit.loadedAt < CACHE_TTL_MS) return hit.doc;
   const existing = inflight.get(key);
   if (existing) return existing;
   const promise = (async () => {
-    const fromCp = await fetchFromCp(campaignId);
+    const fromCp = await fetchFromCp(workspaceId, campaignId);
     return (
       fromCp ?? {
         ...EMPTY_DESIGN_SYSTEM,
@@ -152,12 +163,24 @@ export function formatDesignSystemForPrompt(doc: DesignSystemDoc): string {
     : "(design system not yet configured — fall back to brand.visual freeform doc)";
 }
 
-// For tests / forced refresh after admin save. Pass a campaignId to evict
-// only that scope; omit to clear everything.
-export function clearDesignSystemCache(campaignId?: string | null): void {
-  if (campaignId === undefined) {
+// For tests / forced refresh after admin save.
+// - omit scope          → clear everything.
+// - { workspaceId }     → clear ALL entries for that workspace (every
+//                         campaign scope + the global fallback). This is
+//                         what admin save calls so workflow runs see fresh
+//                         brand data on the next tick.
+// - { workspaceId, campaignId } → clear that exact key only.
+export function clearDesignSystemCache(scope?: DesignSystemScope): void {
+  if (scope === undefined) {
     cache.clear();
-  } else {
-    cache.delete(scopeKey(campaignId));
+    return;
+  }
+  if (scope.campaignId !== undefined && scope.campaignId !== null) {
+    cache.delete(scopeKey(scope.workspaceId, scope.campaignId));
+    return;
+  }
+  const prefix = `${scope.workspaceId ?? GLOBAL_KEY}::`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
   }
 }

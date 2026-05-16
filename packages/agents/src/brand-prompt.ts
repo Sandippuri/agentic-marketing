@@ -20,6 +20,12 @@ import type { DesignLogoVariant } from "@marketing/shared-types";
 const log = pino({ name: "brand-prompt" });
 
 export type BrandPromptOptions = {
+  /**
+   * Workspace scope — REQUIRED for multi-tenant correctness. Without it the
+   * CP endpoints fall back to LEGACY_WORKSPACE_ID and every workspace gets
+   * user1's brand. Threaded by every caller from the active job/run.
+   */
+  workspaceId?: string | null;
   campaignId?: string | null;
   /** "image" | "video" — tweaks the framing line. */
   medium: "image" | "video";
@@ -56,12 +62,19 @@ function pickLogoReferenceUrls(design: DesignSystemDoc): string[] {
 export async function buildBrandPromptPrefix(
   opts: BrandPromptOptions,
 ): Promise<BrandPromptPrefix> {
+  const scope = { workspaceId: opts.workspaceId, campaignId: opts.campaignId };
+  if (!opts.workspaceId) {
+    log.warn(
+      { campaignId: opts.campaignId, medium: opts.medium },
+      "buildBrandPromptPrefix called without workspaceId — CP will fall back to LEGACY_WORKSPACE_ID. Fix the caller.",
+    );
+  }
   const [design, visual] = await Promise.all([
-    getDesignSystem(opts.campaignId).catch((err) => {
+    getDesignSystem(scope).catch((err) => {
       log.warn({ err: (err as Error).message }, "design system fetch failed");
       return null;
     }),
-    getBrandMemoryDoc("brand.visual", opts.campaignId).catch((err) => {
+    getBrandMemoryDoc("brand.visual", scope).catch((err) => {
       log.warn({ err: (err as Error).message }, "visual memory fetch failed");
       return null;
     }),

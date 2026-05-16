@@ -87,8 +87,15 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
     // Override pointed at a workspace the user can't see → fall through to
     // "first available," but clear the bogus cookie so we don't loop next
     // request. Header overrides we leave alone (the caller set them).
+    // Next 16 only permits cookie mutation in Server Actions / Route
+    // Handlers; from a Server Component the delete throws. Swallow that —
+    // the next mutation-capable request will clear the cookie instead.
     if (candidate === cookieOverride) {
-      cookieStore.delete(ACTIVE_WORKSPACE_COOKIE);
+      try {
+        cookieStore.delete(ACTIVE_WORKSPACE_COOKIE);
+      } catch {
+        // No-op in Server Component render.
+      }
     }
   }
 

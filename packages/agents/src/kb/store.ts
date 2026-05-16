@@ -45,32 +45,44 @@ export type DocSource =
 
 export type DocStatus = "draft" | "active" | "archived" | "superseded";
 
-export async function listCollections(opts?: {
+// Every read/write below scopes by workspaceId. Callers must supply the
+// workspace context — see apps/web/lib/billing/workspace-context.ts for the
+// canonical resolver. Internal callers (cron, manager) that still operate on
+// the Legacy workspace should pass `LEGACY_WORKSPACE_ID` explicitly.
+export async function listCollections(opts: {
+  workspaceId: string;
   kind?: CollectionKind;
   campaignId?: string | null;
 }): Promise<KbCollection[]> {
   const db = getDb();
-  const conds = [];
-  if (opts?.kind) conds.push(eq(kbCollections.kind, opts.kind));
-  if (opts?.campaignId === null) {
+  const conds = [eq(kbCollections.workspaceId, opts.workspaceId)];
+  if (opts.kind) conds.push(eq(kbCollections.kind, opts.kind));
+  if (opts.campaignId === null) {
     conds.push(sql`${kbCollections.campaignId} is null`);
-  } else if (opts?.campaignId) {
+  } else if (opts.campaignId) {
     conds.push(eq(kbCollections.campaignId, opts.campaignId));
   }
-  const where = conds.length ? and(...conds) : undefined;
-  return where
-    ? db.select().from(kbCollections).where(where).orderBy(kbCollections.name)
-    : db.select().from(kbCollections).orderBy(kbCollections.name);
+  return db
+    .select()
+    .from(kbCollections)
+    .where(and(...conds))
+    .orderBy(kbCollections.name);
 }
 
 export async function getCollectionBySlug(
+  workspaceId: string,
   slug: string,
 ): Promise<KbCollection | null> {
   const db = getDb();
   const [row] = await db
     .select()
     .from(kbCollections)
-    .where(eq(kbCollections.slug, slug))
+    .where(
+      and(
+        eq(kbCollections.workspaceId, workspaceId),
+        eq(kbCollections.slug, slug),
+      ),
+    )
     .limit(1);
   return row ?? null;
 }
@@ -79,7 +91,7 @@ export async function upsertCollection(
   input: NewKbCollection,
 ): Promise<KbCollection> {
   const db = getDb();
-  const existing = await getCollectionBySlug(input.slug);
+  const existing = await getCollectionBySlug(input.workspaceId, input.slug);
   if (existing) {
     const updated = await db
       .update(kbCollections)
@@ -102,22 +114,44 @@ export async function upsertCollection(
 }
 
 export async function listDocuments(opts: {
+  workspaceId: string;
   collectionId?: string;
   status?: DocStatus;
   limit?: number;
 }): Promise<KbDocument[]> {
   const db = getDb();
-  const conds = [];
+  const conds = [eq(kbDocuments.workspaceId, opts.workspaceId)];
   if (opts.collectionId) conds.push(eq(kbDocuments.collectionId, opts.collectionId));
   if (opts.status) conds.push(eq(kbDocuments.status, opts.status));
-  const where = conds.length ? and(...conds) : undefined;
-  const q = where
-    ? db.select().from(kbDocuments).where(where)
-    : db.select().from(kbDocuments);
-  return q.orderBy(desc(kbDocuments.updatedAt)).limit(opts.limit ?? 100);
+  return db
+    .select()
+    .from(kbDocuments)
+    .where(and(...conds))
+    .orderBy(desc(kbDocuments.updatedAt))
+    .limit(opts.limit ?? 100);
 }
 
-export async function getDocument(id: string): Promise<KbDocument | null> {
+export async function getDocument(
+  workspaceId: string,
+  id: string,
+): Promise<KbDocument | null> {
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(kbDocuments)
+    .where(
+      and(eq(kbDocuments.workspaceId, workspaceId), eq(kbDocuments.id, id)),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+// Internal fetch by id only — does NOT enforce workspace scoping. Reserved
+// for ingest/post-write hooks (chunkAndEmbed) that operate on a doc the
+// caller just inserted and only need the body. DO NOT use from request paths.
+export async function getDocumentByIdInternal(
+  id: string,
+): Promise<KbDocument | null> {
   const db = getDb();
   const [row] = await db
     .select()
@@ -128,6 +162,7 @@ export async function getDocument(id: string): Promise<KbDocument | null> {
 }
 
 export async function getDocumentBySlug(
+  workspaceId: string,
   collectionId: string,
   slug: string,
 ): Promise<KbDocument | null> {
@@ -136,7 +171,11 @@ export async function getDocumentBySlug(
     .select()
     .from(kbDocuments)
     .where(
-      and(eq(kbDocuments.collectionId, collectionId), eq(kbDocuments.slug, slug)),
+      and(
+        eq(kbDocuments.workspaceId, workspaceId),
+        eq(kbDocuments.collectionId, collectionId),
+        eq(kbDocuments.slug, slug),
+      ),
     )
     .limit(1);
   return row ?? null;
@@ -149,7 +188,11 @@ export type UpsertDocumentInput = Omit<NewKbDocument, "id" | "createdAt" | "upda
 
 export async function upsertDocument(input: UpsertDocumentInput): Promise<KbDocument> {
   const db = getDb();
-  const existing = await getDocumentBySlug(input.collectionId, input.slug);
+  const existing = await getDocumentBySlug(
+    input.workspaceId,
+    input.collectionId,
+    input.slug,
+  );
   if (existing) {
     const updated = await db
       .update(kbDocuments)
@@ -173,12 +216,17 @@ export async function upsertDocument(input: UpsertDocumentInput): Promise<KbDocu
   return inserted[0];
 }
 
-export async function archiveDocument(id: string): Promise<void> {
+export async function archiveDocument(
+  workspaceId: string,
+  id: string,
+): Promise<void> {
   const db = getDb();
   await db
     .update(kbDocuments)
     .set({ status: "archived", updatedAt: new Date() })
-    .where(eq(kbDocuments.id, id));
+    .where(
+      and(eq(kbDocuments.workspaceId, workspaceId), eq(kbDocuments.id, id)),
+    );
 }
 
 export async function listChunks(documentId: string): Promise<KbChunk[]> {

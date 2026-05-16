@@ -90,10 +90,11 @@ const ListQuery = z.object({});
 export async function GET() {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const { listCollections, listDocuments } = await import(
       "@marketing/agents/kb"
     );
-    const cols = await listCollections({ kind: "visual_reference" });
+    const cols = await listCollections({ workspaceId, kind: "visual_reference" });
     if (cols.length === 0) return Response.json([]);
     const out: Array<{
       collectionId: string;
@@ -110,7 +111,11 @@ export async function GET() {
       }>;
     }> = [];
     for (const c of cols) {
-      const docs = await listDocuments({ collectionId: c.id, status: "active" });
+      const docs = await listDocuments({
+        workspaceId,
+        collectionId: c.id,
+        status: "active",
+      });
       out.push({
         collectionId: c.id,
         collectionSlug: c.slug,

@@ -7,11 +7,35 @@ export type SlashCommand = {
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   {
-    name: "/workflow",
-    usage: "/workflow [channel] <prompt>",
+    name: "/campaigns",
+    usage: "/campaigns",
+    description: "List campaigns in this workspace.",
+    insertText: "/campaigns",
+  },
+  {
+    name: "/posts",
+    usage: "/posts [campaign-slug]",
+    description: "List recent posts. Optional: scope to one campaign.",
+    insertText: "/posts ",
+  },
+  {
+    name: "/approvals",
+    usage: "/approvals",
+    description: "Show pending approvals in this workspace.",
+    insertText: "/approvals",
+  },
+  {
+    name: "/brand",
+    usage: "/brand",
+    description: "Read this workspace's brand voice, ICP, and positioning.",
+    insertText: "/brand",
+  },
+  {
+    name: "/draft",
+    usage: "/draft <campaign> <topic>",
     description:
-      "Bypass the orchestrator and drive the single-post workflow end-to-end. Channel defaults to linkedin.",
-    insertText: "/workflow ",
+      "Start a single-post draft for the named campaign. The content sub-agent picks up brand voice automatically.",
+    insertText: "/draft ",
   },
   {
     name: "/campaign",
@@ -19,6 +43,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description:
       "Start a campaign plan — strategist drafts a brief and content calendar from the prompt.",
     insertText: "/campaign ",
+  },
+  {
+    name: "/workflow",
+    usage: "/workflow [channel] <prompt>",
+    description:
+      "Bypass the orchestrator and drive the single-post workflow end-to-end. Channel defaults to linkedin.",
+    insertText: "/workflow ",
   },
 ];
 

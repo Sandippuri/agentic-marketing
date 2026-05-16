@@ -10,7 +10,8 @@ import { isInternal } from "@/lib/internal-auth";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
-import { getWorkspaceContext } from "@/lib/billing";
+import { getWorkspaceContext, LEGACY_WORKSPACE_ID } from "@/lib/billing";
+import { clearBrandMemoryCache } from "@marketing/agents/brand-store";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,19 @@ export async function GET(
     const parsed = SlugParam.parse(slug);
 
     const isInternalReq = isInternal(request);
-    if (!isInternalReq) await getRequestActor();
+    let workspaceId: string;
+    if (isInternalReq) {
+      // Internal callers (workflow agents) must pass x-workspace-id so the
+      // brand memory they read matches the user whose job they're running.
+      // Fall back to LEGACY only when the header is absent (legacy seed scripts).
+      const headerWorkspace = request.headers.get("x-workspace-id")?.trim();
+      workspaceId = headerWorkspace && headerWorkspace.length > 0
+        ? headerWorkspace
+        : LEGACY_WORKSPACE_ID;
+    } else {
+      await getRequestActor();
+      workspaceId = (await getWorkspaceContext()).workspaceId;
+    }
 
     const db = getDb();
     const [row] = await db
@@ -38,6 +51,7 @@ export async function GET(
       .from(schema.brandMemory)
       .where(
         and(
+          eq(schema.brandMemory.workspaceId, workspaceId),
           eq(schema.brandMemory.slug, parsed),
           isNull(schema.brandMemory.campaignId),
         ),
@@ -80,6 +94,7 @@ export async function PUT(
           .from(schema.brandMemory)
           .where(
             and(
+              eq(schema.brandMemory.workspaceId, workspaceId),
               eq(schema.brandMemory.slug, parsed),
               isNull(schema.brandMemory.campaignId),
             ),
@@ -98,7 +113,7 @@ export async function PUT(
             updatedBy: actor.id ?? null,
           })
           .onConflictDoUpdate({
-            target: schema.brandMemory.slug,
+            target: [schema.brandMemory.workspaceId, schema.brandMemory.slug],
             targetWhere: sql`"campaign_id" IS NULL`,
             set: {
               title,
@@ -113,6 +128,10 @@ export async function PUT(
       },
     );
 
+    // Invalidate the agents-side in-process cache so the next workflow run
+    // picks up the new brand memory immediately instead of waiting up to
+    // 5 minutes for the TTL.
+    clearBrandMemoryCache({ workspaceId });
     return Response.json({
       slug: parsed,
       title: after.title,

@@ -1,15 +1,18 @@
 import { listCollections, listDocuments } from "@marketing/agents/kb";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader } from "../ui";
 import { KnowledgeBrowser } from "./browser";
 
 export const dynamic = "force-dynamic";
 
 export default async function KnowledgePage() {
-  const collections = await listCollections();
+  const { workspaceId } = await getWorkspaceContext();
+  const collections = await listCollections({ workspaceId });
   // Pre-load the first collection's documents so the page renders
   // something useful even before the browser hydrates.
   const initialDocs = collections[0]
     ? await listDocuments({
+        workspaceId,
         collectionId: collections[0].id,
         status: "active",
         limit: 50,

@@ -40,11 +40,20 @@ export async function kickVideoVariant(contentId: string): Promise<void> {
         bodyMd: schema.contentItems.bodyMd,
         campaignId: schema.contentItems.campaignId,
         workspaceId: schema.contentItems.workspaceId,
+        needsVideo: schema.contentItems.needsVideo,
       })
       .from(schema.contentItems)
       .where(eq(schema.contentItems.id, contentId))
       .limit(1);
     if (!row) return;
+    // Per-post opt-out (migration 0032). The contentTypeWantsVideo() gate
+    // still runs inside generateVideoVariant; this flag is the human override.
+    if (row.needsVideo === false) {
+      console.log(
+        `[asset-variants] video skipped for ${contentId} (needs_video=false)`,
+      );
+      return;
+    }
     const markers = extractImageMarkers(row.bodyMd);
     void generateVideoVariant({
       contentId,

@@ -12,6 +12,7 @@ import {
 } from "@marketing/shared-types";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
 import { isVideoAsset } from "@/lib/asset-media";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader, Badge, EmptyState, statusTone } from "../ui";
 
 export const dynamic = "force-dynamic";
@@ -40,11 +41,12 @@ export default async function PostsPage({
 }) {
   const params = await searchParams;
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   const page = Math.max(1, Number(params.page ?? 1));
   const offset = (page - 1) * PAGE_SIZE;
 
-  const conditions = [];
+  const conditions = [eq(schema.contentItems.workspaceId, ctx.workspaceId)];
   if (params.type && (CONTENT_TYPES as readonly string[]).includes(params.type)) {
     conditions.push(eq(schema.contentItems.type, params.type as ContentType));
   }
@@ -63,7 +65,7 @@ export default async function PostsPage({
     );
   }
 
-  const where = conditions.length ? and(...conditions) : undefined;
+  const where = and(...conditions);
 
   const [rows, countResult, campaignOptions] = await Promise.all([
     db
@@ -99,6 +101,7 @@ export default async function PostsPage({
     db
       .select({ id: schema.campaigns.id, name: schema.campaigns.name })
       .from(schema.campaigns)
+      .where(eq(schema.campaigns.workspaceId, ctx.workspaceId))
       .orderBy(desc(schema.campaigns.createdAt))
       .limit(50),
   ]);
@@ -131,6 +134,7 @@ export default async function PostsPage({
       .from(schema.assets)
       .where(
         and(
+          eq(schema.assets.workspaceId, ctx.workspaceId),
           isNotNull(schema.assets.contentId),
           inArray(schema.assets.contentId, contentIds),
         ),

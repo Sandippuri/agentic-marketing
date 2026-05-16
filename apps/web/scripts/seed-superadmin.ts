@@ -1,17 +1,22 @@
-// One-off setup for the two-user, single-workspace test fixture.
+// One-off setup for the multi-user, single-workspace test fixture.
 //
 // What it does (idempotent — safe to re-run):
 //   1. Ensures auth users exist (creates with email auto-confirmed) for:
 //        - admin@marketing.com  (cross-tenant superadmin)
 //        - user1@marketing.com  (platform user; owner of the Legacy workspace)
+//        - user2@marketing.com  (platform user; gets a fresh personal
+//                                workspace auto-provisioned on first sign-in
+//                                — NOT a Legacy member)
 //   2. Ensures the Legacy workspace exists at the canonical fixed UUID and
 //      reassigns its owner_user_id to user1.
 //   3. Inserts/updates workspace_members so:
 //        - user1@marketing.com is the workspace `owner`
 //        - admin@marketing.com is workspace `admin` (so the superadmin can
 //          also browse the regular workspace UI)
+//        - user2 is deliberately NOT added — ensurePersonalWorkspace creates
+//          their own workspace lazily on first sign-in.
 //   4. Inserts admin_users(role='superadmin') for admin@marketing.com only.
-//      user1 is intentionally NOT in admin_users — they're a platform user.
+//      user1/user2 are intentionally NOT in admin_users — they're platform users.
 //
 // Run:
 //   pnpm --filter web exec tsx scripts/seed-superadmin.ts
@@ -39,10 +44,12 @@ const LEGACY_WORKSPACE_NAME = "Legacy";
 
 const SUPERADMIN_EMAIL = "admin@marketing.com";
 const PLATFORM_USER_EMAIL = "user1@marketing.com";
+const SECOND_USER_EMAIL = "user2@marketing.com";
 
 // Dev/test passwords. Login form supports both password and magic-link.
 const SUPERADMIN_PASSWORD = "Admin@Marketing123!";
 const PLATFORM_USER_PASSWORD = "User1@Marketing123!";
+const SECOND_USER_PASSWORD = "User2@Marketing123!";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -111,6 +118,14 @@ async function main(): Promise<void> {
   );
   console.log(
     `  · ${platformUser.email}  ${platformUser.id}  ${platformUser.created ? "(created)" : "(updated)"}`,
+  );
+  const secondUser = await ensureAuthUser(
+    admin,
+    SECOND_USER_EMAIL,
+    SECOND_USER_PASSWORD,
+  );
+  console.log(
+    `  · ${secondUser.email}  ${secondUser.id}  ${secondUser.created ? "(created)" : "(updated)"}`,
   );
 
   const db = createDb(databaseUrl);
@@ -198,10 +213,13 @@ async function main(): Promise<void> {
     console.log(`  · ${superadmin.email} already superadmin, skipping`);
   }
 
-  // 4. Ensure user1 is NOT in admin_users (platform user only).
+  // 4. Ensure platform users are NOT in admin_users.
   await db
     .delete(schema.adminUsers)
     .where(eq(schema.adminUsers.userId, platformUser.id));
+  await db
+    .delete(schema.adminUsers)
+    .where(eq(schema.adminUsers.userId, secondUser.id));
 
   console.log("");
   console.log("✓ seed complete.");
@@ -209,7 +227,10 @@ async function main(): Promise<void> {
   console.log("Credentials:");
   console.log(`  ${SUPERADMIN_EMAIL}   /  ${SUPERADMIN_PASSWORD}   (superadmin)`);
   console.log(
-    `  ${PLATFORM_USER_EMAIL}   /  ${PLATFORM_USER_PASSWORD}   (platform user)`,
+    `  ${PLATFORM_USER_EMAIL}   /  ${PLATFORM_USER_PASSWORD}   (Legacy owner)`,
+  );
+  console.log(
+    `  ${SECOND_USER_EMAIL}   /  ${SECOND_USER_PASSWORD}   (fresh workspace on first sign-in)`,
   );
   console.log("");
   console.log("Sign in at /login with email + password.");

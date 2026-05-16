@@ -65,6 +65,10 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
   const imageModel = await loadConfiguredImageModel(cp);
   const videoModel = await loadConfiguredVideoModel(cp);
   log.info({ imageModel, videoModel }, "asset sub-agent using configured models");
+  log.info(
+    { workspaceId, contentId, jobId, workflowRunId, request },
+    "asset sub-agent received request",
+  );
 
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
@@ -77,7 +81,7 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
           "Read brand visual guidelines (palette, typography, banned looks, aspect ratios). Editable in the admin UI at /admin/brand under 'Visual guidelines'.",
         parameters: z.object({}),
         execute: async () => {
-          const doc = await getBrandMemoryDoc("brand.visual");
+          const doc = await getBrandMemoryDoc("brand.visual", { workspaceId });
           return doc.body;
         },
       }),
@@ -87,7 +91,7 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
           "Read the structured brand design system: exact hex color values (with roles), typography families/weights, signed logo URLs (expire in ~1 hour), and spacing/radii/shadow tokens. Use these AS-IS — copy hex codes verbatim into image-gen prompts; pass logo URLs into render_template's image fields. Editable in the admin UI at /admin/design-system.",
         parameters: z.object({}),
         execute: async () => {
-          const doc = await getDesignSystem();
+          const doc = await getDesignSystem({ workspaceId });
           return {
             formatted: formatDesignSystemForPrompt(doc),
             colors: doc.colors,
@@ -113,15 +117,24 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
         execute: async ({ prompt, negativePrompt, aspect }) => {
           log.info({ prompt: prompt.slice(0, 80), imageModel }, "generate_background called");
           const { prefix, referenceImages } = await buildBrandPromptPrefix({
+            workspaceId,
             medium: "image",
           });
           const finalPrompt = prefix ? `${prefix}${prompt}` : prompt;
           log.info(
             {
+              workspaceId,
+              contentId,
+              imageModel,
+              aspect,
+              negativePrompt,
               brandPrefixChars: prefix.length,
               logoReferenceCount: referenceImages.length,
+              rawPrompt: prompt,
+              brandPrefix: prefix,
+              finalPrompt,
             },
-            "brand context injected into image prompt",
+            "IMAGE PROMPT (full) — about to call generateImage",
           );
           const result = await generateImage({
             prompt: finalPrompt,
@@ -154,6 +167,16 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
           log.info({ templateId }, "render_template called");
           const mergedFields: TemplateFields = { ...fields };
           if (backgroundUrl) mergedFields["background"] = { image_url: backgroundUrl };
+          log.info(
+            {
+              workspaceId,
+              contentId,
+              templateId,
+              backgroundUrl,
+              fields: mergedFields,
+            },
+            "TEMPLATE RENDER (full) — about to call renderTemplate",
+          );
           const { url, renderId } = await renderTemplate(templateId, mergedFields);
           const storagePath = await uploadAsset(url, `renders/${renderId}.png`);
           log.info({ storagePath, renderId }, "template render uploaded to Supabase");
@@ -204,11 +227,27 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
             },
             "generate_video called",
           );
-          const { prefix } = await buildBrandPromptPrefix({ medium: "video" });
+          const { prefix } = await buildBrandPromptPrefix({
+            workspaceId,
+            medium: "video",
+          });
           const finalPrompt = prefix ? `${prefix}${prompt}` : prompt;
           log.info(
-            { brandPrefixChars: prefix.length },
-            "brand context injected into video prompt",
+            {
+              workspaceId,
+              contentId,
+              videoModel,
+              aspect,
+              durationSec,
+              i2v: Boolean(firstFrameUrl),
+              firstFrameUrl,
+              withAudio,
+              brandPrefixChars: prefix.length,
+              rawPrompt: prompt,
+              brandPrefix: prefix,
+              finalPrompt,
+            },
+            "VIDEO PROMPT (full) — about to call generateVideo",
           );
           const result = await generateVideo({
             prompt: finalPrompt,

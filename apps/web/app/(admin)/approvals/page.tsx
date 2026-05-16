@@ -4,6 +4,7 @@ import { type PendingApproval } from "./approval-row";
 import { ApprovalsShell } from "./approvals-shell";
 import { StuckWorkflowRow, type StuckWorkflow } from "./stuck-workflow-row";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader, EmptyState, Badge } from "../ui";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,7 @@ function ageLabel(requestedAt: Date): string {
 
 export default async function ApprovalsPage() {
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   // Join approvals → content_items → campaigns for grouping + age display.
   const rows = await db
@@ -30,13 +32,19 @@ export default async function ApprovalsPage() {
       contentStage: schema.contentItems.stage,
       contentBodyMd: schema.contentItems.bodyMd,
       contentNeedsImages: schema.contentItems.needsImages,
+      contentNeedsVideo: schema.contentItems.needsVideo,
       campaignId: schema.contentItems.campaignId,
       campaignName: schema.campaigns.name,
     })
     .from(schema.approvals)
     .innerJoin(schema.contentItems, eq(schema.approvals.contentId, schema.contentItems.id))
     .innerJoin(schema.campaigns, eq(schema.contentItems.campaignId, schema.campaigns.id))
-    .where(isNull(schema.approvals.decision))
+    .where(
+      and(
+        eq(schema.approvals.workspaceId, ctx.workspaceId),
+        isNull(schema.approvals.decision),
+      ),
+    )
     // Oldest first so stale items surface at the top.
     .orderBy(schema.approvals.requestedAt);
 
@@ -49,6 +57,7 @@ export default async function ApprovalsPage() {
     status: string;
     kind: string;
     mimeType: string | null;
+    promptUsed: string | null;
   };
   const assetsByContent = new Map<string, AssetOption[]>();
   for (const r of rows) {
@@ -60,10 +69,16 @@ export default async function ApprovalsPage() {
           status: schema.assets.status,
           kind: schema.assets.kind,
           mimeType: schema.assets.mimeType,
+          promptUsed: schema.assets.promptUsed,
           createdAt: schema.assets.createdAt,
         })
         .from(schema.assets)
-        .where(eq(schema.assets.contentId, r.contentId))
+        .where(
+          and(
+            eq(schema.assets.workspaceId, ctx.workspaceId),
+            eq(schema.assets.contentId, r.contentId),
+          ),
+        )
         .orderBy(schema.assets.createdAt);
       const signed = await Promise.all(
         found.map(async (a) => ({
@@ -71,6 +86,7 @@ export default async function ApprovalsPage() {
           status: a.status,
           kind: a.kind,
           mimeType: a.mimeType,
+          promptUsed: a.promptUsed,
           signedUrl: await getSignedAssetUrl(a.storagePath).catch(() => null),
         })),
       );
@@ -95,6 +111,7 @@ export default async function ApprovalsPage() {
       assets: assetsByContent.get(r.contentId) ?? [],
       bodyMd: r.contentBodyMd ?? null,
       needsImages: r.contentNeedsImages,
+      needsVideo: r.contentNeedsVideo,
     });
   }
 
@@ -138,6 +155,7 @@ export default async function ApprovalsPage() {
     )
     .where(
       and(
+        eq(schema.workflowRuns.workspaceId, ctx.workspaceId),
         eq(schema.workflowRuns.status, "running"),
         eq(schema.workflowRuns.kind, "single_post"),
         isNotNull(schema.workflowRuns.contentId),

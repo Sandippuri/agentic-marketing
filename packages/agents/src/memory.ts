@@ -57,14 +57,21 @@ const BASE_MEMORY_SECTIONS = [
   { slug: "brand.icp", header: "ICP" },
   { slug: "product.state", header: "Product State" },
   { slug: "product.positioning", header: "Product Positioning" },
+  { slug: "market.context", header: "Market Context" },
 ] as const;
 
 /**
  * Build the standard memory context block injected into every sub-agent call.
  * Reads from the brand-memory store (DB-backed via CP) with file fallback.
+ *
+ * `workspaceId` is mandatory for multi-tenant correctness — without it the CP
+ * endpoint falls back to LEGACY_WORKSPACE_ID and every sub-agent gets user1's
+ * brand voice/ICP regardless of who triggered the run.
  */
-export async function buildBaseMemory(): Promise<string> {
-  const docs = await getBrandMemory();
+export async function buildBaseMemory(
+  scope: { workspaceId?: string | null } = {},
+): Promise<string> {
+  const docs = await getBrandMemory({ workspaceId: scope.workspaceId });
   const bySlug = new Map(docs.map((d) => [d.slug, d]));
 
   return BASE_MEMORY_SECTIONS.map(({ slug, header }) => {

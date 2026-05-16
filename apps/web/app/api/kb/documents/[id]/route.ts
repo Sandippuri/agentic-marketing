@@ -14,6 +14,7 @@ import {
 } from "@marketing/agents/kb";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -34,8 +35,9 @@ export async function GET(
 ) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const { id } = await params;
-    const doc = await getDocument(id);
+    const doc = await getDocument(workspaceId, id);
     if (!doc) return Response.json({ error: "not_found" }, { status: 404 });
     const chunks = await listChunks(id);
     return Response.json({ document: doc, chunks });
@@ -50,8 +52,9 @@ export async function PATCH(
 ) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const { id } = await params;
-    const existing = await getDocument(id);
+    const existing = await getDocument(workspaceId, id);
     if (!existing) return Response.json({ error: "not_found" }, { status: 404 });
     const input = await parseJson(request, PatchDocument);
 
@@ -88,8 +91,9 @@ export async function DELETE(
 ) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const { id } = await params;
-    await archiveDocument(id);
+    await archiveDocument(workspaceId, id);
     await deleteChunksFor(id);
     return Response.json({ ok: true });
   } catch (err) {

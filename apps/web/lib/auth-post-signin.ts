@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import type { User } from "@supabase/supabase-js";
 import { isAllowed } from "@/lib/auth-allowlist";
 import { ACTIVE_WORKSPACE_COOKIE, ensurePersonalWorkspace } from "@/lib/billing";
+import { lookupAdminRole } from "@/lib/billing/admin";
 
 export type PostSigninResult =
   | { ok: true; redirectTo: string }
@@ -51,6 +52,16 @@ export async function runPostSignin(args: {
       path: "/",
       maxAge: 60 * 60 * 24 * 365,
     });
+  }
+
+  // Superadmins land on the cross-tenant operator console unless the caller
+  // explicitly requested a workspace path (e.g. ?next=/campaigns).
+  const callerOverrodeNext = next !== "/campaigns";
+  if (!callerOverrodeNext) {
+    const role = await lookupAdminRole(user.id);
+    if (role === "superadmin") {
+      return { ok: true, redirectTo: "/super" };
+    }
   }
 
   return { ok: true, redirectTo: next };

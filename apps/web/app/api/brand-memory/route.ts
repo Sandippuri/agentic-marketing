@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import {
   BRAND_MEMORY_SLUGS,
@@ -6,6 +7,7 @@ import {
 } from "@marketing/shared-types";
 import { isInternal } from "@/lib/internal-auth";
 import { getRequestActor } from "@/lib/auth";
+import { getWorkspaceContext, LEGACY_WORKSPACE_ID } from "@/lib/billing";
 import { errorResponse } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
@@ -24,10 +26,25 @@ export type BrandMemoryDoc = {
 export async function GET(request: Request) {
   try {
     const isInternalReq = isInternal(request);
-    if (!isInternalReq) await getRequestActor();
+    let workspaceId: string;
+    if (isInternalReq) {
+      // Internal callers (workflow agents) must pass x-workspace-id so the
+      // brand memory they read matches the user whose job they're running.
+      // Fall back to LEGACY only when the header is absent (legacy seed scripts).
+      const headerWorkspace = request.headers.get("x-workspace-id")?.trim();
+      workspaceId = headerWorkspace && headerWorkspace.length > 0
+        ? headerWorkspace
+        : LEGACY_WORKSPACE_ID;
+    } else {
+      workspaceId = (await getWorkspaceContext()).workspaceId;
+      await getRequestActor();
+    }
 
     const db = getDb();
-    const rows = await db.select().from(schema.brandMemory);
+    const rows = await db
+      .select()
+      .from(schema.brandMemory)
+      .where(eq(schema.brandMemory.workspaceId, workspaceId));
     const bySlug = new Map(rows.map((r) => [r.slug, r]));
 
     const docs: BrandMemoryDoc[] = BRAND_MEMORY_SLUGS.map((slug) => {

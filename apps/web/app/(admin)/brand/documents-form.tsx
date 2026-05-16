@@ -337,6 +337,9 @@ function ReviewModal({
     "brand.visual": drafts.visual,
     "product.state": drafts.productState,
     "product.positioning": drafts.productPositioning,
+    // Market context is human-authored on the Brand page; extraction
+    // doesn't draft it, so we never overwrite an existing value here.
+    "market.context": "",
   });
   const [colors, setColors] = useState<DesignColor[]>(drafts.design.colors);
   const [typography, setTypography] = useState<DesignTypography>(
@@ -351,8 +354,11 @@ function ReviewModal({
     setSaving(true);
     try {
       // Brand-memory PUTs in parallel — each route is independent.
+      // Skip market.context: extraction never produces a draft for it, so
+      // saving here would clobber whatever the user wrote on the Brand page.
+      const extractedSlugs = BRAND_MEMORY_SLUGS.filter((s) => s !== "market.context");
       await Promise.all(
-        BRAND_MEMORY_SLUGS.map(async (slug) => {
+        extractedSlugs.map(async (slug) => {
           const res = await fetch(
             `/api/brand-memory/${encodeURIComponent(slug)}`,
             {
@@ -444,7 +450,7 @@ function ReviewModal({
         </div>
 
         <div className="space-y-5">
-          {BRAND_MEMORY_SLUGS.map((slug) => (
+          {BRAND_MEMORY_SLUGS.filter((s) => s !== "market.context").map((slug) => (
             <DraftSection
               key={slug}
               title={BRAND_MEMORY_TITLES[slug]}

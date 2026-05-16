@@ -1,11 +1,13 @@
 import { listCollections, listDocuments } from "@marketing/agents/kb";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader } from "../../ui";
 import { VisualReferenceGallery } from "./gallery";
 
 export const dynamic = "force-dynamic";
 
 export default async function VisualReferencesPage() {
-  const cols = await listCollections({ kind: "visual_reference" });
+  const { workspaceId } = await getWorkspaceContext();
+  const cols = await listCollections({ workspaceId, kind: "visual_reference" });
   const groups: Array<{
     collectionId: string;
     collectionSlug: string;
@@ -23,6 +25,7 @@ export default async function VisualReferencesPage() {
   }> = [];
   for (const c of cols) {
     const docs = await listDocuments({
+      workspaceId,
       collectionId: c.id,
       status: "active",
     });

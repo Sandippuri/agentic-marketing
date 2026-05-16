@@ -1,9 +1,14 @@
+import { isNull } from "drizzle-orm";
+import { getDb, schema } from "@marketing/db";
 import {
   DEFAULT_LLM_MODEL,
+  DEFAULT_USER_ALLOWED_MODELS,
   LLM_MODELS,
   PROVIDER_LABELS,
   type LlmProvider,
 } from "@marketing/shared-types";
+import { getRequestActor } from "@/lib/auth";
+import { lookupAdminRole } from "@/lib/billing/admin";
 
 function providerHasKey(provider: LlmProvider): boolean {
   switch (provider) {
@@ -19,14 +24,35 @@ function providerHasKey(provider: LlmProvider): boolean {
 }
 
 export async function GET() {
-  const available = LLM_MODELS.filter((m) => providerHasKey(m.provider));
-  const defaultId = available.some((m) => m.id === DEFAULT_LLM_MODEL)
+  const actor = await getRequestActor();
+  const role = actor.id ? await lookupAdminRole(actor.id) : null;
+  const isSuperadmin = role === "superadmin";
+
+  const providerAvailable = LLM_MODELS.filter((m) => providerHasKey(m.provider));
+
+  let visible = providerAvailable;
+  if (!isSuperadmin) {
+    const db = getDb();
+    const rows = await db
+      .select({ key: schema.settings.key, value: schema.settings.value })
+      .from(schema.settings)
+      .where(isNull(schema.settings.workspaceId));
+    const raw = rows.find((r) => r.key === "user_allowed_models")?.value;
+    const allowlist =
+      Array.isArray(raw) && raw.length > 0
+        ? (raw as string[])
+        : [...DEFAULT_USER_ALLOWED_MODELS];
+    const allowed = new Set(allowlist);
+    visible = providerAvailable.filter((m) => allowed.has(m.id));
+  }
+
+  const defaultId = visible.some((m) => m.id === DEFAULT_LLM_MODEL)
     ? DEFAULT_LLM_MODEL
-    : available[0]?.id;
+    : visible[0]?.id;
 
   return Response.json({
     default: defaultId,
     providerLabels: PROVIDER_LABELS,
-    models: available,
+    models: visible,
   });
 }

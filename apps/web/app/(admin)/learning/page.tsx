@@ -1,6 +1,9 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { aggregateLearningSignal } from "@/lib/learning/aggregate";
 import { listDocuments, getCollectionBySlug } from "@marketing/agents/kb";
+import { getSupabaseServer } from "@/lib/supabase/server";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader } from "../ui";
 import { LearningClient } from "./client";
 
@@ -11,14 +14,23 @@ export default async function LearningPage({
 }: {
   searchParams: Promise<{ windowDays?: string }>;
 }) {
+  const sb = await getSupabaseServer();
+  const { data: userData } = await sb.auth.getUser();
+  if (!userData.user) redirect("/login?next=/learning");
+
+  const { workspaceId } = await getWorkspaceContext();
   const params = await searchParams;
   const windowDays = Math.min(
     365,
     Math.max(1, Number(params.windowDays ?? "30") || 30),
   );
-  const summary = await aggregateLearningSignal({ windowDays, limit: 10 });
+  const summary = await aggregateLearningSignal({
+    workspaceId,
+    windowDays,
+    limit: 10,
+  });
 
-  const lessons = await loadLatestLessons();
+  const lessons = await loadLatestLessons(workspaceId);
 
   return (
     <>
@@ -35,10 +47,11 @@ export default async function LearningPage({
   );
 }
 
-async function loadLatestLessons() {
-  const collection = await getCollectionBySlug("learning-loop");
+async function loadLatestLessons(workspaceId: string) {
+  const collection = await getCollectionBySlug(workspaceId, "learning-loop");
   if (!collection) return null;
   const docs = await listDocuments({
+    workspaceId,
     collectionId: collection.id,
     status: "active",
     limit: 1,

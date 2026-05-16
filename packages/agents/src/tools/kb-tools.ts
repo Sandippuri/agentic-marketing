@@ -91,7 +91,7 @@ export function buildKbTools(ctx: KbToolContext) {
         if (!documentId) {
           return { error: "documentId required (slug-based lookup not yet wired)" };
         }
-        const doc = await getDocument(documentId);
+        const doc = await getDocument(ctx.workspaceId, documentId);
         if (!doc) return { error: "not found" };
         return {
           id: doc.id,
@@ -116,7 +116,12 @@ export function buildKbTools(ctx: KbToolContext) {
       }),
       execute: async ({ collectionId, kind, limit }) => {
         if (collectionId) {
-          const docs = await listDocuments({ collectionId, status: "active", limit });
+          const docs = await listDocuments({
+            workspaceId: ctx.workspaceId,
+            collectionId,
+            status: "active",
+            limit,
+          });
           return docs.map((d) => ({
             id: d.id,
             slug: d.slug,
@@ -125,7 +130,10 @@ export function buildKbTools(ctx: KbToolContext) {
             version: d.version,
           }));
         }
-        const cols = await listCollections({ kind: kind as CollectionKind | undefined });
+        const cols = await listCollections({
+          workspaceId: ctx.workspaceId,
+          kind: kind as CollectionKind | undefined,
+        });
         return cols.map((c) => ({
           id: c.id,
           slug: c.slug,

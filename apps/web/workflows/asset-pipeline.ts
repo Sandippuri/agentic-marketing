@@ -120,6 +120,7 @@ export async function assetPipelineWorkflow(
     brief,
     channel: ctx.channel,
     brandPrefix: ctx.brandPrefix,
+    brandReferenceImages: ctx.brandReferenceImages,
     imageModel: ctx.imageModel,
     variantCount,
     passLabel: "v1",
@@ -145,6 +146,7 @@ export async function assetPipelineWorkflow(
       brief,
       channel: ctx.channel,
       brandPrefix: ctx.brandPrefix,
+      brandReferenceImages: ctx.brandReferenceImages,
       imageModel: ctx.imageModel,
       variantCount: 1,
       passLabel: "v2",
@@ -194,12 +196,19 @@ type LoadedContext = {
   kind: AssetKind;
   campaignId: string;
   brandPrefix: string;
+  // Signed URLs for brand logos. Passed as visual reference to the image
+  // model so logos are PLACED, not redrawn. Previously dropped — the model
+  // had to invent the mark from text, which is why it kept hallucinating
+  // "Veru Fi" / wordmark variants.
+  brandReferenceImages: string[];
   imageModel: ImageModel;
   imageBrief: ImageBrief | null;
   visualIdentity: VisualIdentity | null;
 };
 
-async function loadContextStep(input: AssetPipelineInput): Promise<LoadedContext> {
+async function loadContextStep(
+  input: AssetPipelineInput,
+): Promise<LoadedContext> {
   "use step";
   const db = getDb();
   const [row] = await db
@@ -235,10 +244,12 @@ async function loadContextStep(input: AssetPipelineInput): Promise<LoadedContext
   ]);
   const imageModel = resolveImageModel(settingsRow?.value);
 
-  const { prefix: brandPrefix } = await buildBrandPromptPrefix({
-    medium: "image",
-    campaignId: row.campaignId,
-  });
+  const { prefix: brandPrefix, referenceImages: brandReferenceImages } =
+    await buildBrandPromptPrefix({
+      medium: "image",
+      workspaceId: input.workspaceId,
+      campaignId: row.campaignId,
+    });
 
   return {
     request: input.request ?? row.title,
@@ -247,6 +258,7 @@ async function loadContextStep(input: AssetPipelineInput): Promise<LoadedContext
     kind,
     campaignId: row.campaignId,
     brandPrefix,
+    brandReferenceImages,
     imageModel,
     imageBrief: (row.imageBrief as ImageBrief | null) ?? null,
     visualIdentity:
@@ -314,6 +326,7 @@ async function generatePassStep(args: {
   brief: VisualConceptBrief;
   channel: string;
   brandPrefix: string;
+  brandReferenceImages: string[];
   imageModel: ImageModel;
   variantCount: number;
   passLabel: string;
@@ -322,6 +335,7 @@ async function generatePassStep(args: {
   "use step";
   const variants = conceptToVariants(args.brief, {
     brandPrefix: args.brandPrefix,
+    brandReferenceImages: args.brandReferenceImages,
     channel: args.channel,
     variantCount: args.variantCount,
     retryReason: args.retryReason,

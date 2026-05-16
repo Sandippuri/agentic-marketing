@@ -43,8 +43,8 @@ type CacheEntry = { docs: BrandMemoryDoc[]; loadedAt: number };
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<BrandMemoryDoc[]>>();
 
-function scopeKey(campaignId?: string | null): string {
-  return campaignId ?? GLOBAL_KEY;
+function scopeKey(workspaceId?: string | null, campaignId?: string | null): string {
+  return `${workspaceId ?? GLOBAL_KEY}::${campaignId ?? GLOBAL_KEY}`;
 }
 
 async function readFileFallback(slug: BrandMemorySlug): Promise<string> {
@@ -55,7 +55,10 @@ async function readFileFallback(slug: BrandMemorySlug): Promise<string> {
   }
 }
 
-async function fetchFromCp(campaignId?: string | null): Promise<BrandMemoryDoc[] | null> {
+async function fetchFromCp(
+  workspaceId?: string | null,
+  campaignId?: string | null,
+): Promise<BrandMemoryDoc[] | null> {
   const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
   const token = process.env.INTERNAL_API_TOKEN ?? "";
   if (!token) {
@@ -66,12 +69,13 @@ async function fetchFromCp(campaignId?: string | null): Promise<BrandMemoryDoc[]
   const url = new URL(`${baseUrl}/api/brand-memory`);
   if (campaignId) url.searchParams.set("campaign_id", campaignId);
 
+  const headers: Record<string, string> = { "x-internal-token": token };
+  if (workspaceId) headers["x-workspace-id"] = workspaceId;
+
   try {
-    const res = await fetch(url, {
-      headers: { "x-internal-token": token },
-    });
+    const res = await fetch(url, { headers });
     if (!res.ok) {
-      log.warn({ status: res.status, campaignId }, "CP /api/brand-memory non-2xx; falling back");
+      log.warn({ status: res.status, workspaceId, campaignId }, "CP /api/brand-memory non-2xx; falling back");
       return null;
     }
     const rows = (await res.json()) as Array<{
@@ -82,17 +86,23 @@ async function fetchFromCp(campaignId?: string | null): Promise<BrandMemoryDoc[]
     return rows.map((r) => ({ slug: r.slug, title: r.title, body: r.body }));
   } catch (err) {
     log.warn(
-      { err: (err as Error).message, campaignId },
+      { err: (err as Error).message, workspaceId, campaignId },
       "CP /api/brand-memory fetch failed; falling back",
     );
     return null;
   }
 }
 
-async function loadAll(campaignId?: string | null): Promise<BrandMemoryDoc[]> {
-  const fromCp = await fetchFromCp(campaignId);
+async function loadAll(
+  workspaceId?: string | null,
+  campaignId?: string | null,
+): Promise<BrandMemoryDoc[]> {
+  const fromCp = await fetchFromCp(workspaceId, campaignId);
   const docs: BrandMemoryDoc[] = [];
-  const isGlobalScope = !campaignId;
+  // Disk fallback only makes sense for the legacy/global workspace —
+  // tenant workspaces should never silently fall back to checked-in
+  // brand text (that's user1's brand).
+  const isGlobalScope = !campaignId && !workspaceId;
 
   for (const slug of BRAND_MEMORY_SLUGS) {
     const remote = fromCp?.find((d) => d.slug === slug);
@@ -111,14 +121,23 @@ async function loadAll(campaignId?: string | null): Promise<BrandMemoryDoc[]> {
   return docs;
 }
 
-export async function getBrandMemory(campaignId?: string | null): Promise<BrandMemoryDoc[]> {
-  const key = scopeKey(campaignId);
+export type BrandMemoryScope = {
+  /** Workspace whose brand memory to load. Required for multi-tenant correctness. */
+  workspaceId?: string | null;
+  campaignId?: string | null;
+};
+
+export async function getBrandMemory(
+  scope: BrandMemoryScope = {},
+): Promise<BrandMemoryDoc[]> {
+  const { workspaceId, campaignId } = scope;
+  const key = scopeKey(workspaceId, campaignId);
   const now = Date.now();
   const hit = cache.get(key);
   if (hit && now - hit.loadedAt < CACHE_TTL_MS) return hit.docs;
   const existing = inflight.get(key);
   if (existing) return existing;
-  const promise = loadAll(campaignId)
+  const promise = loadAll(workspaceId, campaignId)
     .then((docs) => {
       cache.set(key, { docs, loadedAt: Date.now() });
       return docs;
@@ -132,20 +151,32 @@ export async function getBrandMemory(campaignId?: string | null): Promise<BrandM
 
 export async function getBrandMemoryDoc(
   slug: BrandMemorySlug,
-  campaignId?: string | null,
+  scope: BrandMemoryScope = {},
 ): Promise<BrandMemoryDoc> {
-  const all = await getBrandMemory(campaignId);
+  const all = await getBrandMemory(scope);
   const found = all.find((d) => d.slug === slug);
   if (found) return found;
   return { slug, title: BRAND_MEMORY_TITLES[slug], body: "" };
 }
 
-// For tests / forced refresh after admin save. Pass a campaignId to evict
-// only that scope; omit to clear everything.
-export function clearBrandMemoryCache(campaignId?: string | null): void {
-  if (campaignId === undefined) {
+// For tests / forced refresh after admin save.
+// - omit scope          → clear everything.
+// - { workspaceId }     → clear ALL entries for that workspace (every
+//                         campaign scope + the global fallback). This is
+//                         what admin save calls so workflow runs see fresh
+//                         brand data on the next tick.
+// - { workspaceId, campaignId } → clear that exact key only.
+export function clearBrandMemoryCache(scope?: BrandMemoryScope): void {
+  if (scope === undefined) {
     cache.clear();
-  } else {
-    cache.delete(scopeKey(campaignId));
+    return;
+  }
+  if (scope.campaignId !== undefined && scope.campaignId !== null) {
+    cache.delete(scopeKey(scope.workspaceId, scope.campaignId));
+    return;
+  }
+  const prefix = `${scope.workspaceId ?? GLOBAL_KEY}::`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
   }
 }

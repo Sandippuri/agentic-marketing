@@ -133,6 +133,15 @@ export const DEFAULT_BANNED_AESTHETICS = [
   "person staring at futuristic UI from behind",
   "neon city skyline",
   "matrix code rain",
+  // Failure modes specific to crypto/infra marketing — the model defaults to
+  // these whenever a brief mentions chains, routing, or settlement. They read
+  // as diagrams, not marketing, and they invite hallucinated on-canvas text.
+  "isometric network diagram with central icon and surrounding cubes",
+  "radial spoke layout connecting a central logo to peripheral nodes",
+  "fake on-canvas labels like 'FEE: 0.01%' or 'SETTLED via X'",
+  "invented technical annotations not present in the brief",
+  "redrawn or stylised brand logos — logos must be placed from the provided reference, not regenerated",
+  "muddy dark backgrounds with low contrast",
 ];
 
 const MotionSchema = z.object({

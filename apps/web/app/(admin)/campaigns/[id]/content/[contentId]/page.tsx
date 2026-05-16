@@ -1,11 +1,12 @@
 import Link from "next/link";
 import Image from "next/image";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getDb, schema } from "@marketing/db";
 import { parseRationale } from "@marketing/shared-types";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
 import { isVideoAsset } from "@/lib/asset-media";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -39,35 +40,61 @@ export default async function ContentDetail({
 }) {
   const { id, contentId } = await params;
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   const [item] = await db
     .select()
     .from(schema.contentItems)
-    .where(eq(schema.contentItems.id, contentId))
+    .where(
+      and(
+        eq(schema.contentItems.id, contentId),
+        eq(schema.contentItems.workspaceId, ctx.workspaceId),
+      ),
+    )
     .limit(1);
   if (!item || item.campaignId !== id) notFound();
 
   const [campaign] = await db
     .select({ name: schema.campaigns.name })
     .from(schema.campaigns)
-    .where(eq(schema.campaigns.id, id))
+    .where(
+      and(
+        eq(schema.campaigns.id, id),
+        eq(schema.campaigns.workspaceId, ctx.workspaceId),
+      ),
+    )
     .limit(1);
 
   const [assetRows, revisions, approvalRows] = await Promise.all([
     db
       .select()
       .from(schema.assets)
-      .where(eq(schema.assets.contentId, contentId))
+      .where(
+        and(
+          eq(schema.assets.workspaceId, ctx.workspaceId),
+          eq(schema.assets.contentId, contentId),
+        ),
+      )
       .orderBy(desc(schema.assets.createdAt)),
     db
       .select()
       .from(schema.contentRevisions)
-      .where(eq(schema.contentRevisions.contentId, contentId))
+      .where(
+        and(
+          eq(schema.contentRevisions.workspaceId, ctx.workspaceId),
+          eq(schema.contentRevisions.contentId, contentId),
+        ),
+      )
       .orderBy(desc(schema.contentRevisions.createdAt)),
     db
       .select()
       .from(schema.approvals)
-      .where(eq(schema.approvals.contentId, contentId))
+      .where(
+        and(
+          eq(schema.approvals.workspaceId, ctx.workspaceId),
+          eq(schema.approvals.contentId, contentId),
+        ),
+      )
       .orderBy(desc(schema.approvals.requestedAt)),
   ]);
 

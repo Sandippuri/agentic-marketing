@@ -15,6 +15,7 @@ import {
   deleteAsset,
   getSignedAssetUrl,
 } from "@/lib/supabase/storage";
+import { clearDesignSystemCache } from "@marketing/agents/design-system-store";
 
 export const dynamic = "force-dynamic";
 
@@ -126,6 +127,7 @@ export async function PUT(request: Request) {
           .from(schema.brandDesignSystem)
           .where(
             and(
+              eq(schema.brandDesignSystem.workspaceId, workspaceId),
               eq(schema.brandDesignSystem.slug, SLUG),
               isNull(schema.brandDesignSystem.campaignId),
             ),
@@ -146,7 +148,10 @@ export async function PUT(request: Request) {
             updatedBy: actor.id ?? null,
           })
           .onConflictDoUpdate({
-            target: schema.brandDesignSystem.slug,
+            target: [
+              schema.brandDesignSystem.workspaceId,
+              schema.brandDesignSystem.slug,
+            ],
             targetWhere: sql`"campaign_id" IS NULL`,
             set: {
               logos: input.logos,
@@ -160,6 +165,10 @@ export async function PUT(request: Request) {
       },
     );
 
+    // Invalidate the agents-side in-process cache so the next workflow run
+    // picks up the new logo array immediately instead of waiting up to
+    // 5 minutes for the TTL.
+    clearDesignSystemCache({ workspaceId });
     return Response.json({
       logos: await signLogos(after.logos),
       updatedAt: after.updatedAt.toISOString(),

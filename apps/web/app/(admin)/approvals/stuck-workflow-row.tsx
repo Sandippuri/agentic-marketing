@@ -77,11 +77,6 @@ export function StuckWorkflowRow({ run }: { run: StuckWorkflow }) {
         </button>
       </div>
 
-      {resume.isError && (
-        <span className="ml-2 text-xs text-[var(--danger)]">
-          {(resume.error as Error).message}
-        </span>
-      )}
     </li>
   );
 }

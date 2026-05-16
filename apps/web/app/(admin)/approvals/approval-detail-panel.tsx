@@ -215,11 +215,6 @@ function DetailBody({
                   <span className="text-sm text-[var(--accent)]">
                     {generateAssets.isError ? "Retry image generation" : "Generate image variants"}
                   </span>
-                  {generateAssets.isError && (
-                    <span className="text-xs text-[var(--danger)] px-4">
-                      {(generateAssets.error as Error).message}
-                    </span>
-                  )}
                 </>
               )}
             </button>
@@ -351,7 +346,7 @@ function DetailBody({
           )}
 
           {/* IMAGES TOGGLE */}
-          <div className="mt-4 flex items-center gap-2">
+          <div className="mt-4 flex items-center gap-4">
             <button
               type="button"
               onClick={() =>
@@ -382,6 +377,38 @@ function DetailBody({
               </span>
               Images {approval.needsImages ? "on" : "off"}
             </button>
+
+            {/* VIDEO TOGGLE — only meaningful for channels Veo supports */}
+            <button
+              type="button"
+              onClick={() =>
+                updateContent.mutate(
+                  {
+                    contentId: approval.contentId,
+                    needsVideo: !approval.needsVideo,
+                  },
+                  { onSuccess: () => router.refresh() },
+                )
+              }
+              disabled={updateContent.isPending}
+              className="text-xs text-mid hover:text-ink flex items-center gap-1.5"
+            >
+              <span
+                role="switch"
+                aria-checked={approval.needsVideo}
+                className="relative inline-flex h-4 w-7 rounded-full transition-colors"
+                style={{
+                  background: approval.needsVideo ? "var(--accent)" : "var(--surface-2)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <span
+                  className="absolute top-[1px] h-[12px] w-[12px] rounded-full bg-white transition-all"
+                  style={{ left: approval.needsVideo ? "13px" : "1px" }}
+                />
+              </span>
+              Video {approval.needsVideo ? "on" : "off"}
+            </button>
           </div>
         </section>
 
@@ -403,7 +430,7 @@ function DetailBody({
 
         {/* BODY COPY */}
         {bodyCopy && (
-          <section className="px-5 pt-5 pb-6">
+          <section className="px-5 pt-5">
             <div className="section-title">Copy preview</div>
             <div className="mt-2 surface p-4 text-[13px] leading-relaxed text-ink">
               {hasMarkers ? (
@@ -463,6 +490,31 @@ function DetailBody({
                 <pre className="whitespace-pre-wrap mono text-xs">{bodyCopy}</pre>
               )}
             </div>
+          </section>
+        )}
+
+        {/* GENERATION PROMPT — read-only, helps the reviewer see exactly
+            what the model was asked to render. Mirrors gallery / campaign
+            detail pages, which already surface promptUsed. */}
+        {previewAsset?.promptUsed && (
+          <section className="px-5 pt-5 pb-6">
+            <div className="section-title flex items-center justify-between gap-2">
+              <span>
+                Generation prompt
+                {renderable.length > 1 && (
+                  <span className="ml-2 text-[10.5px] text-faint normal-case">
+                    variant {safePreviewIdx + 1}
+                  </span>
+                )}
+              </span>
+              <span className="text-[10.5px] text-faint normal-case">read-only</span>
+            </div>
+            <pre
+              className="mt-2 surface p-3 text-[11.5px] leading-relaxed text-mid mono whitespace-pre-wrap wrap-break-word max-h-72 overflow-y-auto select-text"
+              aria-label="Image generation prompt (read-only)"
+            >
+              {previewAsset.promptUsed}
+            </pre>
           </section>
         )}
       </div>
@@ -531,11 +583,6 @@ function DetailBody({
               Reject
             </button>
           </div>
-        )}
-        {decide.isError && (
-          <p className="mt-2 text-xs text-[var(--danger)]">
-            {(decide.error as Error).message}
-          </p>
         )}
       </footer>
     </div>

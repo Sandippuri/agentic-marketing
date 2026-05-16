@@ -236,11 +236,6 @@ export function JobsView({ jobs }: { jobs: JobView[] }) {
       </div>
 
       <Section
-        subtitle={
-          tab === "active"
-            ? "In flight right now"
-            : "Last 50 — completed or failed"
-        }
         empty={
           tab === "active"
             ? "Nothing running"
@@ -248,7 +243,6 @@ export function JobsView({ jobs }: { jobs: JobView[] }) {
               ? "No runs match the current filters"
               : "No recent jobs"
         }
-        count={filtered.length}
       >
         {filtered.map((j) => (
           <JobCard key={j.id} job={j} />
@@ -356,39 +350,16 @@ function FilterChip({
 }
 
 function Section({
-  title,
-  subtitle,
   empty,
-  count,
   children,
 }: {
-  title?: string;
-  subtitle: string;
   empty: string;
-  count?: number;
   children: React.ReactNode;
 }) {
   const items = Array.isArray(children) ? children : [children];
   const hasAny = items.some((c) => c !== null && c !== undefined && c !== false);
   return (
     <section>
-      {(title || count !== undefined) && (
-        <div className="flex items-baseline justify-between mb-3">
-          <div>
-            {title && (
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
-                {title}
-              </h2>
-            )}
-            <p className="text-xs text-zinc-400">
-              {subtitle}
-              {count !== undefined && (
-                <span> · {count} {count === 1 ? "result" : "results"}</span>
-              )}
-            </p>
-          </div>
-        </div>
-      )}
       {hasAny ? (
         <div className="space-y-4">{children}</div>
       ) : (
@@ -401,7 +372,7 @@ function Section({
 }
 
 function JobCard({ job }: { job: JobView }) {
-  const [expanded, setExpanded] = useState(job.status === "running");
+  const [expanded, setExpanded] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
 
   // A campaign-plan run only fires the Strategist by design. Once it has
@@ -454,26 +425,20 @@ function JobCard({ job }: { job: JobView }) {
               </span>
             )}
           </div>
-          <p className="text-sm text-zinc-900 dark:text-zinc-100 font-medium leading-snug">
-            {job.userMessage.length > 240
-              ? `${job.userMessage.slice(0, 240)}…`
-              : job.userMessage}
+          <p className="text-sm text-zinc-900 dark:text-zinc-100 font-medium leading-snug line-clamp-2">
+            {job.userMessage}
           </p>
           <div className="mt-1 text-xs text-zinc-400 flex flex-wrap gap-x-3 gap-y-0.5">
-            <span>
-              started <RelativeTime iso={job.startedAt} />
-            </span>
+            <RelativeTime iso={job.startedAt} />
             {job.completedAt && (
               <span>
-                · finished <RelativeTime iso={job.completedAt} /> ·{" "}
+                ·{" "}
                 {formatDuration(
                   new Date(job.completedAt).getTime() -
                     new Date(job.startedAt).getTime(),
                 )}
               </span>
             )}
-            {job.userId && <span>· {job.userId}</span>}
-            {job.threadRef && <span>· {job.threadRef}</span>}
           </div>
         </div>
         <div className="shrink-0 flex items-center gap-2">
@@ -561,27 +526,14 @@ function JobCard({ job }: { job: JobView }) {
             <StepDetail key={step.id} step={step} />
           ))}
           {job.engine !== "custom" && (
-            <div className="px-5 py-4 space-y-2 text-sm text-zinc-500 dark:text-zinc-400">
-              <p>
-                This run executes inside the {job.engine === "vercel" ? "Vercel" : "Cloudflare"}{" "}
-                Workflows runtime as a single durable step that wraps the
-                sub-agent's tool loop. Per-tool detail isn't streamed back
-                here — inspect it via the Workflows inspector instead.
-              </p>
+            <div className="px-5 py-4 space-y-2 text-xs text-zinc-500 dark:text-zinc-400">
               {job.contentAssets.length > 0 && (
                 <AssetVariantsStrip assets={job.contentAssets} />
               )}
               {job.engineRunRef && (
-                <p className="font-mono text-xs">
-                  runId: <span className="text-zinc-700 dark:text-zinc-300">{job.engineRunRef}</span>
-                </p>
-              )}
-              {job.engine === "vercel" && (
-                <p className="text-xs">
-                  Locally:{" "}
-                  <code className="rounded bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5">
-                    pnpm --filter web exec workflow web
-                  </code>
+                <p className="font-mono">
+                  <span className="text-zinc-400">runId</span>{" "}
+                  <span className="text-zinc-700 dark:text-zinc-300">{job.engineRunRef}</span>
                 </p>
               )}
             </div>
@@ -752,10 +704,12 @@ function inferExternalPhases(job: JobView): ExternalPhase[] {
 function ExternalEngineStatus({ job }: { job: JobView }) {
   const phases = inferExternalPhases(job);
   const renderableAssets = job.contentAssets.filter((a) => a.signedUrl);
-  const currentPhase = phases.find((p) => p.status === "running");
   const failedPhase = phases.find((p) => p.status === "failed");
   const revisionPhase = phases.find((p) => p.status === "needs_revision");
 
+  // Only show a footnote when there's signal beyond the pills themselves
+  // (failed/cancelled/changes-requested). Running/completed are already
+  // conveyed by the pill colors + status chip.
   let footnote: { tone: "info" | "success" | "warn" | "danger"; text: string } | null = null;
   if (failedPhase) {
     footnote = {
@@ -763,13 +717,7 @@ function ExternalEngineStatus({ job }: { job: JobView }) {
       text: job.error ?? `${failedPhase.label} failed`,
     };
   } else if (revisionPhase) {
-    // Distinct from failed: changes_requested is a normal outcome that loops
-    // back into a revision pass (or terminates with "max revisions reached").
     footnote = { tone: "warn", text: revisionPhase.hint };
-  } else if (currentPhase) {
-    footnote = { tone: "info", text: currentPhase.hint };
-  } else if (job.status === "completed") {
-    footnote = { tone: "success", text: "Workflow completed" };
   } else if (job.status === "cancelled") {
     footnote = { tone: "warn", text: job.error ?? "Cancelled" };
   }

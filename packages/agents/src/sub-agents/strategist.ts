@@ -6,6 +6,10 @@ import { STRATEGIST_PROMPT } from "@marketing/prompts";
 import { buildBaseMemory, loadMemory, loadMemoryDir } from "../memory";
 import { findSimilarContent } from "../find-similar";
 import { findBrandGuidance } from "../brand-guidance";
+import {
+  formatMarketBlock,
+  getWorkspaceMarketContext,
+} from "../market-store";
 import { CHANNELS, type LlmModel } from "@marketing/shared-types";
 import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
@@ -46,11 +50,18 @@ export type StrategistInput = {
 };
 
 export async function runStrategist({ request, workspaceId, campaignId, cp, model, threadRef, jobId, workflowRunId }: StrategistInput): Promise<string> {
-  const baseMemory = await buildBaseMemory();
+  const [baseMemory, marketCtx] = await Promise.all([
+    buildBaseMemory({ workspaceId }),
+    getWorkspaceMarketContext({ workspaceId }),
+  ]);
+  const marketBlock = formatMarketBlock(marketCtx);
+  const memorySection = marketBlock
+    ? `${marketBlock}\n\n---\n\n${baseMemory}`
+    : baseMemory;
 
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: `${STRATEGIST_PROMPT}\n\n---\n\n# Memory\n\n${baseMemory}`,
+    system: `${STRATEGIST_PROMPT}\n\n---\n\n# Memory\n\n${memorySection}`,
     prompt: request,
     maxSteps: 8,
     tools: {

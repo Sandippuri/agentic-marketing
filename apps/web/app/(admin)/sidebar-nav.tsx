@@ -15,47 +15,61 @@ export type NavSection = {
   items: NavItem[];
 };
 
-export function SidebarNav({ sections }: { sections: NavSection[] }) {
+export function SidebarNav({
+  sections,
+  pinned,
+}: {
+  sections: NavSection[];
+  /** Items rendered above the labelled sections, with no section header. */
+  pinned?: NavItem[];
+}) {
   const pathname = usePathname() ?? "";
+
+  const renderItem = (item: NavItem) => {
+    const active =
+      pathname === item.href || pathname.startsWith(item.href + "/");
+    return (
+      <li key={item.href}>
+        <Link
+          href={item.href}
+          className={[
+            "group flex items-center gap-2.5 rounded-md px-2 py-1.5 text-[13px] transition-colors",
+            active
+              ? "bg-[var(--surface-2)] text-ink"
+              : "text-mid hover:text-ink hover:bg-[var(--surface-2)]",
+          ].join(" ")}
+        >
+          <span
+            className={[
+              "shrink-0 grid place-items-center h-5 w-5 rounded",
+              active ? "text-[var(--accent)]" : "text-faint group-hover:text-mid",
+            ].join(" ")}
+          >
+            <NavIcon name={item.icon} />
+          </span>
+          <span className="flex-1 truncate">{item.label}</span>
+          {typeof item.badge === "number" && item.badge > 0 && (
+            <span className="ml-1 rounded-full bg-[var(--accent)] text-white text-[10px] font-semibold leading-none px-1.5 py-0.5 min-w-[18px] text-center">
+              {item.badge}
+            </span>
+          )}
+        </Link>
+      </li>
+    );
+  };
 
   return (
     <nav className="flex-1 overflow-y-auto px-3 py-4 flex flex-col gap-5">
+      {pinned && pinned.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {pinned.map((item) => renderItem(item))}
+        </ul>
+      )}
       {sections.map((section) => (
         <div key={section.label}>
           <div className="px-2 mb-1.5 section-title">{section.label}</div>
           <ul className="flex flex-col gap-0.5">
-            {section.items.map((item) => {
-              const active =
-                pathname === item.href || pathname.startsWith(item.href + "/");
-              return (
-                <li key={item.href}>
-                  <Link
-                    href={item.href}
-                    className={[
-                      "group flex items-center gap-2.5 rounded-md px-2 py-1.5 text-[13px] transition-colors",
-                      active
-                        ? "bg-[var(--surface-2)] text-ink"
-                        : "text-mid hover:text-ink hover:bg-[var(--surface-2)]",
-                    ].join(" ")}
-                  >
-                    <span
-                      className={[
-                        "shrink-0 grid place-items-center h-5 w-5 rounded",
-                        active ? "text-[var(--accent)]" : "text-faint group-hover:text-mid",
-                      ].join(" ")}
-                    >
-                      <NavIcon name={item.icon} />
-                    </span>
-                    <span className="flex-1 truncate">{item.label}</span>
-                    {typeof item.badge === "number" && item.badge > 0 && (
-                      <span className="ml-1 rounded-full bg-[var(--accent)] text-white text-[10px] font-semibold leading-none px-1.5 py-0.5 min-w-[18px] text-center">
-                        {item.badge}
-                      </span>
-                    )}
-                  </Link>
-                </li>
-              );
-            })}
+            {section.items.map((item) => renderItem(item))}
           </ul>
         </div>
       ))}

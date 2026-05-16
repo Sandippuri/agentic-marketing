@@ -39,10 +39,12 @@ const UpsertCollection = z.object({
 export async function GET(request: Request) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const url = new URL(request.url);
     const kind = url.searchParams.get("kind") ?? undefined;
     const campaignId = url.searchParams.get("campaignId") ?? undefined;
     const cols = await listCollections({
+      workspaceId,
       kind: kind as CollectionKind | undefined,
       campaignId,
     });

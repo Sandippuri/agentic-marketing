@@ -13,7 +13,8 @@ import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
-import { getWorkspaceContext } from "@/lib/billing";
+import { getWorkspaceContext, LEGACY_WORKSPACE_ID } from "@/lib/billing";
+import { clearDesignSystemCache } from "@marketing/agents/design-system-store";
 
 export const dynamic = "force-dynamic";
 
@@ -82,7 +83,19 @@ async function signLogos(logos: DesignLogo[]): Promise<DesignSystemResponse["log
 export async function GET(request: Request) {
   try {
     const isInternalReq = isInternal(request);
-    if (!isInternalReq) await getRequestActor();
+    let workspaceId: string;
+    if (isInternalReq) {
+      // Internal callers (workflow agents) must pass x-workspace-id so the
+      // design system they read matches the user whose job they're running.
+      // Fall back to LEGACY only when the header is absent (legacy seed scripts).
+      const headerWorkspace = request.headers.get("x-workspace-id")?.trim();
+      workspaceId = headerWorkspace && headerWorkspace.length > 0
+        ? headerWorkspace
+        : LEGACY_WORKSPACE_ID;
+    } else {
+      await getRequestActor();
+      workspaceId = (await getWorkspaceContext()).workspaceId;
+    }
 
     const db = getDb();
     const [row] = await db
@@ -90,6 +103,7 @@ export async function GET(request: Request) {
       .from(schema.brandDesignSystem)
       .where(
         and(
+          eq(schema.brandDesignSystem.workspaceId, workspaceId),
           eq(schema.brandDesignSystem.slug, SLUG),
           isNull(schema.brandDesignSystem.campaignId),
         ),
@@ -138,6 +152,7 @@ export async function PUT(request: Request) {
           .from(schema.brandDesignSystem)
           .where(
             and(
+              eq(schema.brandDesignSystem.workspaceId, workspaceId),
               eq(schema.brandDesignSystem.slug, SLUG),
               isNull(schema.brandDesignSystem.campaignId),
             ),
@@ -158,7 +173,10 @@ export async function PUT(request: Request) {
             updatedBy: actor.id ?? null,
           })
           .onConflictDoUpdate({
-            target: schema.brandDesignSystem.slug,
+            target: [
+              schema.brandDesignSystem.workspaceId,
+              schema.brandDesignSystem.slug,
+            ],
             targetWhere: sql`"campaign_id" IS NULL`,
             set: {
               colors: input.colors,
@@ -175,6 +193,12 @@ export async function PUT(request: Request) {
       },
     );
 
+    // Invalidate the agents-side in-process cache so the next workflow run
+    // picks up the new colors / logos immediately instead of waiting up to
+    // 5 minutes for the TTL. We clear both the global scope and any
+    // campaign-scoped entries for this workspace, since callers may have
+    // hydrated either path.
+    clearDesignSystemCache({ workspaceId });
     const response: DesignSystemResponse = {
       colors: after.colors,
       typography: after.typography,

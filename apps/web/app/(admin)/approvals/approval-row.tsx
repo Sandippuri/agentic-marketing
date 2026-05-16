@@ -11,6 +11,8 @@ export type AssetOption = {
   status: string;
   kind: string;
   mimeType: string | null;
+  /** Final image/video generation prompt sent to the model, surfaced read-only in the detail panel. */
+  promptUsed: string | null;
 };
 
 export type PendingApproval = {
@@ -27,6 +29,8 @@ export type PendingApproval = {
   bodyMd?: string | null;
   /** Whether image generation is enabled for this post */
   needsImages: boolean;
+  /** Whether video generation is enabled for this post */
+  needsVideo: boolean;
 };
 
 export function ApprovalRow({
@@ -172,11 +176,6 @@ export function ApprovalRow({
         </button>
       </div>
 
-      {decide.isError && (
-        <span className="ml-2 text-xs text-[var(--danger)]" onClick={(e) => e.stopPropagation()}>
-          {(decide.error as Error).message}
-        </span>
-      )}
     </li>
   );
 }

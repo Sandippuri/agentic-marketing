@@ -7,6 +7,7 @@ import Link from "next/link";
 import { desc, eq, and, sql } from "drizzle-orm";
 import { getDb, schema, outcomes } from "@marketing/db";
 import { CHANNELS } from "@marketing/shared-types";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader, Badge, EmptyState } from "../ui";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +55,7 @@ export default async function InsightsPage({
     : undefined;
 
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   const sortCol =
     sortBy === "ctr"
@@ -84,6 +86,7 @@ export default async function InsightsPage({
     .innerJoin(schema.contentItems, eq(outcomes.contentId, schema.contentItems.id))
     .where(
       and(
+        eq(outcomes.workspaceId, ctx.workspaceId),
         eq(outcomes.window, windowParam),
         channelParam ? eq(outcomes.channel, channelParam) : sql`true`,
       ),
@@ -99,7 +102,12 @@ export default async function InsightsPage({
       totalPosts: sql<number>`count(*)::int`,
     })
     .from(outcomes)
-    .where(eq(outcomes.window, windowParam))
+    .where(
+      and(
+        eq(outcomes.workspaceId, ctx.workspaceId),
+        eq(outcomes.window, windowParam),
+      ),
+    )
     .groupBy(outcomes.channel)
     .orderBy(sql`avg(${outcomes.ctr}) desc`);
 

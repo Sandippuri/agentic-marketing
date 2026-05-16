@@ -1,11 +1,33 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 export type ApprovalDecisionInput = {
   approvalId: string;
   decision: "approved" | "changes_requested" | "rejected";
   reason?: string;
+};
+
+// Servers return { error, message?, ... }. Prefer the human-readable message
+// so the toast tells the reviewer something they can act on.
+async function readError(res: Response, fallbackVerb: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    message?: string;
+    name?: string;
+  };
+  const label =
+    body.message ||
+    [body.name, body.error].filter(Boolean).join(": ") ||
+    `${fallbackVerb} failed (${res.status})`;
+  return new Error(label);
+}
+
+const DECISION_VERB: Record<ApprovalDecisionInput["decision"], string> = {
+  approved: "Approved",
+  changes_requested: "Changes requested",
+  rejected: "Rejected",
 };
 
 export function useDecideApproval() {
@@ -17,15 +39,30 @@ export function useDecideApproval() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? `POST -> ${res.status}`);
-      }
-      return res.json();
+      if (!res.ok) throw await readError(res, "Decide");
+      return res.json() as Promise<{
+        hookResumed?: boolean;
+        hookError?: string | null;
+      }>;
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
+      const verb = DECISION_VERB[variables.decision];
+      if (data?.hookResumed === false) {
+        toast.warning(`${verb}, but workflow didn't resume`, {
+          description:
+            data.hookError ??
+            "The decision was saved but the workflow hook failed to resume. Use the stuck workflows section to retry.",
+        });
+      } else {
+        toast.success(verb);
+      }
       qc.invalidateQueries({ queryKey: ["approvals"] });
       qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+    onError: (err: Error, variables) => {
+      toast.error(`${DECISION_VERB[variables.decision]} failed`, {
+        description: err.message,
+      });
     },
   });
 }
@@ -37,18 +74,7 @@ export function useResumeStuckHook() {
       const res = await fetch(`/api/approvals/${approvalId}/resume`, {
         method: "POST",
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        // Server returns { error, name?, message? } for workflow-runtime
-        // failures — prefer the underlying message so the operator sees the
-        // real cause (e.g. "HookNotFoundError: Hook not found") instead of
-        // a generic code.
-        const label =
-          [err.name, err.message].filter(Boolean).join(": ") ||
-          err.error ||
-          `POST -> ${res.status}`;
-        throw new Error(label);
-      }
+      if (!res.ok) throw await readError(res, "Resume");
       return res.json() as Promise<{
         ok: true;
         decision: string;
@@ -56,8 +82,16 @@ export function useResumeStuckHook() {
         terminalStatus?: "completed" | "cancelled";
       }>;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      toast.success(
+        data.reconciled
+          ? `Reconciled (${data.terminalStatus ?? "completed"})`
+          : "Workflow resumed",
+      );
       qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
+    onError: (err: Error) => {
+      toast.error("Resume failed", { description: err.message });
     },
   });
 }
@@ -69,14 +103,15 @@ export function useSelectAsset() {
       const res = await fetch(`/api/assets/${assetId}/select`, {
         method: "POST",
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? `POST -> ${res.status}`);
-      }
+      if (!res.ok) throw await readError(res, "Select");
       return res.json();
     },
     onSuccess: () => {
+      toast.success("Variant selected");
       qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
+    onError: (err: Error) => {
+      toast.error("Couldn't select variant", { description: err.message });
     },
   });
 }
@@ -90,6 +125,7 @@ export function useUpdateContent() {
     }: {
       contentId: string;
       needsImages?: boolean;
+      needsVideo?: boolean;
       title?: string;
       bodyMd?: string;
     }) => {
@@ -98,14 +134,14 @@ export function useUpdateContent() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(patch),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? `PATCH -> ${res.status}`);
-      }
+      if (!res.ok) throw await readError(res, "Update");
       return res.json();
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
+    onError: (err: Error) => {
+      toast.error("Couldn't update content", { description: err.message });
     },
   });
 }
@@ -117,14 +153,19 @@ export function useGenerateAssets() {
       const res = await fetch(`/api/content/${contentId}/generate-assets`, {
         method: "POST",
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? `POST -> ${res.status}`);
-      }
+      if (!res.ok) throw await readError(res, "Generate");
       return res.json() as Promise<{ inserted: number }>;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      toast.success(
+        data?.inserted
+          ? `Generated ${data.inserted} variant${data.inserted === 1 ? "" : "s"}`
+          : "Generation started",
+      );
       qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
+    onError: (err: Error) => {
+      toast.error("Generation failed", { description: err.message });
     },
   });
 }

@@ -66,7 +66,7 @@ export async function runContent({
   jobId,
   workflowRunId,
 }: ContentInput): Promise<string> {
-  const baseMemory = await buildBaseMemory();
+  const baseMemory = await buildBaseMemory({ workspaceId });
 
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),

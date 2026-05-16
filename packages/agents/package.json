@@ -35,6 +35,8 @@
     "./asset-judge": "./src/asset-judge.ts",
     "./template-render": "./src/template-render.ts",
     "./design-system-store": "./src/design-system-store.ts",
+    "./brand-store": "./src/brand-store.ts",
+    "./market-store": "./src/market-store.ts",
     "./asset-templates": "./src/asset-templates/index.ts",
     "./asset-templates/tokens": "./src/asset-templates/tokens.ts"
   },

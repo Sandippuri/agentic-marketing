@@ -292,6 +292,11 @@ export const contentItems = pgTable(
     // generation. When false, the approval card renders without imagery and
     // any [IMAGE N: ...] markers in the body are shown as plain text.
     needsImages: boolean("needs_images").notNull().default(true),
+    // Per-post video toggle (migration 0032). Mirrors needs_images. When
+    // false, kickVideoVariantStep / generateVideoVariant short-circuit. The
+    // existing contentTypeWantsVideo() gate still applies on top — flipping
+    // this on for a blog/email type still produces no video.
+    needsVideo: boolean("needs_video").notNull().default(true),
     scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     publishedUrl: text("published_url"),
@@ -1091,6 +1096,16 @@ export const workspaces = pgTable(
     planOverriddenUntil: timestamp("plan_overridden_until", {
       withTimezone: true,
     }),
+    // Market context — the "Place" of the 4 Ps. Read by every strategist run
+    // so generated content matches the actual geography, language, and
+    // distribution channels of the workspace's business. Freeform nuance
+    // (pricing story, cultural notes, promotion mix) lives in the
+    // `market.context` brand_memory slug; these columns hold the structured
+    // fields downstream code can route on (channel selection, locale, etc.).
+    primaryCountry: text("primary_country"),
+    targetRegions: text("target_regions").array(),
+    languages: text("languages").array(),
+    primaryChannels: text("primary_channels").array(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

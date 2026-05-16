@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
+import { getWorkspaceContext } from "@/lib/billing";
 import { PageHeader, Badge, EmptyState, statusTone } from "../ui";
 import { PublishJobFilters } from "./filters";
 
@@ -13,13 +14,16 @@ export default async function PublishJobsPage({
 }) {
   const params = await searchParams;
   const db = getDb();
+  const ctx = await getWorkspaceContext();
   const page = Math.max(1, Number(params.page ?? 1));
   const pageSize = 50;
   const offset = (page - 1) * pageSize;
 
-  const conditions = [];
+  const conditions = [eq(schema.publishJobs.workspaceId, ctx.workspaceId)];
   if (params.channel) conditions.push(eq(schema.publishJobs.channel, params.channel as never));
   if (params.status) conditions.push(eq(schema.publishJobs.status, params.status as never));
+
+  const where = and(...conditions);
 
   const [rows, countResult] = await Promise.all([
     db
@@ -40,14 +44,14 @@ export default async function PublishJobsPage({
       .from(schema.publishJobs)
       .leftJoin(schema.contentItems, eq(schema.publishJobs.contentId, schema.contentItems.id))
       .leftJoin(schema.campaigns, eq(schema.contentItems.campaignId, schema.campaigns.id))
-      .where(conditions.length ? conditions.reduce((a, b) => sql`${a} AND ${b}`) : undefined)
+      .where(where)
       .orderBy(desc(schema.publishJobs.createdAt))
       .limit(pageSize)
       .offset(offset),
     db
       .select({ total: sql<number>`count(*)::int` })
       .from(schema.publishJobs)
-      .where(conditions.length ? conditions.reduce((a, b) => sql`${a} AND ${b}`) : undefined),
+      .where(where),
   ]);
 
   const todayStart = new Date();
@@ -57,6 +61,7 @@ export default async function PublishJobsPage({
     .from(schema.publishJobs)
     .where(
       and(
+        eq(schema.publishJobs.workspaceId, ctx.workspaceId),
         eq(schema.publishJobs.status, "succeeded"),
         gte(schema.publishJobs.createdAt, todayStart),
       ),

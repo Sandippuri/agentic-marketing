@@ -197,6 +197,19 @@ export type SuperUserDetail = {
     invitedAt: Date | null;
     workspaceCreatedAt: Date;
   }>;
+  // Per-user usage rollup for the current month. Usage is recorded per
+  // *workspace*, not per *user*, so multi-member workspaces would attribute
+  // the same number to every member — the `owned` column separates the
+  // workspaces the user actually owns from the ones they're just a member of.
+  currentPeriodUsage: {
+    periodStart: string;
+    periodEnd: string;
+    rows: Array<{
+      metric: string;
+      owned: number;
+      member: number;
+    }>;
+  };
 };
 
 export async function getSuperUserDetail(
@@ -242,6 +255,51 @@ export async function getSuperUserDetail(
   const planById = new Map(planRows.map((p) => [p.id, p.code as string]));
   const adminRole = (adminRows[0]?.role ?? null) as AdminRole | null;
 
+  // Current-month UTC window — matches the canonical billing window used by
+  // usage_counters.period_start.
+  const now = new Date();
+  const periodStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+  );
+  const periodEnd = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+  );
+
+  const ownedWsIds = membershipRows
+    .filter((m) => m.ownerUserId === userId)
+    .map((m) => m.workspaceId);
+  const memberOnlyWsIds = membershipRows
+    .filter((m) => m.ownerUserId !== userId)
+    .map((m) => m.workspaceId);
+
+  const usageByMetric = new Map<string, { owned: number; member: number }>();
+  const allWsIds = [...ownedWsIds, ...memberOnlyWsIds];
+  if (allWsIds.length > 0) {
+    const usageRows = await db
+      .select({
+        workspaceId: schema.usageCounters.workspaceId,
+        metric: schema.usageCounters.metric,
+        value: schema.usageCounters.value,
+      })
+      .from(schema.usageCounters)
+      .where(
+        and(
+          inArray(schema.usageCounters.workspaceId, allWsIds),
+          eq(
+            schema.usageCounters.periodStart,
+            periodStart.toISOString().slice(0, 10),
+          ),
+        ),
+      );
+    const ownedSet = new Set(ownedWsIds);
+    for (const r of usageRows) {
+      const bucket = usageByMetric.get(r.metric) ?? { owned: 0, member: 0 };
+      if (ownedSet.has(r.workspaceId)) bucket.owned += Number(r.value);
+      else bucket.member += Number(r.value);
+      usageByMetric.set(r.metric, bucket);
+    }
+  }
+
   return {
     user,
     isSuperadmin: adminRole === "superadmin",
@@ -257,6 +315,13 @@ export async function getSuperUserDetail(
       invitedAt: m.invitedAt,
       workspaceCreatedAt: m.workspaceCreatedAt,
     })),
+    currentPeriodUsage: {
+      periodStart: periodStart.toISOString().slice(0, 10),
+      periodEnd: periodEnd.toISOString().slice(0, 10),
+      rows: [...usageByMetric.entries()]
+        .map(([metric, { owned, member }]) => ({ metric, owned, member }))
+        .sort((a, b) => b.owned + b.member - (a.owned + a.member)),
+    },
   };
 }
 

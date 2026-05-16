@@ -13,32 +13,68 @@ import {
 // Single error-mapping point for Route Handlers.
 export function errorResponse(err: unknown): Response {
   if (err instanceof ZodError) {
-    return Response.json({ error: "validation", issues: err.issues }, { status: 400 });
+    const first = err.issues[0];
+    const message = first
+      ? `${first.path.join(".") || "input"}: ${first.message}`
+      : "Invalid request body";
+    return Response.json(
+      { error: "validation", message, issues: err.issues },
+      { status: 400 },
+    );
   }
   if (err instanceof InvalidTransitionError) {
     return Response.json(
-      { error: "invalid_transition", entity: err.entity, from: err.from, to: err.to },
+      {
+        error: "invalid_transition",
+        message: `This ${err.entity} can't move from "${err.from}" to "${err.to}". It may have already been updated — refresh and try again.`,
+        entity: err.entity,
+        from: err.from,
+        to: err.to,
+      },
       { status: 409 },
     );
   }
   if (err instanceof UnauthorizedError) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
+    return Response.json(
+      { error: "unauthorized", message: "You're signed out. Sign in and try again." },
+      { status: 401 },
+    );
   }
   if (err instanceof InternalAuthError) {
-    return Response.json({ error: "forbidden" }, { status: 403 });
+    return Response.json(
+      { error: "forbidden", message: "This endpoint requires internal auth." },
+      { status: 403 },
+    );
   }
   if (err instanceof SuperadminRequiredError) {
-    return Response.json({ error: "superadmin_required" }, { status: 403 });
+    return Response.json(
+      { error: "superadmin_required", message: "Superadmin role required." },
+      { status: 403 },
+    );
   }
   if (err instanceof NotWorkspaceMemberError) {
-    return Response.json({ error: "not_workspace_member" }, { status: 403 });
+    return Response.json(
+      {
+        error: "not_workspace_member",
+        message: "You're not a member of this workspace.",
+      },
+      { status: 403 },
+    );
   }
   if (err instanceof WorkspaceNotFoundError) {
-    return Response.json({ error: "workspace_not_found" }, { status: 404 });
+    return Response.json(
+      { error: "workspace_not_found", message: "Workspace not found." },
+      { status: 404 },
+    );
   }
   if (err instanceof EntitlementError) {
     return Response.json(
-      { error: "feature_not_available", feature: err.feature, plan: err.plan },
+      {
+        error: "feature_not_available",
+        message: `"${err.feature}" isn't available on the ${err.plan} plan.`,
+        feature: err.feature,
+        plan: err.plan,
+      },
       { status: 402 },
     );
   }
@@ -46,6 +82,7 @@ export function errorResponse(err: unknown): Response {
     return Response.json(
       {
         error: "quota_exceeded",
+        message: `${err.metric} quota exceeded (${err.used}/${err.limit} on ${err.plan}).`,
         metric: err.metric,
         limit: err.limit,
         used: err.used,
@@ -55,7 +92,10 @@ export function errorResponse(err: unknown): Response {
     );
   }
   if (err instanceof PublishGateError) {
-    return Response.json({ error: "publish_gate", reason: err.message }, { status: 409 });
+    return Response.json(
+      { error: "publish_gate", message: err.message, reason: err.message },
+      { status: 409 },
+    );
   }
   if (err instanceof LlmPreflightError) {
     return Response.json(
@@ -70,7 +110,11 @@ export function errorResponse(err: unknown): Response {
     );
   }
   console.error("[api] unhandled", err);
-  return Response.json({ error: "internal" }, { status: 500 });
+  // Surface the actual error message so the UI can show something useful
+  // instead of a bare "internal". In production we still log the full stack
+  // server-side (above) — the client just gets the short message.
+  const message = err instanceof Error && err.message ? err.message : "Unexpected server error";
+  return Response.json({ error: "internal", message }, { status: 500 });
 }
 
 export class PublishGateError extends Error {}

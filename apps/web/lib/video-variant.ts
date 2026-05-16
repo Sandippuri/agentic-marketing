@@ -210,6 +210,7 @@ export async function generateVideoVariant(
     loadVisualBrief(input.contentId),
     buildBrandPromptPrefix({
       medium: "video",
+      workspaceId: input.workspaceId,
       campaignId: input.campaignId ?? null,
     }),
   ]);

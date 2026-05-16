@@ -15,7 +15,7 @@
 import pino from "pino";
 import { getDb, kbChunks, schema, type KbDocument } from "@marketing/db";
 import { embedBatch, getEmbeddingConfig } from "./embed-client";
-import { deleteChunksFor, getDocument } from "./store";
+import { deleteChunksFor, getDocumentByIdInternal } from "./store";
 
 const log = pino({ name: "kb-ingest" });
 
@@ -32,7 +32,7 @@ export async function chunkAndEmbed(
   documentId: string,
   opts: IngestOptions = {},
 ): Promise<{ chunks: number; embedded: number }> {
-  const doc = await getDocument(documentId);
+  const doc = await getDocumentByIdInternal(documentId);
   if (!doc) throw new Error(`kb document not found: ${documentId}`);
 
   const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;

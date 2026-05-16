@@ -1,19 +1,20 @@
 import { after } from "next/server";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { withAudit } from "@/lib/audit";
 import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { assertContentTransition } from "@/lib/state-machine";
 import { errorResponse, parseJson } from "@/lib/http";
-import { generateAssetVariants } from "@/lib/asset-variants";
+import { generateAssetVariants, kickVideoVariant } from "@/lib/asset-variants";
 
 const PatchContent = z.object({
   title: z.string().min(1).max(300).optional(),
   bodyMd: z.string().optional(),
   changeNote: z.string().optional(),
   needsImages: z.boolean().optional(),
+  needsVideo: z.boolean().optional(),
 });
 
 export async function GET(
@@ -62,6 +63,9 @@ export async function PATCH(
             ...(input.needsImages !== undefined
               ? { needsImages: input.needsImages }
               : {}),
+            ...(input.needsVideo !== undefined
+              ? { needsVideo: input.needsVideo }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(schema.contentItems.id, id))
@@ -105,6 +109,39 @@ export async function PATCH(
               } catch (err) {
                 console.warn(
                   `[content.update] background asset generation failed for ${id}`,
+                  err,
+                );
+              }
+            });
+          }
+        }
+
+        // Same opt-in pattern for video. We check for an existing video asset
+        // specifically (kind="video_post") rather than any asset, so a post
+        // that already has stills can still be opted into video after the
+        // fact. The contentTypeWantsVideo() gate inside generateVideoVariant
+        // ensures non-video types remain no-ops even with the flag flipped.
+        if (
+          input.needsVideo === true &&
+          before.needsVideo === false
+        ) {
+          const [existingVideo] = await db
+            .select({ id: schema.assets.id })
+            .from(schema.assets)
+            .where(
+              and(
+                eq(schema.assets.contentId, id),
+                eq(schema.assets.kind, "video_post"),
+              ),
+            )
+            .limit(1);
+          if (!existingVideo) {
+            after(async () => {
+              try {
+                await kickVideoVariant(id);
+              } catch (err) {
+                console.warn(
+                  `[content.update] background video kickoff failed for ${id}`,
                   err,
                 );
               }

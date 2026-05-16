@@ -10,10 +10,11 @@
 // Read-only — does NOT influence the engines. Realtime updates flow via
 // the existing Supabase CDC invalidator (see lib/realtime-invalidator).
 
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
 import { listEngineDescriptors } from "@/lib/workflow-engines";
+import { getWorkspaceContext } from "@/lib/billing";
 import {
   DEFAULT_WORKFLOW_ENGINE,
   getModelInfo,
@@ -39,7 +40,10 @@ const PIPELINE: Array<StepView["name"]> = [
 ];
 
 export default async function CreationWorkflowPage() {
+  // Live view of this workspace's workflow runs. Workspace-scoped reads
+  // (see queries below) keep tenants isolated.
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
   // Primary list: workflow_runs across all engines. We pull more than we
   // display so the client-side filtering has data.
@@ -47,6 +51,7 @@ export default async function CreationWorkflowPage() {
     db
       .select()
       .from(schema.workflowRuns)
+      .where(eq(schema.workflowRuns.workspaceId, ctx.workspaceId))
       .orderBy(desc(schema.workflowRuns.createdAt))
       .limit(50),
     db
@@ -56,16 +61,30 @@ export default async function CreationWorkflowPage() {
         slug: schema.campaigns.slug,
       })
       .from(schema.campaigns)
+      .where(eq(schema.campaigns.workspaceId, ctx.workspaceId))
       .orderBy(desc(schema.campaigns.createdAt))
       .limit(50),
+    // Settings: prefer workspace-specific row, fall back to global default
+    // (workspace_id IS NULL). Both rows may be present; we sort below.
     db
       .select()
       .from(schema.settings)
-      .where(eq(schema.settings.key, "workflow_engine")),
+      .where(
+        and(
+          eq(schema.settings.key, "workflow_engine"),
+          or(
+            eq(schema.settings.workspaceId, ctx.workspaceId),
+            isNull(schema.settings.workspaceId),
+          ),
+        ),
+      ),
   ]);
   const campaignOptions: CampaignOption[] = campaignsForForm;
+  const workspaceSettingRow =
+    settingsRows.find((r) => r.workspaceId === ctx.workspaceId) ??
+    settingsRows.find((r) => r.workspaceId === null);
   const globalEngine = resolveWorkflowEngine(
-    settingsRows[0]?.value ?? DEFAULT_WORKFLOW_ENGINE,
+    workspaceSettingRow?.value ?? DEFAULT_WORKFLOW_ENGINE,
   );
 
   // Custom-engine runs reference generation_jobs.id via engine_run_ref. We
@@ -79,11 +98,18 @@ export default async function CreationWorkflowPage() {
     ? await db
         .select()
         .from(schema.generationJobs)
-        .where(inArray(schema.generationJobs.id, customRefs))
+        .where(
+          and(
+            eq(schema.generationJobs.workspaceId, ctx.workspaceId),
+            inArray(schema.generationJobs.id, customRefs),
+          ),
+        )
     : [];
   const generationJobById = new Map(generationJobs.map((g) => [g.id, g]));
 
   const jobIds = generationJobs.map((g) => g.id);
+  // generationJobSteps has no workspaceId column — scoped transitively via
+  // jobId, which already filtered to this workspace's generation jobs above.
   const stepRows = jobIds.length
     ? await db
         .select()
@@ -109,7 +135,12 @@ export default async function CreationWorkflowPage() {
             status: schema.contentItems.status,
           })
           .from(schema.contentItems)
-          .where(inArray(schema.contentItems.id, contentIds))
+          .where(
+            and(
+              eq(schema.contentItems.workspaceId, ctx.workspaceId),
+              inArray(schema.contentItems.id, contentIds),
+            ),
+          )
       : Promise.resolve([]),
     campaignIds.length
       ? db
@@ -119,7 +150,12 @@ export default async function CreationWorkflowPage() {
             slug: schema.campaigns.slug,
           })
           .from(schema.campaigns)
-          .where(inArray(schema.campaigns.id, campaignIds))
+          .where(
+            and(
+              eq(schema.campaigns.workspaceId, ctx.workspaceId),
+              inArray(schema.campaigns.id, campaignIds),
+            ),
+          )
       : Promise.resolve([]),
     // Pull every asset linked to any in-flight content_id so the dashboard
     // can preview variants for Vercel/Cloudflare runs (which don't stream
@@ -136,7 +172,12 @@ export default async function CreationWorkflowPage() {
             createdAt: schema.assets.createdAt,
           })
           .from(schema.assets)
-          .where(inArray(schema.assets.contentId, contentIds))
+          .where(
+            and(
+              eq(schema.assets.workspaceId, ctx.workspaceId),
+              inArray(schema.assets.contentId, contentIds),
+            ),
+          )
       : Promise.resolve([]),
     // Latest approval decision per content_id, so the Approval stage chip
     // can distinguish "approval timed out" from "reviewer requested changes"
@@ -149,7 +190,12 @@ export default async function CreationWorkflowPage() {
             decidedAt: schema.approvals.decidedAt,
           })
           .from(schema.approvals)
-          .where(inArray(schema.approvals.contentId, contentIds))
+          .where(
+            and(
+              eq(schema.approvals.workspaceId, ctx.workspaceId),
+              inArray(schema.approvals.contentId, contentIds),
+            ),
+          )
       : Promise.resolve([]),
     // Agent-authored revisions per content_id. The single-post workflow
     // inserts one row each time it revises in response to a changes_requested
@@ -162,7 +208,12 @@ export default async function CreationWorkflowPage() {
             authorKind: schema.contentRevisions.authorKind,
           })
           .from(schema.contentRevisions)
-          .where(inArray(schema.contentRevisions.contentId, contentIds))
+          .where(
+            and(
+              eq(schema.contentRevisions.workspaceId, ctx.workspaceId),
+              inArray(schema.contentRevisions.contentId, contentIds),
+            ),
+          )
       : Promise.resolve([]),
   ]);
 
@@ -365,7 +416,6 @@ export default async function CreationWorkflowPage() {
     <div>
       <PageHeader
         title="Creation workflow"
-        description="Live view of every run across engines — sub-agent pipeline and per-step I/O."
         meta={
           <>
             {runningCount > 0 ? (

@@ -6,6 +6,7 @@ import { getRequestActor } from "@/lib/auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import { withAudit } from "@/lib/audit";
 import { getWorkspaceContext } from "@/lib/billing";
+import { lookupAdminRole } from "@/lib/billing/admin";
 import {
   CHANNELS,
   EMBEDDING_MODELS,
@@ -14,11 +15,13 @@ import {
   LLM_MODELS,
   RESEARCH_SEARCH_PROVIDERS,
   SUB_AGENT_KINDS,
+  VIDEO_MODELS,
   WORKFLOW_ENGINES,
 } from "@marketing/shared-types";
 import type { SettingsShape } from "@marketing/shared-types";
 
 const IMAGE_MODEL_IDS = IMAGE_MODELS.map((m) => m.id) as [string, ...string[]];
+const VIDEO_MODEL_IDS = VIDEO_MODELS.map((m) => m.id) as [string, ...string[]];
 const LLM_MODEL_IDS = LLM_MODELS.map((m) => m.id) as [string, ...string[]];
 const EMBEDDING_MODEL_IDS = EMBEDDING_MODELS.filter((m) => m.wired).map(
   (m) => m.id,
@@ -76,6 +79,8 @@ const PatchSettings = z.object({
     })
     .optional(),
   image_model: z.enum(IMAGE_MODEL_IDS).optional(),
+  video_model: z.enum(VIDEO_MODEL_IDS).optional(),
+  video_generation_enabled: z.boolean().optional(),
   workflow_engine: z.enum(WORKFLOW_ENGINES).optional(),
   workflow_model: z.enum(LLM_MODEL_IDS).optional(),
   brand_extract_model: z.enum(LLM_MODEL_IDS).optional(),
@@ -91,6 +96,9 @@ const PatchSettings = z.object({
   research_search_provider: z.enum(RESEARCH_SEARCH_PROVIDERS).optional(),
   embedding_provider: z.enum(EMBEDDING_PROVIDERS).optional(),
   embedding_model: z.enum(EMBEDDING_MODEL_IDS).optional(),
+  // Platform-wide user model allowlist. Only the superadmin should send
+  // this; the workspace-scoped write is rejected below.
+  user_allowed_models: z.array(z.enum(LLM_MODEL_IDS)).max(64).optional(),
 });
 
 // PATCH /api/settings — upsert one or more settings keys for the active
@@ -115,15 +123,63 @@ export async function PATCH(request: Request) {
       return Response.json({ error: "no fields to update" }, { status: 400 });
     }
 
+    // Every model + process knob is superadmin-only. Workspace owners only
+    // get to set publishing controls (kill switch, channel caps, approval
+    // policy) and their research keyword list. The UI hides these controls
+    // entirely from non-superadmins; this is the server-side enforcement.
+    const SUPERADMIN_KEYS = new Set([
+      "user_allowed_models",
+      "image_model",
+      "video_model",
+      "video_generation_enabled",
+      "workflow_engine",
+      "workflow_model",
+      "brand_extract_model",
+      "sub_agent_models",
+      "research_search_provider",
+      "embedding_provider",
+      "embedding_model",
+    ]);
+    const hasRestrictedKey = entries.some(([k]) => SUPERADMIN_KEYS.has(k));
+    if (hasRestrictedKey && !isInternalReq) {
+      const role = actor.id ? await lookupAdminRole(actor.id) : null;
+      if (role !== "superadmin") {
+        return Response.json(
+          { error: "superadmin_required" },
+          { status: 403 },
+        );
+      }
+    }
+
     // Build the predicate for finding "the row for this (workspace, key)".
-    // workspace_id = $1 when scoped, IS NULL for global writes.
-    const rowFilter = (key: string) =>
-      workspaceId
+    // Every superadmin-controlled key writes to the global row
+    // (workspace_id IS NULL) so the choice propagates to every workspace.
+    // Per-workspace settings (kill switch, channel caps, approval policy,
+    // research keywords) still scope to the caller's active workspace.
+    const GLOBAL_KEYS = new Set([
+      "user_allowed_models",
+      "image_model",
+      "video_model",
+      "video_generation_enabled",
+      "workflow_engine",
+      "workflow_model",
+      "brand_extract_model",
+      "sub_agent_models",
+      "research_search_provider",
+      "embedding_provider",
+      "embedding_model",
+    ]);
+    const scopeFor = (key: string): string | null =>
+      GLOBAL_KEYS.has(key) ? null : workspaceId;
+    const rowFilter = (key: string) => {
+      const ws = scopeFor(key);
+      return ws
         ? and(
-            eq(schema.settings.workspaceId, workspaceId),
+            eq(schema.settings.workspaceId, ws),
             eq(schema.settings.key, key),
           )
         : and(isNull(schema.settings.workspaceId), eq(schema.settings.key, key));
+    };
 
     await withAudit(
       { db, actor, action: "settings.update", entityType: "settings" },
@@ -172,7 +228,7 @@ export async function PATCH(request: Request) {
               .where(rowFilter(key));
           } else {
             await db.insert(schema.settings).values({
-              workspaceId,
+              workspaceId: scopeFor(key),
               key,
               value,
               updatedBy: actor.id ?? null,

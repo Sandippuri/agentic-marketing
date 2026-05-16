@@ -5,6 +5,11 @@
 // in a modal and confirms via the existing PUT endpoints. Run history is
 // not persisted yet (extraction_runs / brand_memory_drafts tables exist
 // for that, but aren't wired up — this route can be upgraded later).
+//
+// Optional JSON body: { seed?: { brandName?: string; pitch?: string } }.
+// The onboarding wizard collects 1–2 quick answers from the user and posts
+// them here so the LLM has a north star even when the uploaded corpus is
+// thin or genre-ambiguous.
 
 import { generateObject } from "ai";
 import { inArray, isNull } from "drizzle-orm";
@@ -112,11 +117,26 @@ const SYSTEM_PROMPT = [
   "- Keep voice consistent with how the company speaks about itself in the source.",
 ].join("\n");
 
+const SeedSchema = z.object({
+  brandName: z.string().min(1).max(200).optional(),
+  pitch: z.string().min(1).max(2_000).optional(),
+});
+
 export async function POST(request: Request) {
   try {
     await getRequestActor();
     const { workspaceId } = await getWorkspaceContext();
     const db = getDb();
+
+    let seed: z.infer<typeof SeedSchema> | undefined;
+    if (request.headers.get("content-length") && request.headers.get("content-length") !== "0") {
+      try {
+        const parsed = SeedSchema.safeParse(await request.json());
+        if (parsed.success) seed = parsed.data;
+      } catch {
+        // Body was not JSON — ignore; seed stays undefined.
+      }
+    }
 
     const docs = await db
       .select()
@@ -159,6 +179,18 @@ export async function POST(request: Request) {
       .map((f, i) => `${i + 1}. ${f.doc.filename} (${f.doc.mimeType})`)
       .join("\n");
 
+    const seedBlock =
+      seed && (seed.brandName || seed.pitch)
+        ? [
+            "",
+            "User-provided seed (treat as authoritative for brand name and high-level pitch; everything else still comes from the source corpus):",
+            seed.brandName ? `- Brand: ${seed.brandName}` : null,
+            seed.pitch ? `- Pitch: ${seed.pitch}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : "";
+
     const content: Array<
       | { type: "text"; text: string }
       | { type: "file"; data: Buffer; mimeType: string }
@@ -167,7 +199,8 @@ export async function POST(request: Request) {
         type: "text",
         text:
           `Source corpus (${fetched.length} document${fetched.length === 1 ? "" : "s"}):\n${manifest}\n\n` +
-          "Distill these into the five brand-memory bodies and the design system, following the system instructions.",
+          "Distill these into the five brand-memory bodies and the design system, following the system instructions." +
+          seedBlock,
       },
     ];
 

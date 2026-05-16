@@ -1,3 +1,6 @@
+import { redirect } from "next/navigation";
+import { getSupabaseServer } from "@/lib/supabase/server";
+import { lookupAdminRole } from "@/lib/billing/admin";
 import { PageHeader, Badge } from "../ui";
 
 export const dynamic = "force-dynamic";
@@ -106,6 +109,32 @@ const INTEGRATIONS: Integration[] = [
       "Open Projects → Keys & Tokens for your app (Basic tier or higher).",
       "Generate API Key + Secret and an Access Token + Secret with write access.",
       "Paste all four into env.",
+    ],
+  },
+  {
+    id: "facebook",
+    name: "Facebook",
+    category: "Channel",
+    description: "Publish posts to a Facebook Page feed via the Meta Graph API.",
+    envVars: ["META_PAGE_ACCESS_TOKEN", "FB_PAGE_ID"],
+    setupUrl: "https://developers.facebook.com/apps/",
+    setupSteps: [
+      "Create a Meta for Developers app (Business type) and add the Facebook Login + Pages products.",
+      "Generate a long-lived Page Access Token with pages_manage_posts + pages_read_engagement scopes.",
+      "Copy the token into META_PAGE_ACCESS_TOKEN and the Page numeric ID into FB_PAGE_ID.",
+    ],
+  },
+  {
+    id: "instagram",
+    name: "Instagram",
+    category: "Channel",
+    description: "Publish photos and Reels to an Instagram Business account.",
+    envVars: ["META_PAGE_ACCESS_TOKEN", "IG_BUSINESS_ACCOUNT_ID"],
+    setupUrl: "https://developers.facebook.com/apps/",
+    setupSteps: [
+      "Convert the target Instagram account to Business or Creator and link it to the Facebook Page used above.",
+      "Reuse META_PAGE_ACCESS_TOKEN — the linked Page token works for IG Graph calls.",
+      "Find the IG user ID via /me/accounts → instagram_business_account and paste it into IG_BUSINESS_ACCOUNT_ID.",
     ],
   },
   {
@@ -222,20 +251,135 @@ const STATUS_LABEL: Record<Status, string> = {
   missing: "Not connected",
 };
 
-export default function IntegrationsPage() {
+// Channel cards a platform user sees — every other category (AI / Chat /
+// Assets / Analytics / Ops) is platform infrastructure and stays behind the
+// superadmin view.
+const USER_VISIBLE_IDS = new Set([
+  "linkedin",
+  "x",
+  "facebook",
+  "instagram",
+  "hubspot",
+  "mailchimp",
+]);
+
+// Friendlier copy for the user view. The operator description leaks
+// implementation details ("Marketing API", "Private App"); users care
+// whether the channel will publish for them.
+const USER_DESCRIPTIONS: Record<string, string> = {
+  linkedin: "Publish company posts to LinkedIn.",
+  x: "Publish tweets and threads to X.",
+  facebook: "Publish posts to your Facebook Page.",
+  instagram: "Publish photos and Reels to Instagram.",
+  hubspot: "Send marketing email through HubSpot.",
+  mailchimp: "Send marketing email through Mailchimp.",
+};
+
+export default async function IntegrationsPage() {
+  const sb = await getSupabaseServer();
+  const { data: userData } = await sb.auth.getUser();
+  if (!userData.user) redirect("/login?next=/integrations");
+  const isSuperadmin =
+    (await lookupAdminRole(userData.user.id)) === "superadmin";
+
   const items = INTEGRATIONS.map((i) => ({
     ...i,
     status: statusOf(i.envVars, i.envAliases),
     presentVars: i.envVars.filter((v) => isVarSet(v, i.envAliases)),
   }));
 
+  if (!isSuperadmin) {
+    return <UserIntegrationsView items={items} />;
+  }
+  return <OperatorIntegrationsView items={items} />;
+}
+
+// ---------- Platform-user view ----------------------------------------------
+
+function UserIntegrationsView({
+  items,
+}: {
+  items: (Integration & { status: Status; presentVars: string[] })[];
+}) {
+  const channels = items.filter((i) => USER_VISIBLE_IDS.has(i.id));
+
+  return (
+    <div className="max-w-3xl">
+      <PageHeader
+        title="Integrations"
+        description="Connect the channels you want to publish to. Connections are managed by the workspace owner."
+      />
+
+      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {channels.map((i) => (
+          <UserChannelCard
+            key={i.id}
+            name={i.name}
+            description={USER_DESCRIPTIONS[i.id] ?? i.description}
+            status={i.status}
+          />
+        ))}
+      </ul>
+
+      <p className="mt-6 text-xs text-faint">
+        Per-workspace OAuth is coming soon. In the meantime, ask your workspace
+        owner to wire these up.
+      </p>
+    </div>
+  );
+}
+
+function UserChannelCard({
+  name,
+  description,
+  status,
+}: {
+  name: string;
+  description: string;
+  status: Status;
+}) {
+  // We render every channel as "Not connected" for the user view because the
+  // env-var status is platform-global; it doesn't reflect whether THIS
+  // workspace has connected the channel. Per-workspace OAuth lands later.
+  const userFacingStatus: Status = "missing";
+  return (
+    <li className="surface p-4 flex flex-col">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-semibold text-ink">{name}</div>
+          <p className="text-xs text-mid mt-0.5 leading-snug">{description}</p>
+        </div>
+        <Badge tone={STATUS_TONE[userFacingStatus]} dot>
+          {STATUS_LABEL[userFacingStatus]}
+        </Badge>
+      </div>
+      <div className="mt-4">
+        <button
+          type="button"
+          disabled
+          className="btn btn-secondary btn-sm opacity-60 cursor-not-allowed"
+          title="Per-workspace connect is coming soon"
+        >
+          Connect
+        </button>
+      </div>
+    </li>
+  );
+}
+
+// ---------- Operator view (existing env-var dashboard) ----------------------
+
+function OperatorIntegrationsView({
+  items,
+}: {
+  items: (Integration & { status: Status; presentVars: string[] })[];
+}) {
   const counts = {
     connected: items.filter((i) => i.status === "connected").length,
-    partial:   items.filter((i) => i.status === "partial").length,
-    missing:   items.filter((i) => i.status === "missing").length,
+    partial: items.filter((i) => i.status === "partial").length,
+    missing: items.filter((i) => i.status === "missing").length,
   };
 
-  // Group by category for layout.
   const byCategory = new Map<Integration["category"], typeof items>();
   for (const i of items) {
     if (!byCategory.has(i.category)) byCategory.set(i.category, []);
@@ -246,7 +390,7 @@ export default function IntegrationsPage() {
     <div className="max-w-5xl">
       <PageHeader
         title="Integrations"
-        description="Status is computed from environment variables. Use Connect to open the provider, generate credentials, paste them into env, then restart the affected service."
+        description="Operator view. Status is computed from environment variables. Use Connect to open the provider, generate credentials, paste them into env, then restart the affected service."
         meta={
           <>
             <Badge tone="success" dot>

@@ -181,6 +181,22 @@ export type LlmModel = string;
 
 export const DEFAULT_LLM_MODEL: LlmModel = "claude-sonnet-4-5";
 
+// Default platform-wide allowlist for self-serve users. Includes the
+// cheaper / lower-latency tier of each provider so a Free workspace can't
+// rack up Opus or GPT-5 bills without an admin explicitly opting them in.
+// The superadmin "User access" governance UI overrides this list via the
+// `user_allowed_models` settings key (workspace_id IS NULL).
+export const DEFAULT_USER_ALLOWED_MODELS: readonly string[] = [
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5-20251001",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-4o-mini",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+];
+
 export function getModelInfo(id: string): LlmModelInfo | undefined {
   return LLM_MODELS.find((m) => m.id === id);
 }
@@ -322,6 +338,7 @@ export const BRAND_MEMORY_SLUGS = [
   "brand.visual",
   "product.state",
   "product.positioning",
+  "market.context",
 ] as const;
 export type BrandMemorySlug = (typeof BRAND_MEMORY_SLUGS)[number];
 
@@ -331,6 +348,7 @@ export const BRAND_MEMORY_TITLES: Record<BrandMemorySlug, string> = {
   "brand.visual": "Visual guidelines",
   "product.state": "Product state",
   "product.positioning": "Product positioning",
+  "market.context": "Market context",
 };
 
 // File paths used by the manager as a fallback when a DB row is missing
@@ -341,6 +359,26 @@ export const BRAND_MEMORY_FILE_PATHS: Record<BrandMemorySlug, string> = {
   "brand.visual": "brand/visual.md",
   "product.state": "product/state.md",
   "product.positioning": "product/positioning.md",
+  "market.context": "market/context.md",
+};
+
+// --- Workspace market context (the "Place" of the 4 Ps) ------------------
+// Structured fields that pair with the free-form `market.context` brand_memory
+// slug. The strategist injects both into its system prompt so generated
+// content respects geography, language, and channel mix. Stored on the
+// `workspaces` table (one business per workspace).
+export type WorkspaceMarketContext = {
+  primaryCountry: string | null;
+  targetRegions: string[];
+  languages: string[];
+  primaryChannels: string[];
+};
+
+export const EMPTY_WORKSPACE_MARKET_CONTEXT: WorkspaceMarketContext = {
+  primaryCountry: null,
+  targetRegions: [],
+  languages: [],
+  primaryChannels: [],
 };
 
 // --- Brand documents (corpus + extraction) --------------------------------
@@ -862,4 +900,11 @@ export type SettingsShape = {
   embedding_provider: EmbeddingProvider;
   /** Embedding model id within the chosen provider. */
   embedding_model: string;
+  /**
+   * Allowlist of LLM model ids that non-superadmin users are allowed to
+   * select. Stored at the global scope (workspace_id IS NULL) so the
+   * superadmin's choice applies platform-wide. When unset or empty, the
+   * resolver falls back to DEFAULT_USER_ALLOWED_MODELS.
+   */
+  user_allowed_models?: string[];
 };

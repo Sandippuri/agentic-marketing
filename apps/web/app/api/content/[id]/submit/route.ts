@@ -6,7 +6,7 @@ import { getRequestActor } from "@/lib/auth";
 import { isInternal } from "@/lib/internal-auth";
 import { assertContentTransition } from "@/lib/state-machine";
 import { errorResponse } from "@/lib/http";
-import { generateAssetVariants } from "@/lib/asset-variants";
+import { generateAssetVariants, kickVideoVariant } from "@/lib/asset-variants";
 
 // Submit a content_item for review. Creates an open `approvals` row.
 export async function POST(
@@ -54,6 +54,11 @@ export async function POST(
     // The reviewer can flip the toggle on /approvals and the PATCH route will
     // re-trigger generation. On Vercel, after() defers to waitUntil so the
     // work survives the response returning.
+    //
+    // generateAssetVariants kicks video at the end of its run, so when images
+    // are on we don't need a separate video kick. When images are off but
+    // video is on, we kick the video independently — note Veo will run as
+    // text-to-video (no first frame) which is lower fidelity but still useful.
     if (result.needsImages !== false) {
       const wsId = result.workspaceId;
       after(async () => {
@@ -63,6 +68,17 @@ export async function POST(
         } catch (err) {
           console.warn(
             `[content.submit] background asset generation failed for ${id}`,
+            err,
+          );
+        }
+      });
+    } else if (result.needsVideo !== false) {
+      after(async () => {
+        try {
+          await kickVideoVariant(id);
+        } catch (err) {
+          console.warn(
+            `[content.submit] background video kickoff failed for ${id}`,
             err,
           );
         }

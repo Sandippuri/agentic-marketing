@@ -11,6 +11,7 @@ import { z } from "zod";
 import { aggregateLearningSignal } from "@/lib/learning/aggregate";
 import { getRequestActor } from "@/lib/auth";
 import { errorResponse } from "@/lib/http";
+import { getWorkspaceContext } from "@/lib/billing";
 
 export const dynamic = "force-dynamic";
 
@@ -22,12 +23,13 @@ const Query = z.object({
 export async function GET(request: Request) {
   try {
     await getRequestActor();
+    const { workspaceId } = await getWorkspaceContext();
     const url = new URL(request.url);
     const params = Query.parse({
       windowDays: url.searchParams.get("windowDays") ?? undefined,
       limit: url.searchParams.get("limit") ?? undefined,
     });
-    const summary = await aggregateLearningSignal(params);
+    const summary = await aggregateLearningSignal({ workspaceId, ...params });
     return Response.json(summary);
   } catch (err) {
     return errorResponse(err);

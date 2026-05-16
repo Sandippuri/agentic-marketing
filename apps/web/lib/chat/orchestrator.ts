@@ -21,6 +21,7 @@ import { runResearcher } from "@marketing/agents/sub-agents/researcher";
 import { buildKbTools } from "@marketing/agents/tools/kb-tools";
 import { ensureCollection, upsertDocument } from "@marketing/agents/kb";
 import { chunkAndEmbed } from "@marketing/agents/kb";
+import { buildWorkspaceTools } from "./workspace-tools";
 import {
   getWorkflowModelConfig,
   pickSubAgentModel,
@@ -111,6 +112,11 @@ async function buildOrchestratorCall({
   const kbTools = buildKbTools({ workspaceId, actorId: userId });
   const { kb_search, kb_read_document, kb_list } = kbTools;
 
+  // Workspace-scoped read tools. These replace the older Control-Plane HTTP
+  // tools that were hardcoded to the Legacy workspace, so the chat now
+  // reflects whichever workspace the caller is signed into.
+  const workspaceTools = buildWorkspaceTools({ workspaceId });
+
   return {
     resolvedModel,
     callArgs: {
@@ -119,46 +125,17 @@ async function buildOrchestratorCall({
       prompt: `${historyContext}User (${userId}): ${text}`,
       maxSteps: 10,
       tools: {
-      // ── Flow: Lookups (cheap, read-only Control Plane state) ───────────
-      list_campaigns: tool({
-        description:
-          "List all campaigns from the Control Plane. Use this to find a campaign ID " +
-          "before routing to run_strategist or run_content.",
-        parameters: z.object({}),
-        execute: async () => {
-          const campaigns = await cp.listCampaigns();
-          return campaigns.map((c) => ({
-            id: c.id,
-            slug: c.slug,
-            name: c.name,
-            phase: c.phase,
-            status: c.status,
-          }));
-        },
-      }),
-
-      get_pending_approvals: tool({
-        description:
-          "List all content items currently waiting for human approval, oldest first.",
-        parameters: z.object({
-          limit: z.number().int().min(1).max(20).optional().default(10),
-        }),
-        execute: async ({ limit }) => {
-          return cp.getPendingApprovals(limit);
-        },
-      }),
+      // ── Flow: Workspace state (campaigns / posts / approvals / runs) ───
+      ...workspaceTools,
 
       check_publish_job: tool({
         description:
-          "Check the current status of a publish job by ID, or list recent jobs for a content item.",
+          "Check the current status of a publish job by id. Falls back to list_publish_jobs for content lookups.",
         parameters: z.object({
-          publishJobId: z.string().optional().describe("Specific publish job UUID"),
-          contentId: z.string().optional().describe("List all jobs for this content item"),
+          publishJobId: z.string().describe("Specific publish job UUID"),
         }),
-        execute: async ({ publishJobId, contentId }) => {
-          if (publishJobId) return cp.getPublishJob(publishJobId);
-          if (contentId) return cp.listPublishJobs({ contentId, limit: 5 });
-          return { error: "provide publishJobId or contentId" };
+        execute: async ({ publishJobId }) => {
+          return cp.getPublishJob(publishJobId);
         },
       }),
 

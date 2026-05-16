@@ -2,6 +2,7 @@ import Link from "next/link";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { CAMPAIGN_PHASES, CAMPAIGN_STATUSES } from "@marketing/shared-types";
+import { getWorkspaceContext } from "@/lib/billing";
 import { NewCampaignForm } from "./new-campaign-form";
 import { CampaignRowActions } from "./campaign-row-actions";
 import { PageHeader, Badge, Card, CardHeader, EmptyState, statusTone } from "../ui";
@@ -16,8 +17,9 @@ export default async function CampaignsPage({
 }) {
   const params = await searchParams;
   const db = getDb();
+  const ctx = await getWorkspaceContext();
 
-  const conditions = [];
+  const conditions = [eq(schema.campaigns.workspaceId, ctx.workspaceId)];
   if (params.status && CAMPAIGN_STATUSES.includes(params.status as (typeof CAMPAIGN_STATUSES)[number])) {
     conditions.push(eq(schema.campaigns.status, params.status as (typeof CAMPAIGN_STATUSES)[number]));
   }
@@ -29,7 +31,7 @@ export default async function CampaignsPage({
     db
       .select()
       .from(schema.campaigns)
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .where(and(...conditions))
       .orderBy(desc(schema.campaigns.createdAt)),
     db
       .select({
@@ -39,6 +41,7 @@ export default async function CampaignsPage({
         published: sql<number>`count(*) filter (where ${schema.contentItems.status} = 'published')::int`,
       })
       .from(schema.contentItems)
+      .where(eq(schema.contentItems.workspaceId, ctx.workspaceId))
       .groupBy(schema.contentItems.campaignId),
   ]);
 

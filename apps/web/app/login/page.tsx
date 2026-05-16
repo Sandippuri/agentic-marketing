@@ -9,13 +9,23 @@ export default async function LoginPage({
 }) {
   const { next, error } = await searchParams;
   return (
-    <main className="min-h-dvh flex items-center justify-center p-12">
-      <div className="max-w-sm w-full">
-        <h1 className="text-2xl font-semibold mb-3">Sign in</h1>
-        <p className="text-sm text-zinc-500 mb-6">
-          Magic link to your team email. Sessions live in an httpOnly cookie.
+    <main className="min-h-dvh flex items-center justify-center p-6 bg-bg">
+      <div className="w-full max-w-sm">
+        <div className="surface p-7 space-y-6">
+          <header className="space-y-1.5">
+            <h1 className="text-[22px] font-semibold text-ink leading-tight">
+              Sign in
+            </h1>
+            <p className="text-[13px] text-mid leading-relaxed">
+              Use your team email and password, or request a one-time magic
+              link.
+            </p>
+          </header>
+          <LoginForm next={next ?? "/campaigns"} error={error} />
+        </div>
+        <p className="mt-4 text-center text-[11px] text-faint">
+          Sessions are stored in an httpOnly cookie.
         </p>
-        <LoginForm next={next ?? "/campaigns"} error={error} />
       </div>
     </main>
   );
