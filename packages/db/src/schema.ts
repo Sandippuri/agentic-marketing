@@ -160,6 +160,7 @@ export const generationJobStatusEnum = pgEnum("generation_job_status", [
 ] as const);
 export const generationJobKindEnum = pgEnum("generation_job_kind", [
   "campaign",
+  "execute_campaign",
   "single_post",
   "asset",
   "analysis",
@@ -961,6 +962,10 @@ export const workflowRuns = pgTable(
       onDelete: "set null",
     }),
     input: jsonb("input"),
+    // Terminal output of the workflow (e.g. strategist summary, fan-out
+    // counts). Migration 0037 added this so the work isn't lost when no
+    // campaign/content row was created during the run.
+    result: jsonb("result"),
     error: text("error"),
     startedAt: timestamp("started_at", { withTimezone: true })
       .notNull()
@@ -1472,6 +1477,45 @@ export const kbChunks = pgTable(
   }),
 );
 
+// --- chat_attachments ---------------------------------------------------------
+// Temporary uploads scoped to a chat thread. NOT part of the KB — the user
+// uploads to give the assistant context for the active conversation; the
+// assistant decides what to promote into kb_documents via kb_archive_attachment.
+// `dismissed_at IS NULL AND archived_kb_doc_id IS NULL` = "live pill in the UI
+// + included in the orchestrator's system context."
+
+export const chatAttachments = pgTable(
+  "chat_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    threadRef: text("thread_ref").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    storagePath: text("storage_path").notNull(),
+    bodyMd: text("body_md").notNull().default(""),
+    archivedKbDocId: uuid("archived_kb_doc_id").references(
+      () => kbDocuments.id,
+      { onDelete: "set null" },
+    ),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    threadIdx: index("chat_attachments_thread_idx").on(
+      t.workspaceId,
+      t.threadRef,
+    ),
+    workspaceIdx: index("chat_attachments_workspace_idx").on(t.workspaceId),
+  }),
+);
+
 // --- goal_events --------------------------------------------------------------
 // Durable trail for the goal-loop workflow (migration 0016). Combined with
 // Vercel Workflows' native durable execution, lets the loop resume from the
@@ -1651,6 +1695,8 @@ export type KbDocument = typeof kbDocuments.$inferSelect;
 export type NewKbDocument = typeof kbDocuments.$inferInsert;
 export type KbChunk = typeof kbChunks.$inferSelect;
 export type NewKbChunk = typeof kbChunks.$inferInsert;
+export type ChatAttachment = typeof chatAttachments.$inferSelect;
+export type NewChatAttachment = typeof chatAttachments.$inferInsert;
 export type GoalEvent = typeof goalEvents.$inferSelect;
 export type NewGoalEvent = typeof goalEvents.$inferInsert;
 export type Experiment = typeof experiments.$inferSelect;

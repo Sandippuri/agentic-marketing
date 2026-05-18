@@ -11,7 +11,7 @@
 // them here so the LLM has a north star even when the uploaded corpus is
 // thin or genre-ambiguous.
 
-import { generateObject } from "ai";
+import { generateObject, NoObjectGeneratedError } from "ai";
 import { inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@marketing/db";
@@ -32,6 +32,19 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+// We keep the schema we hand to the LLM permissive — every previously-strict
+// constraint (hex regex, role enum, min-length on color name, integer weights)
+// is something models occasionally violate, and the AI SDK's whole-call
+// rejection on a single bad field meant a thin landing-page scrape would
+// often fail the entire generation. Anything questionable is sanitized after
+// validation, before the response leaves the route.
+const LooseColorSchema = z.object({
+  name: z.string().max(80).nullable().optional(),
+  hex: z.string().max(20).nullable().optional(),
+  role: z.string().max(40).nullable().optional(),
+  usage: z.string().max(500).nullable().optional(),
+});
 
 const DraftSchema = z.object({
   voice: z
@@ -61,39 +74,82 @@ const DraftSchema = z.object({
     ),
   design: z.object({
     colors: z
-      .array(
-        z.object({
-          name: z.string().min(1).max(80),
-          hex: z
-            .string()
-            .regex(HEX_RE)
-            .describe("Hex like #RRGGBB or #RRGGBBAA."),
-          role: z.enum(DESIGN_COLOR_ROLES).optional(),
-          usage: z.string().max(500).optional(),
-        }),
-      )
-      .max(24)
+      .array(LooseColorSchema)
+      .max(40)
+      .default([])
       .describe(
-        "Brand palette extracted from the source docs. Include hexes only when the docs cite them; do not invent colors.",
+        "Brand palette extracted from the source docs. Each item: { name, hex (#RRGGBB or #RRGGBBAA), role (one of: " +
+          DESIGN_COLOR_ROLES.join(", ") +
+          "), usage }. Only include hexes that appear in the source.",
       ),
-    typography: z.object({
-      headingFamily: z.string().max(120).optional(),
-      bodyFamily: z.string().max(120).optional(),
-      monoFamily: z.string().max(120).optional(),
-      weights: z.array(z.number().int().min(100).max(900)).max(10).optional(),
-      notes: z.string().max(2_000).optional(),
-    }),
-    tokens: z.object({
-      spacing: z.string().max(2_000).optional(),
-      radii: z.string().max(2_000).optional(),
-      shadows: z.string().max(2_000).optional(),
-      iconography: z.string().max(2_000).optional(),
-      notes: z.string().max(4_000).optional(),
-    }),
+    typography: z
+      .object({
+        headingFamily: z.string().max(120).nullable().optional(),
+        bodyFamily: z.string().max(120).nullable().optional(),
+        monoFamily: z.string().max(120).nullable().optional(),
+        weights: z
+          .array(z.coerce.number().int().min(100).max(900))
+          .max(10)
+          .optional(),
+        notes: z.string().max(2_000).nullable().optional(),
+      })
+      .default({}),
+    tokens: z
+      .object({
+        spacing: z.string().max(2_000).nullable().optional(),
+        radii: z.string().max(2_000).nullable().optional(),
+        shadows: z.string().max(2_000).nullable().optional(),
+        iconography: z.string().max(2_000).nullable().optional(),
+        notes: z.string().max(4_000).nullable().optional(),
+      })
+      .default({}),
   }),
 });
 
 export type BrandExtractDraft = z.infer<typeof DraftSchema>;
+
+function sanitizeDrafts(raw: z.infer<typeof DraftSchema>): z.infer<typeof DraftSchema> {
+  const allowedRoles = new Set<string>(DESIGN_COLOR_ROLES);
+  const cleanedColors = (raw.design.colors ?? [])
+    .map((c) => {
+      const hex = normalizeHex(c.hex);
+      if (!hex) return null;
+      const role = c.role && allowedRoles.has(c.role) ? (c.role as (typeof DESIGN_COLOR_ROLES)[number]) : undefined;
+      return {
+        name: (c.name ?? "").trim() || hex,
+        hex,
+        role,
+        usage: c.usage?.trim() || undefined,
+      };
+    })
+    .filter((c): c is { name: string; hex: string; role?: (typeof DESIGN_COLOR_ROLES)[number]; usage?: string } => c !== null)
+    .slice(0, 24);
+
+  return {
+    ...raw,
+    design: {
+      ...raw.design,
+      colors: cleanedColors,
+    },
+  };
+}
+
+function normalizeHex(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const s = input.trim();
+  if (HEX_RE.test(s)) {
+    if (s.length === 4) {
+      // Expand #abc → #aabbcc.
+      const a = s[1];
+      const b = s[2];
+      const c = s[3];
+      if (!a || !b || !c) return null;
+      return `#${a}${a}${b}${b}${c}${c}`.toLowerCase();
+    }
+    return s.toLowerCase();
+  }
+  return null;
+}
 
 // Anthropic + Gemini accept PDF file parts directly. DOCX is not supported
 // natively by either provider, so for now we surface a clear error rather

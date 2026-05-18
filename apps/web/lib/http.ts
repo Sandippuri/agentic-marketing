@@ -1,4 +1,4 @@
-import { ZodError, type ZodSchema } from "zod";
+import { ZodError, type z } from "zod";
 import { InvalidTransitionError } from "./state-machine";
 import { InternalAuthError } from "./internal-auth";
 import { UnauthorizedError } from "./auth";
@@ -141,10 +141,13 @@ export class LlmPreflightError extends Error {
   }
 }
 
-export async function parseJson<T>(
+// Generic over the schema type (not just its output) so that schemas using
+// `.transform()` / `.preprocess()` resolve to the *output* type rather than
+// collapsing Input and Output via `ZodSchema<T>` (which forces them equal).
+export async function parseJson<S extends z.ZodTypeAny>(
   request: Request,
-  schema: ZodSchema<T>,
-): Promise<T> {
+  schema: S,
+): Promise<z.output<S>> {
   const raw = await request.json().catch(() => ({}));
   return schema.parse(raw);
 }

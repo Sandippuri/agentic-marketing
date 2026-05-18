@@ -9,6 +9,17 @@ const ChatClientReady = dynamic(() => import("./chat-client-ready"), {
   ssr: false,
 });
 
-export function ChatClient() {
-  return <ChatClientReady />;
+export function ChatClient({
+  displayName,
+  workspaceName,
+}: {
+  displayName?: string | null;
+  workspaceName?: string | null;
+}) {
+  return (
+    <ChatClientReady
+      displayName={displayName}
+      workspaceName={workspaceName}
+    />
+  );
 }

@@ -345,7 +345,7 @@ function UsageDetail({ usage }: { usage: SuperWorkspaceUsage }) {
       <Card>
         <CardHeader
           title="Plan quotas"
-          description="Current-month usage against this plan's caps. Bars turn amber at 85% and red at 100%."
+          description="Current-month usage against this plan's caps. Bars turn amber from 85% up to the cap and red only when exceeded."
         />
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           {quotas.length === 0 ? (
@@ -518,7 +518,7 @@ function QuotaBar({
   const tone =
     unlimited
       ? "ok"
-      : fraction >= 1
+      : fraction > 1
         ? "danger"
         : fraction >= 0.85
           ? "warn"

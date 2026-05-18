@@ -50,6 +50,7 @@ export function OnboardingWizard({ workspaceId: _workspaceId, userEmail, initial
   const router = useRouter();
   const [step, setStep] = useState<Step>("welcome");
   const [brandName, setBrandName] = useState("");
+  const [website, setWebsite] = useState("");
   const [pitch, setPitch] = useState("");
   const [docs, setDocs] = useState<ExistingBrandDoc[]>(initialDocs);
   const [drafts, setDrafts] = useState<ExtractDrafts | null>(null);
@@ -61,10 +62,15 @@ export function OnboardingWizard({ workspaceId: _workspaceId, userEmail, initial
       {step === "welcome" && (
         <WelcomeStep
           brandName={brandName}
+          website={website}
           pitch={pitch}
           setBrandName={setBrandName}
+          setWebsite={setWebsite}
           setPitch={setPitch}
-          onNext={() => setStep("upload")}
+          docs={docs}
+          setDocs={setDocs}
+          onScraped={() => setStep("generate")}
+          onNoUrl={() => setStep("upload")}
           onSkip={async () => {
             await seedFromAnswersAndExit(router, brandName, pitch);
           }}
@@ -116,7 +122,7 @@ function Header({ step, userEmail }: { step: Step; userEmail: string | null }) {
   const steps: Step[] = ["welcome", "upload", "generate", "review"];
   const labels: Record<Step, string> = {
     welcome: "About you",
-    upload: "Source docs",
+    upload: "Sources",
     generate: "Generate",
     review: "Review & save",
   };
@@ -156,25 +162,86 @@ function Header({ step, userEmail }: { step: Step; userEmail: string | null }) {
 
 function WelcomeStep({
   brandName,
+  website,
   pitch,
   setBrandName,
+  setWebsite,
   setPitch,
-  onNext,
+  docs,
+  setDocs,
+  onScraped,
+  onNoUrl,
   onSkip,
 }: {
   brandName: string;
+  website: string;
   pitch: string;
   setBrandName: (v: string) => void;
+  setWebsite: (v: string) => void;
   setPitch: (v: string) => void;
-  onNext: () => void;
+  docs: ExistingBrandDoc[];
+  setDocs: (next: ExistingBrandDoc[]) => void;
+  onScraped: () => void;
+  onNoUrl: () => void;
   onSkip: () => void;
 }) {
-  const ready = brandName.trim().length > 0 && pitch.trim().length > 0;
+  const [scraping, setScraping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const hasName = brandName.trim().length > 0;
+  const hasUrl = website.trim().length > 0;
+  // Either path needs the brand name. URL path also needs the URL itself.
+  const ready = hasName;
+
+  async function handleContinue() {
+    if (!ready) return;
+    if (!hasUrl) {
+      onNoUrl();
+      return;
+    }
+    setError(null);
+    setScraping(true);
+    try {
+      const res = await fetch("/api/brand-scrape", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: website.trim() }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          message?: string;
+        };
+        // Site couldn't be read — gently route to upload as a fallback.
+        if (err.error === "empty" || err.error === "non_html" || err.error === "fetch_failed") {
+          setError(
+            `${err.message ?? "Couldn't read the site."} You can upload documents instead.`,
+          );
+          return;
+        }
+        throw new Error(err.message ?? err.error ?? `Scrape failed (${res.status})`);
+      }
+      const data = (await res.json()) as {
+        document: ExistingBrandDoc & { sizeBytes: number | string };
+      };
+      const doc: ExistingBrandDoc = {
+        ...data.document,
+        sizeBytes: Number(data.document.sizeBytes),
+      };
+      setDocs([doc, ...docs]);
+      onScraped();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setScraping(false);
+    }
+  }
+
   return (
     <section className="surface p-6 space-y-5">
       <p className="text-sm text-mid">
-        Two quick questions so the agent has a starting point. You can change
-        anything later under Brand.
+        Tell us about your business. If you share a website, we&apos;ll read it
+        and draft a brand voice, ICP, and design system for you. No website?
+        You can upload documents on the next step.
       </p>
       <label className="flex flex-col gap-1.5">
         <span className="text-xs text-mid">Brand or company name</span>
@@ -188,7 +255,25 @@ function WelcomeStep({
       </label>
       <label className="flex flex-col gap-1.5">
         <span className="text-xs text-mid">
-          What do you sell, and who is it for?
+          Website <span className="text-faint">(optional)</span>
+        </span>
+        <input
+          type="url"
+          value={website}
+          onChange={(e) => setWebsite(e.target.value)}
+          placeholder="https://example.com"
+          className="field"
+          inputMode="url"
+          autoComplete="url"
+        />
+        <span className="text-[11px] text-faint">
+          We&apos;ll read the landing page only. Takes ~10 seconds.
+        </span>
+      </label>
+      <label className="flex flex-col gap-1.5">
+        <span className="text-xs text-mid">
+          What do you sell, and who is it for?{" "}
+          <span className="text-faint">(optional)</span>
         </span>
         <textarea
           value={pitch}
@@ -198,17 +283,29 @@ function WelcomeStep({
           className="field"
         />
       </label>
+
+      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+
       <div className="flex items-center justify-between pt-1">
-        <button type="button" onClick={onSkip} className="btn btn-ghost btn-sm">
+        <button
+          type="button"
+          onClick={onSkip}
+          disabled={scraping}
+          className="btn btn-ghost btn-sm"
+        >
           Skip setup
         </button>
         <button
           type="button"
-          onClick={onNext}
-          disabled={!ready}
+          onClick={handleContinue}
+          disabled={!ready || scraping}
           className="btn btn-primary btn-sm disabled:opacity-50"
         >
-          Continue
+          {scraping
+            ? "Reading site…"
+            : hasUrl
+              ? "Read site & continue"
+              : "Continue without website"}
         </button>
       </div>
     </section>
@@ -279,11 +376,13 @@ function UploadStep({
   return (
     <section className="surface p-6 space-y-5">
       <div>
-        <h2 className="text-sm font-semibold text-ink">Upload reference material</h2>
+        <h2 className="text-sm font-semibold text-ink">
+          {docs.length > 0 ? "Sources" : "Upload reference material"}
+        </h2>
         <p className="mt-1 text-xs text-mid">
-          Brand books, product overviews, decks, customer notes — anything that
-          describes your business. PDF, MD, or TXT. The agent will distill these
-          into a brand voice, ICP, and design system on the next step.
+          {docs.length > 0
+            ? "These are the sources we'll distill into a brand voice, ICP, and design system on the next step. Add more if you have brand books, product decks, or customer notes — or continue with what's here."
+            : "Brand books, product overviews, decks, customer notes — anything that describes your business. PDF, MD, or TXT. The agent will distill these into a brand voice, ICP, and design system on the next step."}
         </p>
       </div>
 
@@ -376,10 +475,13 @@ function GenerateStep({
     setError(null);
     setGenerating(true);
     try {
+      const seed: Record<string, string> = {};
+      if (brandName.trim()) seed.brandName = brandName.trim();
+      if (pitch.trim()) seed.pitch = pitch.trim();
       const res = await fetch("/api/brand-extract", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ brandName, pitch }),
+        body: JSON.stringify(seed),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as {

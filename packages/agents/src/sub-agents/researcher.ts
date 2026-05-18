@@ -14,6 +14,7 @@ import type { CpClient } from "@marketing/cp-client";
 import type { LlmModel, ResearchSearchProvider } from "@marketing/shared-types";
 import { DEFAULT_RESEARCH_SEARCH_PROVIDER } from "@marketing/shared-types";
 import { RESEARCHER_PROMPT } from "@marketing/prompts";
+import { getPrompt } from "../prompt-store";
 import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 import { buildKbTools } from "../tools/kb-tools";
@@ -57,9 +58,10 @@ export async function runResearcher({
   const xProfile = buildXProfileTool();
   const kbArchiveImage = buildKbArchiveImageTool();
 
+  const systemPrompt = await getPrompt("researcher.system", RESEARCHER_PROMPT);
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: RESEARCHER_PROMPT,
+    system: systemPrompt,
     prompt: request,
     maxSteps: 12,
     tools: {

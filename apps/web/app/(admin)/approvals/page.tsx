@@ -1,4 +1,4 @@
-import { eq, isNull, and, isNotNull, desc, lt } from "drizzle-orm";
+import { eq, isNull, and, isNotNull, desc, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { type PendingApproval } from "./approval-row";
 import { ApprovalsShell } from "./approvals-shell";
@@ -121,11 +121,23 @@ export default async function ApprovalsPage() {
   // whose latest approval is already decided. These are workflows where the
   // decide route persisted the decision but approvalHook.resume() failed —
   // surface them so the operator can manually re-fire the hook.
+  //
   // Grace period: the decide route persists the decision before the workflow's
   // finishWorkflowRunStep flips workflow_runs to 'completed', so a freshly
-  // decided approval would briefly look stuck. Only flag rows where the
-  // decision has had ≥30s to propagate.
-  const STUCK_GRACE_MS = 30_000;
+  // decided approval would briefly look stuck. After `changes_requested` the
+  // workflow then runs a full revision pipeline (asset regen on image
+  // feedback can take 1–5 min) before inserting the next pending approval
+  // row — so we wait 10 min on `decided_at` AND require `updated_at` to be
+  // equally stale before flagging. The revision loop heartbeats
+  // workflow_runs.updated_at in touchWorkflowRunStep, so an active run
+  // keeps the row warm and stays out of this list.
+  //
+  // The NOT EXISTS guard handles the post-revision window where a new
+  // pending approval row already exists; the heartbeat handles the
+  // pre-revision window where it doesn't yet. Without both guards, the
+  // Re-fire button would force-cancel an actively running revision via the
+  // HookNotFoundError reconcile path in /api/approvals/[id]/resume.
+  const STUCK_GRACE_MS = 10 * 60_000;
   const stuckCutoff = new Date(Date.now() - STUCK_GRACE_MS);
   const stuckRows = await db
     .select({
@@ -161,6 +173,11 @@ export default async function ApprovalsPage() {
         isNotNull(schema.workflowRuns.contentId),
         isNotNull(schema.approvals.decision),
         lt(schema.approvals.decidedAt, stuckCutoff),
+        // The run must also be quiet on its own clock — an in-flight
+        // revision pass heartbeats updated_at so a slow image regen
+        // (Replicate can take minutes) doesn't show up as stuck mid-flight.
+        lt(schema.workflowRuns.updatedAt, stuckCutoff),
+        sql`not exists (select 1 from ${schema.approvals} a2 where a2.content_id = ${schema.contentItems.id} and a2.requested_at > ${schema.approvals.requestedAt} and a2.decision is null)`,
       ),
     )
     .orderBy(desc(schema.approvals.decidedAt));

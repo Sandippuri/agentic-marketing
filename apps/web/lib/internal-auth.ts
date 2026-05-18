@@ -2,6 +2,24 @@
 // Control Plane. Plan §5 Phase 1 Day 5.
 
 const HEADER = "x-internal-token";
+const WORKSPACE_HEADER = "x-workspace-id";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Internal callers (workflows, cron, manager) historically all wrote to the
+ * Legacy workspace because there was no way to pass which workspace they
+ * actually meant. Now they send `x-workspace-id` alongside the internal
+ * token; this returns that workspace when the header is a valid UUID, or
+ * `null` so the caller can fall back to Legacy for backwards-compat.
+ *
+ * We deliberately do NOT verify membership here — internal callers are
+ * trusted by the token; the bouncer is `assertInternal` on the same route.
+ */
+export function internalWorkspaceOverride(request: Request): string | null {
+  const raw = request.headers.get(WORKSPACE_HEADER);
+  if (!raw) return null;
+  return UUID_RE.test(raw) ? raw : null;
+}
 
 export class InternalAuthError extends Error {
   constructor(message: string) {

@@ -52,6 +52,14 @@ export type GenerationTracker = {
   fail(err: unknown): Promise<void>;
   /** Update linked campaign/content as the orchestrator surfaces them. */
   link(input: { campaignId?: string | null; contentId?: string | null }): Promise<void>;
+  /**
+   * Signal that the orchestrator dispatched a real workflow-engine run
+   * (workflow_runs row created via dispatchStart). The chat-handler races
+   * on this to send the "Workflow run started" stub and detach. Distinct
+   * from `onFirstStep` (which only marks the start of in-process sub-agent
+   * work and is NOT a real engine run).
+   */
+  notifyWorkflowDispatched(workflowRunId: string): void;
 };
 
 const STEP_TO_KIND: Record<StepName, JobKind> = {
@@ -83,13 +91,19 @@ export type CreateTrackerInput = {
   userMessage: string;
   /**
    * Fires once, the first time a sub-agent step actually starts and the
-   * parent generation_jobs row has been created. The chat-handler uses
-   * this to detach long-running workflows from the chat request: as soon
-   * as a sub-agent fires, it replies with a tracking link and lets the
-   * orchestrator finish in the background. Pure-conversation turns never
-   * call this.
+   * parent generation_jobs row has been created. Pure-conversation turns
+   * never call this. Used today only by callers that want to know *some*
+   * in-process work began; it is NOT a signal that a workflow-engine run
+   * exists (use `onWorkflowDispatched` for that).
    */
   onFirstStep?: (jobId: string) => void;
+  /**
+   * Fires once, when the orchestrator calls `dispatch_workflow` and the
+   * dispatcher returns a real `workflow_runs.id`. The chat-handler uses
+   * this to detach long-running runs from the synchronous reply with an
+   * honest "Workflow run started (wrun_…)" stub.
+   */
+  onWorkflowDispatched?: (workflowRunId: string) => void;
 };
 
 export function createGenerationTracker({
@@ -98,9 +112,11 @@ export function createGenerationTracker({
   userId,
   userMessage,
   onFirstStep,
+  onWorkflowDispatched,
 }: CreateTrackerInput): GenerationTracker {
   let jobId: string | null = null;
   let kind: JobKind = "other";
+  let dispatchedRunId: string | null = null;
   let pending: Promise<void> = Promise.resolve();
 
   // Serialise mutations so step PATCHes never overtake the parent INSERT.
@@ -257,6 +273,21 @@ export function createGenerationTracker({
           })
           .then(() => undefined),
       );
+    },
+
+    notifyWorkflowDispatched(workflowRunId) {
+      if (dispatchedRunId) return;
+      dispatchedRunId = workflowRunId;
+      if (onWorkflowDispatched) {
+        try {
+          onWorkflowDispatched(workflowRunId);
+        } catch (err) {
+          log.warn(
+            { err: (err as Error).message },
+            "onWorkflowDispatched callback threw",
+          );
+        }
+      }
     },
   };
 }

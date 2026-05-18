@@ -12,7 +12,10 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "db:migrate:run": "pnpm --filter @marketing/db exec node scripts/migrate.mjs run",
+    "db:migrate:list": "pnpm --filter @marketing/db exec node scripts/migrate.mjs list",
+    "setup:new-project": "node scripts/setup-new-project.mjs"
   },
   "devDependencies": {
     "drizzle-kit": "^0.28.0",

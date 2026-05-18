@@ -3,7 +3,8 @@ import { z } from "zod";
 import pino from "pino";
 import type { CpClient } from "@marketing/cp-client";
 import { CONTENT_PROMPT } from "@marketing/prompts";
-import { buildBaseMemory, loadMemory } from "../memory";
+import { getPrompt } from "../prompt-store";
+import { buildBaseMemory, buildVisualMemory, loadMemory } from "../memory";
 import { buildSlackApprovalCard, buildDiscordApprovalEmbed, buildWebApprovalCard } from "../cards/approval";
 import { findSimilarContent } from "../find-similar";
 import { findBrandGuidance } from "../brand-guidance";
@@ -66,11 +67,21 @@ export async function runContent({
   jobId,
   workflowRunId,
 }: ContentInput): Promise<string> {
-  const baseMemory = await buildBaseMemory({ workspaceId });
+  const [baseMemory, visualMemory] = await Promise.all([
+    buildBaseMemory({ workspaceId, campaignId }),
+    // includeTokens=false: copy doesn't need hex codes or font families, just
+    // the mood/style words from brand.visual.
+    buildVisualMemory({ workspaceId, campaignId, includeTokens: false }),
+  ]);
+  const memoryBody = [baseMemory, visualMemory]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+  const systemBody = await getPrompt("content.system", CONTENT_PROMPT);
 
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: `${CONTENT_PROMPT}\n\n---\n\n# Memory\n\n${baseMemory}`,
+    system: `${systemBody}\n\n---\n\n# Memory\n\n${memoryBody}`,
     prompt: request,
     maxSteps: 8,
     tools: {

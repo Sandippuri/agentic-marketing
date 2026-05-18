@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import pino from "pino";
 import type { CpClient } from "@marketing/cp-client";
 import { ANALYST_PROMPT } from "@marketing/prompts";
+import { getPrompt } from "../prompt-store";
 import { loadMemoryDir } from "../memory";
 import { runGA4Report } from "../ga4-client";
 import type { LlmModel } from "@marketing/shared-types";
@@ -28,9 +29,10 @@ export type AnalystInput = {
 };
 
 export async function runAnalyst({ request, workspaceId, campaignId, cp, model, threadRef, jobId, workflowRunId }: AnalystInput): Promise<string> {
+  const systemPrompt = await getPrompt("analyst.system", ANALYST_PROMPT);
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: ANALYST_PROMPT,
+    system: systemPrompt,
     prompt: request,
     maxSteps: 8,
     tools: {

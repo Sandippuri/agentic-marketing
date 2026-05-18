@@ -106,6 +106,7 @@ export function ModelsForm({
 
   const imageModel: ImageModel = settings.image_model ?? DEFAULT_IMAGE_MODEL;
   const videoModel: VideoModel = settings.video_model ?? DEFAULT_VIDEO_MODEL;
+  const videoModelInfo = VIDEO_MODELS.find((m) => m.id === videoModel);
   const videoEnabled = settings.video_generation_enabled ?? false;
   const workflowEngine: WorkflowEngineId =
     settings.workflow_engine ?? DEFAULT_WORKFLOW_ENGINE;
@@ -224,7 +225,7 @@ export function ModelsForm({
 
       <Section
         title="Video generation"
-        description="Promo clips alongside the still image for LinkedIn / X / X threads. Requires GEMINI_API_KEY. The toggle below pauses video generation platform-wide without losing the model pick."
+        description="Promo clips alongside the still image for LinkedIn / X / X threads. Veo uses GEMINI_API_KEY, Sora uses OPENAI_API_KEY, Wan uses REPLICATE_API_TOKEN. The toggle below pauses video generation platform-wide without losing the model pick."
         actions={
           <label className="inline-flex items-center gap-2 text-sm text-ink cursor-pointer">
             <input
@@ -285,6 +286,24 @@ export function ModelsForm({
             );
           })}
         </div>
+        {videoModelInfo?.provider === "openai" && (
+          <p className="mt-3 text-xs text-mid">
+            Requires{" "}
+            <code className="rounded bg-[var(--bg-elevated)] px-1">
+              OPENAI_API_KEY
+            </code>{" "}
+            in env.
+          </p>
+        )}
+        {videoModelInfo?.provider === "replicate" && (
+          <p className="mt-3 text-xs text-mid">
+            Requires{" "}
+            <code className="rounded bg-[var(--bg-elevated)] px-1">
+              REPLICATE_API_TOKEN
+            </code>{" "}
+            in env.
+          </p>
+        )}
       </Section>
 
       <Section

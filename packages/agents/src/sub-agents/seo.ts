@@ -11,6 +11,7 @@ import pino from "pino";
 import type { CpClient } from "@marketing/cp-client";
 import type { LlmModel } from "@marketing/shared-types";
 import { SEO_PROMPT } from "@marketing/prompts";
+import { getPrompt } from "../prompt-store";
 import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 import { eq } from "drizzle-orm";
@@ -43,10 +44,11 @@ export async function runSeo({
   workflowRunId,
 }: SeoInput): Promise<string> {
   const kbTools = buildKbTools({ workspaceId, campaignId });
+  const systemPrompt = await getPrompt("seo.system", SEO_PROMPT);
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: SEO_PROMPT,
+    system: systemPrompt,
     prompt: request,
     maxSteps: 6,
     tools: {

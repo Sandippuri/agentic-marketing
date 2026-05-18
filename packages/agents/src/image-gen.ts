@@ -55,14 +55,6 @@ export type GenerateImageResult = {
   mimeType: string;
 };
 
-const SDXL_DIMS: Record<ImageAspect, { width: number; height: number }> = {
-  square:    { width: 1024, height: 1024 },
-  portrait:  { width: 1024, height: 1280 },
-  landscape: { width: 1280, height: 1024 },
-  wide:      { width: 1280, height: 720 },
-  tall:      { width: 720,  height: 1280 },
-};
-
 const ASPECT_RATIO_STRING: Record<ImageAspect, string> = {
   square:    "1:1",
   portrait:  "3:4",
@@ -105,38 +97,14 @@ function buildReplicateInput(
   const aspect: ImageAspect = opts.aspect ?? "square";
 
   switch (info.inputShape) {
-    case "sdxl": {
-      const dims = SDXL_DIMS[aspect];
-      return {
-        prompt: opts.prompt,
-        negative_prompt:
-          opts.negativePrompt ?? "text, watermark, logo, blur, low quality",
-        width: dims.width,
-        height: dims.height,
-        num_outputs: 1,
-        scheduler: "K_EULER",
-        num_inference_steps: 30,
-        guidance_scale: 7.5,
-      };
-    }
-    case "nano-banana": {
+    case "ideogram": {
       const input: Record<string, unknown> = {
         prompt: opts.prompt,
         aspect_ratio: ASPECT_RATIO_STRING[aspect],
-        output_format: "png",
+        magic_prompt_option: "Auto",
       };
-      if (opts.imageInput && opts.imageInput.length > 0) {
-        input.image_input = opts.imageInput;
-      }
+      if (opts.negativePrompt) input.negative_prompt = opts.negativePrompt;
       return input;
-    }
-    case "flux": {
-      return {
-        prompt: opts.prompt,
-        aspect_ratio: ASPECT_RATIO_STRING[aspect],
-        output_format: "png",
-        num_outputs: 1,
-      };
     }
     case "google-image": {
       throw new Error(

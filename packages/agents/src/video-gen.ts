@@ -1,8 +1,9 @@
-// Video generation dispatcher. Mirrors image-gen.ts but for Veo.
+// Video generation dispatcher. Mirrors image-gen.ts but for video models.
 //
-// Required env: GEMINI_API_KEY.
-// Today only Google/Veo is wired up; the dispatcher is shaped so a future
-// Replicate or Runway provider can drop in without touching callers.
+// Provider → env var:
+//   - google     → GEMINI_API_KEY  (Veo 3.1)
+//   - openai     → OPENAI_API_KEY  (Sora 2 / Sora 2 Pro)
+//   - replicate  → REPLICATE_API_TOKEN  (Wan 2.6 t2v / i2v, others)
 
 import pino from "pino";
 import {
@@ -12,6 +13,8 @@ import {
   type VideoModel,
 } from "@marketing/shared-types";
 import { generateGoogleVideo } from "./providers/google-video";
+import { generateOpenAiVideo } from "./providers/openai-video";
+import { generateReplicateVideo } from "./providers/replicate-video";
 
 const log = pino({ name: "video-gen" });
 
@@ -47,6 +50,22 @@ export async function generateVideo(
   switch (info.provider) {
     case "google":
       return generateGoogleVideo(info, {
+        prompt: opts.prompt,
+        aspect: opts.aspect,
+        durationSec: opts.durationSec,
+        imageUrl: opts.imageUrl,
+        withAudio: opts.withAudio,
+      });
+    case "openai":
+      return generateOpenAiVideo(info, {
+        prompt: opts.prompt,
+        aspect: opts.aspect,
+        durationSec: opts.durationSec,
+        imageUrl: opts.imageUrl,
+        withAudio: opts.withAudio,
+      });
+    case "replicate":
+      return generateReplicateVideo(info, {
         prompt: opts.prompt,
         aspect: opts.aspect,
         durationSec: opts.durationSec,

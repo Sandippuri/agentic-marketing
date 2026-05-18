@@ -25,6 +25,7 @@ const nextConfig: NextConfig = {
         : []),
     ],
   },
+  allowedDevOrigins: ["leeds-inspection-acknowledge-gcc.trycloudflare.com"],
 };
 
 export default withWorkflow(nextConfig);

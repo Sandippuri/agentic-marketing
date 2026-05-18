@@ -1,10 +1,9 @@
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { CAMPAIGN_PHASES, CAMPAIGN_STATUSES } from "@marketing/shared-types";
-import { withAudit } from "@/lib/audit";
 import { getRequestActor } from "@/lib/auth";
-import { isInternal } from "@/lib/internal-auth";
+import { internalWorkspaceOverride, isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import {
   LEGACY_WORKSPACE_ID,
@@ -35,9 +34,6 @@ export async function GET(request: Request) {
     if (!isInternalCall) {
       ctx = await getWorkspaceContext();
     }
-    // Internal callers fall back to Legacy via a fabricated filter.
-    const filterCtx: WorkspaceContext | null = ctx ?? null;
-    const legacyOnly = !ctx;
 
     const url = new URL(request.url);
     const statusParam = url.searchParams.get("status");
@@ -61,15 +57,20 @@ export async function GET(request: Request) {
           )
         : undefined;
 
-    const where = legacyOnly
-      ? // internal callers: filter explicitly to Legacy workspace.
-        whereInWorkspace(
-          schema.campaigns,
-          { workspaceId: LEGACY_WORKSPACE_ID } as WorkspaceContext,
-          statusFilter,
-          phaseFilter,
-        )
-      : whereInWorkspace(schema.campaigns, filterCtx, statusFilter, phaseFilter);
+    // Internal callers send `x-workspace-id` for the workspace they meant;
+    // when absent we keep the legacy fallback so old cron jobs keep working.
+    const internalWs = isInternalCall ? internalWorkspaceOverride(request) : null;
+    const filterCtx: WorkspaceContext | null = ctx
+      ? ctx
+      : isInternalCall
+        ? ({ workspaceId: internalWs ?? LEGACY_WORKSPACE_ID } as WorkspaceContext)
+        : null;
+    const where = whereInWorkspace(
+      schema.campaigns,
+      filterCtx,
+      statusFilter,
+      phaseFilter,
+    );
 
     const rows = await db
       .select()
@@ -89,30 +90,58 @@ export async function POST(request: Request) {
       ? { id: null, kind: "agent" as const }
       : await getRequestActor();
     const workspaceId = isInternalCall
-      ? LEGACY_WORKSPACE_ID
+      ? (internalWorkspaceOverride(request) ?? LEGACY_WORKSPACE_ID)
       : (await getWorkspaceContext()).workspaceId;
 
     const input = await parseJson(request, CreateCampaign);
     const db = getDb();
-    const created = await withAudit(
-      { db, actor, action: "campaign.create", entityType: "campaigns" },
-      async () => null,
-      async () => {
-        const [row] = await db
-          .insert(schema.campaigns)
-          .values({
-            workspaceId,
-            slug: input.slug,
-            name: input.name,
-            phase: input.phase ?? "buildup",
-            briefMd: input.briefMd ?? null,
-            ownerId: actor.id ?? null,
-          })
-          .returning();
-        return row!;
-      },
-    );
-    return Response.json(created, { status: 201 });
+
+    // Idempotent on (workspace_id, slug). The Strategist's create_campaign
+    // tool can be re-invoked when the sub-agent retries mid-run; a hard 23505
+    // here used to wedge the chat. ON CONFLICT DO NOTHING returns no row
+    // when the slug is taken — we then fetch and return the existing campaign.
+    const [created] = await db
+      .insert(schema.campaigns)
+      .values({
+        workspaceId,
+        slug: input.slug,
+        name: input.name,
+        phase: input.phase ?? "buildup",
+        briefMd: input.briefMd ?? null,
+        ownerId: actor.id ?? null,
+      })
+      .onConflictDoNothing({
+        target: [schema.campaigns.workspaceId, schema.campaigns.slug],
+      })
+      .returning();
+
+    if (created) {
+      await db.insert(schema.auditLog).values({
+        actorId: actor.id ?? null,
+        actorKind: actor.kind,
+        action: "campaign.create",
+        entityType: "campaigns",
+        entityId: created.id,
+        before: null,
+        after: created as object,
+      });
+      return Response.json(created, { status: 201 });
+    }
+
+    const [existing] = await db
+      .select()
+      .from(schema.campaigns)
+      .where(
+        and(
+          eq(schema.campaigns.workspaceId, workspaceId),
+          eq(schema.campaigns.slug, input.slug),
+        ),
+      )
+      .limit(1);
+    if (!existing) {
+      throw new Error("campaign upsert: conflict reported but row not found");
+    }
+    return Response.json(existing, { status: 200 });
   } catch (err) {
     return errorResponse(err);
   }

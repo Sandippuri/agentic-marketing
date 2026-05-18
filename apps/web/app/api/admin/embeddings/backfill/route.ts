@@ -29,12 +29,12 @@ export const dynamic = "force-dynamic";
 
 const Body = z
   .object({
-    batchSize: z.number().int().min(1).max(200).optional().default(50),
+    batchSize: z.number().int().min(1).max(200).default(50),
     sourceTypes: z
       .array(z.enum(["content", "kb_chunk", "rejected_draft", "brand_doc"]))
       .optional(),
   })
-  .optional();
+  .default({});
 
 type Counts = { stale: number; current: number; currentModel: string };
 
@@ -67,8 +67,8 @@ export async function POST(request: Request) {
   try {
     if (!isInternal(request)) await getRequestActor();
 
-    const input = (await parseJson(request, Body)) ?? {};
-    const batchSize = input.batchSize ?? 50;
+    const input = await parseJson(request, Body);
+    const batchSize = input.batchSize;
     const sourceTypes = input.sourceTypes;
 
     const db = getDb();

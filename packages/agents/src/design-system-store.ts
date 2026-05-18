@@ -112,7 +112,10 @@ export async function getDesignSystem(
 // Format the design system as a compact human-readable block the asset
 // sub-agent can consult before crafting an image-gen prompt. Hex codes are
 // kept verbatim; the prompt above instructs the agent to copy them exactly.
-export function formatDesignSystemForPrompt(doc: DesignSystemDoc): string {
+export function formatDesignSystemForPrompt(
+  doc: DesignSystemDoc,
+  opts: { omitLogos?: boolean } = {},
+): string {
   const lines: string[] = [];
 
   if (doc.colors.length > 0) {
@@ -135,7 +138,7 @@ export function formatDesignSystemForPrompt(doc: DesignSystemDoc): string {
     if (t.notes) lines.push(`  - Notes: ${t.notes}`);
   }
 
-  if (doc.logos.length > 0) {
+  if (doc.logos.length > 0 && !opts.omitLogos) {
     lines.push("");
     lines.push("Logos (URLs are signed and expire ~1h):");
     for (const l of doc.logos) {

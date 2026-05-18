@@ -1,5 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
+import { generateText } from "ai";
 import { getDb, schema } from "@marketing/db";
 import {
   DESIGN_LOGO_VARIANTS,
@@ -16,6 +17,11 @@ import {
   getSignedAssetUrl,
 } from "@/lib/supabase/storage";
 import { clearDesignSystemCache } from "@marketing/agents/design-system-store";
+import { getLanguageModel } from "@marketing/agents/llm-registry";
+import {
+  getPrompt,
+  LOGO_DESCRIBE_PROMPT,
+} from "@marketing/agents/prompt-store";
 
 export const dynamic = "force-dynamic";
 
@@ -71,10 +77,51 @@ export async function POST(request: Request) {
     await uploadAsset(storagePath, buffer, contentType);
     const signedUrl = await getSignedAssetUrl(storagePath);
 
-    return Response.json({ storagePath, contentType, signedUrl });
+    // Auto-describe the logo so the image-gen prompt can verbally anchor the
+    // mark alongside the attached file (bi-modal grounding). One-time cost
+    // (~$0.0005 per upload on gemini-2.5-flash-lite); the description is
+    // surfaced to the client so it can pre-fill the notes field. Best-effort:
+    // a failure here doesn't block the upload.
+    const autoNotes = await describeLogo(buffer, contentType).catch(() => null);
+
+    return Response.json({
+      storagePath,
+      contentType,
+      signedUrl,
+      autoNotes,
+    });
   } catch (err) {
     return errorResponse(err);
   }
+}
+
+async function describeLogo(
+  bytes: Buffer,
+  contentType: string,
+): Promise<string | null> {
+  // Skip SVG — the vision model expects a raster. SVGs work as references for
+  // image-gen but we can't easily inspect them without a rasteriser here.
+  if (contentType === "image/svg+xml") return null;
+  const dataUrl = `data:${contentType};base64,${bytes.toString("base64")}`;
+  const systemPrompt = await getPrompt(
+    "logo_describer.system",
+    LOGO_DESCRIBE_PROMPT,
+  );
+  const { text } = await generateText({
+    model: getLanguageModel("gemini-2.5-flash-lite"),
+    system: systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this brand logo for reproduction." },
+          { type: "image", image: dataUrl },
+        ],
+      },
+    ],
+  });
+  const cleaned = text.trim().replace(/^["'`]|["'`]$/g, "").slice(0, 220);
+  return cleaned || null;
 }
 
 const DesignLogoZ = z.object({

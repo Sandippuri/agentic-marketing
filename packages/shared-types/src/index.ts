@@ -506,17 +506,13 @@ export const EMPTY_DESIGN_SYSTEM: BrandDesignSystem = {
 export type ImageProvider = "replicate" | "google" | "openai";
 
 // Tells the dispatcher which input shape to build for the underlying API.
-// `sdxl`          → width/height + negative_prompt + scheduler/steps/guidance.
-// `nano-banana`   → aspect_ratio string + optional image_input array (Replicate).
-// `flux`          → aspect_ratio string, no negative_prompt.
-// `google-image`  → Gemini :generateContent endpoint (Nano Banana / Nano Banana 2).
-// `openai-image`  → OpenAI /v1/images/generations endpoint (gpt-image-1).
+// `google-image`  → Gemini :generateContent endpoint (Nano Banana family).
+// `openai-image`  → OpenAI /v1/images/generations endpoint (gpt-image-2).
+// `ideogram`      → Replicate Ideogram v3 (aspect_ratio + optional negative_prompt).
 export type ImageInputShape =
-  | "sdxl"
-  | "nano-banana"
-  | "flux"
   | "google-image"
-  | "openai-image";
+  | "openai-image"
+  | "ideogram";
 
 export type ImageModelInfo = {
   id: string;
@@ -533,10 +529,8 @@ export type ImageModelInfo = {
 export const IMAGE_MODELS: readonly ImageModelInfo[] = [
   {
     // Note: id retained for backward compatibility (DEFAULT_IMAGE_MODEL,
-    // existing Settings rows). The model behind this id is actually
-    // "Nano Banana Pro" — the flagship slow/high-quality variant. The
-    // separately-released "Nano Banana 2" is gemini-3.1-flash-image-preview
-    // and is registered as `nano-banana-2-flash` below.
+    // existing Settings rows). The model behind this id is "Nano Banana Pro"
+    // — the flagship slow/high-quality variant.
     id: "nano-banana-2",
     label: "Nano Banana Pro (Gemini 3 Pro Image)",
     description: "Google's flagship image model via the native Gemini API. 'Thinking' mode for complex compositions, best in-image text rendering, multi-image composition. Slower/pricier than the Flash variants. Uses GEMINI_API_KEY.",
@@ -557,46 +551,6 @@ export const IMAGE_MODELS: readonly ImageModelInfo[] = [
     supportsImageInput: true,
   },
   {
-    id: "nano-banana-native",
-    label: "Nano Banana (Gemini 2.5 Flash Image)",
-    description: "Original Nano Banana via the native Gemini API. Lower-latency legacy fast model. Uses GEMINI_API_KEY.",
-    provider: "google",
-    modelRef: "gemini-2.5-flash-image",
-    inputShape: "google-image",
-    supportsNegativePrompt: false,
-    supportsImageInput: true,
-  },
-  {
-    id: "nano-banana",
-    label: "Nano Banana (Gemini 2.5 Flash Image, via Replicate)",
-    description: "Replicate-hosted Nano Banana. Kept as fallback when GEMINI_API_KEY is not configured.",
-    provider: "replicate",
-    modelRef: "google/nano-banana",
-    inputShape: "nano-banana",
-    supportsNegativePrompt: false,
-    supportsImageInput: true,
-  },
-  {
-    id: "sdxl",
-    label: "Stable Diffusion XL",
-    description: "Photoreal/illustrative backgrounds. Supports negative prompts and pixel-precise dimensions.",
-    provider: "replicate",
-    modelRef: "stability-ai/sdxl:39ed52f2319f9bf9f645afe1b76c5c4ff4d2fc18a408ef4ea6b5f1c2c7a97f1e",
-    inputShape: "sdxl",
-    supportsNegativePrompt: true,
-    supportsImageInput: false,
-  },
-  {
-    id: "flux-schnell",
-    label: "Flux Schnell (fast)",
-    description: "Black Forest Labs' fast model. ~4-step inference, good general quality at low latency.",
-    provider: "replicate",
-    modelRef: "black-forest-labs/flux-schnell",
-    inputShape: "flux",
-    supportsNegativePrompt: false,
-    supportsImageInput: false,
-  },
-  {
     id: "gpt-image-2",
     label: "GPT Image 2 (ChatGPT Images 2.0)",
     description: "OpenAI's flagship image model (released Apr 2026). Best legible in-image text on any provider, up to 4K output, any-resolution support. Slower + pricier than Gemini, but the right choice when the model itself must render headlines or marketing copy. Uses OPENAI_API_KEY.",
@@ -607,33 +561,13 @@ export const IMAGE_MODELS: readonly ImageModelInfo[] = [
     supportsImageInput: false,
   },
   {
-    id: "gpt-image-1-5",
-    label: "GPT Image 1.5",
-    description: "Mid-tier OpenAI image model. Step between gpt-image-1 and gpt-image-2 on quality and price. Uses OPENAI_API_KEY.",
-    provider: "openai",
-    modelRef: "gpt-image-1.5",
-    inputShape: "openai-image",
-    supportsNegativePrompt: false,
-    supportsImageInput: false,
-  },
-  {
-    id: "gpt-image-1",
-    label: "GPT Image 1 (legacy)",
-    description: "OpenAI's first widely-available image model. Strong prompt adherence and good in-image text rendering. Kept for compatibility — gpt-image-2 is the newer/better choice. Uses OPENAI_API_KEY.",
-    provider: "openai",
-    modelRef: "gpt-image-1",
-    inputShape: "openai-image",
-    supportsNegativePrompt: false,
-    supportsImageInput: false,
-  },
-  {
-    id: "gpt-image-1-mini",
-    label: "GPT Image 1 mini",
-    description: "Cheap/fast OpenAI image variant. Lower fidelity than gpt-image-1 but cost-efficient for high-volume / draft use. Uses OPENAI_API_KEY.",
-    provider: "openai",
-    modelRef: "gpt-image-1-mini",
-    inputShape: "openai-image",
-    supportsNegativePrompt: false,
+    id: "ideogram-v3-balanced",
+    label: "Ideogram v3 Balanced",
+    description: "Ideogram v3 via Replicate. Strong typography and graphic-design output, with negative prompts. Balanced tier — middle ground between Turbo (fast/cheap) and Quality (slow/hi-fi). Uses REPLICATE_API_TOKEN.",
+    provider: "replicate",
+    modelRef: "ideogram-ai/ideogram-v3-balanced",
+    inputShape: "ideogram",
+    supportsNegativePrompt: true,
     supportsImageInput: false,
   },
 ];
@@ -654,7 +588,7 @@ export function resolveImageModel(input: unknown): ImageModel {
 
 // --- Video generation models ----------------------------------------------
 
-export type VideoProvider = "google";
+export type VideoProvider = "google" | "openai" | "replicate";
 
 // Veo 3.1 supports 16:9 (landscape) and 9:16 (portrait) only.
 export type VideoAspect = "16:9" | "9:16";
@@ -664,9 +598,10 @@ export type VideoModelInfo = {
   label: string;
   description: string;
   provider: VideoProvider;
-  /** Bare Gemini model id (e.g. "veo-3.1-generate-preview"). */
+  /** Bare provider model id — e.g. "veo-3.1-generate-preview" (Google),
+   *  "sora-2-pro" (OpenAI), or "wan-video/wan-2.6-t2v" (Replicate). */
   modelRef: string;
-  /** Default duration in seconds. Veo currently produces ~8s clips. */
+  /** Default duration in seconds. */
   defaultDurationSec: number;
   supportsAudio: boolean;
   supportsImageToVideo: boolean;
@@ -690,6 +625,46 @@ export const VIDEO_MODELS: readonly VideoModelInfo[] = [
     provider: "google",
     modelRef: "veo-3.1-fast-generate-preview",
     defaultDurationSec: 8,
+    supportsAudio: true,
+    supportsImageToVideo: true,
+  },
+  {
+    id: "sora-2",
+    label: "Sora 2 (OpenAI)",
+    description: "OpenAI's standard Sora 2 — 720p clips (4/8/12s) with native audio. Text-to-video and image-to-video (image uploaded via Files API). Uses OPENAI_API_KEY.",
+    provider: "openai",
+    modelRef: "sora-2",
+    defaultDurationSec: 8,
+    supportsAudio: true,
+    supportsImageToVideo: true,
+  },
+  {
+    id: "sora-2-pro",
+    label: "Sora 2 Pro (OpenAI)",
+    description: "Higher-quality Sora 2 — up to 1080p (16:9 / 9:16) with native audio. Uses OPENAI_API_KEY.",
+    provider: "openai",
+    modelRef: "sora-2-pro",
+    defaultDurationSec: 8,
+    supportsAudio: true,
+    supportsImageToVideo: true,
+  },
+  {
+    id: "wan-2.6-t2v",
+    label: "Wan 2.6 T2V (Replicate)",
+    description: "Alibaba's Wan 2.6 text-to-video on Replicate. Up to 1080p, 5/10/15s clips with native audio. Uses REPLICATE_API_TOKEN.",
+    provider: "replicate",
+    modelRef: "wan-video/wan-2.6-t2v",
+    defaultDurationSec: 5,
+    supportsAudio: true,
+    supportsImageToVideo: false,
+  },
+  {
+    id: "wan-2.6-i2v",
+    label: "Wan 2.6 I2V (Replicate)",
+    description: "Wan 2.6 image-to-video — first-frame anchor, 1080p, native audio. Uses REPLICATE_API_TOKEN.",
+    provider: "replicate",
+    modelRef: "wan-video/wan-2.6-i2v",
+    defaultDurationSec: 5,
     supportsAudio: true,
     supportsImageToVideo: true,
   },
@@ -719,6 +694,29 @@ export const VIDEO_ENABLED_CONTENT_TYPES: readonly ContentType[] = [
 
 export function contentTypeWantsVideo(type: ContentType | string): boolean {
   return (VIDEO_ENABLED_CONTENT_TYPES as readonly string[]).includes(type);
+}
+
+// --- Workflow media selection --------------------------------------------
+// User-chosen media for a single-post (or campaign-fanout) run. Threaded
+// from the StartForm / Draft button / execute_campaign pre-flight all the
+// way into the workflow body.
+//
+// Semantics — "auto" is the legacy behavior (image always, video only when
+// contentTypeWantsVideo() agrees AND needs_video!==false). The other three
+// are HARD overrides: they bypass the type allowlist and stamp
+// content_items.needs_video to match. The dispatcher refuses video runs
+// when video generation is infeasible (missing GEMINI_API_KEY or
+// settings.video_generation_enabled=false) so users see the reason instead
+// of getting a silent image-only result.
+export const WORKFLOW_MEDIA = ["auto", "image", "video", "both"] as const;
+export type WorkflowMedia = (typeof WORKFLOW_MEDIA)[number];
+export const DEFAULT_WORKFLOW_MEDIA: WorkflowMedia = "auto";
+
+export function resolveWorkflowMedia(input: unknown): WorkflowMedia {
+  return typeof input === "string" &&
+    (WORKFLOW_MEDIA as readonly string[]).includes(input)
+    ? (input as WorkflowMedia)
+    : DEFAULT_WORKFLOW_MEDIA;
 }
 
 // --- Workflow engine ------------------------------------------------------

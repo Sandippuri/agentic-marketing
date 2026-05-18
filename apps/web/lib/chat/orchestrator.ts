@@ -1,9 +1,18 @@
-import { generateText, streamText, tool } from "ai";
+import {
+  appendResponseMessages,
+  convertToCoreMessages,
+  generateText,
+  streamText,
+  tool,
+  type CoreMessage,
+  type Message,
+} from "ai";
 import { z } from "zod";
 import pino from "pino";
 import { eq } from "drizzle-orm";
 import type { CpClient } from "@marketing/cp-client";
 import {
+  CHANNELS,
   resolveLlmModel,
   resolveResearchSearchProvider,
   type LlmModel,
@@ -13,6 +22,7 @@ import { getDb, schema } from "@marketing/db";
 import { getLanguageModel } from "@marketing/agents/llm-registry";
 import { recordLlmUsage } from "@marketing/agents/usage";
 import { ORCHESTRATOR_PROMPT } from "@marketing/prompts";
+import { getPrompt } from "@marketing/agents/prompt-store";
 import { runStrategist } from "@marketing/agents/sub-agents/strategist";
 import { runContent } from "@marketing/agents/sub-agents/content";
 import { runAnalyst } from "@marketing/agents/sub-agents/analyst";
@@ -22,7 +32,13 @@ import { buildKbTools } from "@marketing/agents/tools/kb-tools";
 import { ensureCollection, upsertDocument } from "@marketing/agents/kb";
 import { chunkAndEmbed } from "@marketing/agents/kb";
 import { buildWorkspaceTools } from "./workspace-tools";
+import { buildAttachmentTools } from "./attachment-tools";
+import { buildUiTools } from "./ui-tools";
+import { publishWebThreadEvent } from "./web-bus";
 import {
+  dispatchStart,
+  getDefaultWorkflowEngine,
+  getDefaultWorkflowModel,
   getWorkflowModelConfig,
   pickSubAgentModel,
 } from "@/lib/workflow-engines";
@@ -102,9 +118,45 @@ async function buildOrchestratorCall({
         "\n\n"
       : "";
 
-  const systemPrompt = systemContext
-    ? `${ORCHESTRATOR_PROMPT}\n\n---\n\n${systemContext}`
-    : ORCHESTRATOR_PROMPT;
+  const uiUsage = [
+    "## UI tools — show_form and show_view",
+    "Two tools drive the chat UI: `show_form` for input, `show_view` for output.",
+    "",
+    "**Use `show_form` whenever you need structured input.** Examples: which channel " +
+      "to publish on, which persona to target, picking a campaign from a list, " +
+      "naming a new campaign, choosing a tone. NEVER list field names in plain text " +
+      "and ask the user to reply in freeform — call show_form with a fields array. " +
+      "Field types: text / email / number / select (with options) / textarea. The " +
+      "tool result is { [name]: value }; use those values directly.",
+    "",
+    "**Use `show_view` to present structured output.** After `run_strategist` returns " +
+      "a calendar, emit a show_view with a `plan` block instead of pasting the JSON " +
+      "or a markdown table. After `run_analyst` returns metrics, use a `table` or " +
+      "`key_value` block. After `dispatch_workflow` returns a workflowRunId, use a " +
+      "short `text` (intent: 'success') + `key_value` showing the id and the " +
+      "tracking link. NEVER reproduce structured data as plain markdown when a " +
+      "view block fits — the UI renders the spec as a real card.",
+    "",
+    "After a `show_form` result arrives or a `show_view` renders, follow up with " +
+      "a brief plain-text sentence telling the user what you did and what's next.",
+    "",
+    "**End most turns with `suggest_followups`** — 2–3 short, specific phrases " +
+      "the user is likely to ask next (max 60 chars each). The UI renders them " +
+      "as clickable chips below your message. Call it ONCE, at the very end of " +
+      "your reply. Skip when the conversation has clearly concluded (the user " +
+      "said thanks, a workflow dispatched, or you gave a definitive final answer).",
+  ].join("\n");
+
+  const orchestratorBody = await getPrompt(
+    "orchestrator.system",
+    ORCHESTRATOR_PROMPT,
+  );
+  const systemPrompt = [
+    orchestratorBody,
+    "---",
+    uiUsage,
+    ...(systemContext ? ["---", systemContext] : []),
+  ].join("\n\n");
 
   // Knowledge-base tools (read-only subset) — give the chat direct semantic
   // access to brand/persona/competitor/SOP/playbook docs without needing to
@@ -117,16 +169,36 @@ async function buildOrchestratorCall({
   // reflects whichever workspace the caller is signed into.
   const workspaceTools = buildWorkspaceTools({ workspaceId });
 
+  // Chat-attachment lifecycle tools. `attachment_read` resolves a temporary
+  // upload by id; `kb_archive_attachment` promotes a valuable one into the KB.
+  const attachmentTools = buildAttachmentTools({ workspaceId, userId });
+
+  // UI driver tools. `show_form` is human-in-the-loop (no execute — the
+  // client renders the form and feeds values back via addToolResult).
+  // `show_view` renders read-only structured panels for plans, tables, status.
+  const uiTools = buildUiTools();
+
   return {
     resolvedModel,
-    callArgs: {
+    // System prompt is returned separately so callers can prepend it as a
+    // CoreSystemMessage with Anthropic `cacheControl: ephemeral`. Passing it
+    // as the top-level `system: string` does not currently expose a way to
+    // attach provider options, so it would skip prompt caching entirely.
+    systemPrompt,
+    // The text-style `prompt` for legacy callers that pass a single message
+    // plus a history block. New `messages`-style callers ignore this and pass
+    // `messages: convertToCoreMessages(uiMessages)` to streamText instead,
+    // spreading `baseArgs` alongside.
+    prompt: `${historyContext}User (${userId}): ${text}`,
+    baseArgs: {
       model: getLanguageModel(resolvedModel),
-      system: systemPrompt,
-      prompt: `${historyContext}User (${userId}): ${text}`,
       maxSteps: 10,
       tools: {
       // ── Flow: Workspace state (campaigns / posts / approvals / runs) ───
       ...workspaceTools,
+
+      // ── Flow: Chat attachments (temporary uploads + KB promotion) ─────
+      ...attachmentTools,
 
       check_publish_job: tool({
         description:
@@ -227,14 +299,35 @@ async function buildOrchestratorCall({
 
       // ── Flow: Planning ─────────────────────────────────────────────────
       run_strategist: tool({
-        description: "Run the Strategist sub-agent for campaign planning, briefs, and calendars",
+        description:
+          "INLINE strategy Q&A on an EXISTING campaign only. campaignId is " +
+          "REQUIRED — the tool cannot be called without one. " +
+          "Use this for short refinements like 'tweak the brief of campaign X', " +
+          "'add 2 more LinkedIn posts to campaign Z's calendar', or 'what " +
+          "stage should post W be in?'. " +
+          "To create a NEW campaign (brief + calendar + visual identity), call " +
+          "dispatch_workflow({ kind: 'campaign', request }) — it returns in " +
+          "seconds with a workflow_runs id and runs the planner in the " +
+          "background. The strategist takes 1–3 minutes; inlining it for a " +
+          "new campaign would freeze the chat. There is no 'inline new " +
+          "campaign' path on purpose.",
         parameters: z.object({
           request: z.string().describe("Natural-language instruction for the strategist"),
-          campaignId: z.string().optional().describe("Existing campaign ID if refining a plan"),
+          campaignId: z
+            .string()
+            .describe(
+              "REQUIRED. The existing campaign this refinement applies to. " +
+              "If there is no existing campaign, do NOT call this tool — call " +
+              "dispatch_workflow({ kind: 'campaign' }) instead.",
+            ),
         }),
-        execute: async ({ request, campaignId }) => {
+        // The second arg carries the toolCallId of THIS run_strategist call in
+        // the parent stream. We forward each internal step (read_memory,
+        // find_brand_guidance, …) onto the SSE bus tagged with that id so the
+        // chat client can render them nested under the parent chip live.
+        execute: async ({ request, campaignId }, { toolCallId }) => {
           return recordStep("strategist", { request, campaignId }, () =>
-            withSpan("sub-agent.strategist", { campaignId: campaignId ?? "" }, () => {
+            withSpan("sub-agent.strategist", { campaignId }, () => {
               log.info({ campaignId }, "invoking strategist");
               return runStrategist({
                 request,
@@ -244,6 +337,20 @@ async function buildOrchestratorCall({
                 model: modelFor("strategist"),
                 threadRef,
                 jobId: tracker?.getJobId() ?? null,
+                onSubStep: (ev) => {
+                  publishWebThreadEvent(String(threadRef), {
+                    kind: "sub_step",
+                    step: {
+                      parentToolCallId: toolCallId,
+                      parentTool: "run_strategist",
+                      step: ev.tool,
+                      state: ev.state,
+                      args: ev.args,
+                      result: ev.state === "result" ? ev.result : undefined,
+                      at: Date.now(),
+                    },
+                  });
+                },
               });
             }),
           );
@@ -381,27 +488,119 @@ async function buildOrchestratorCall({
         },
       }),
 
-      // ── Flow: Meta ─────────────────────────────────────────────────────
-      clarify: tool({
-        description: "Ask the user a single clarifying question when the intent is ambiguous",
+      // ── Flow: Dispatch (real workflow-engine run) ──────────────────────
+      // This is the ONLY tool that creates a workflow_runs row visible on
+      // the Workflow Observability dashboard. Sub-agent tools above do
+      // in-process drafting only.
+      dispatch_workflow: tool({
+        description:
+          "Kick off a real workflow-engine run (kind = campaign | single_post | asset). " +
+          "Use ONLY when the user wants the full pipeline to produce reviewable artifacts " +
+          "(campaign brief + calendar + drafts in DB, or a single post drafted + submitted " +
+          "for approval, or an asset generated for a specific content item). The dispatcher " +
+          "creates a workflow_runs row and returns its id. The run executes asynchronously — " +
+          "the chat will detach with a tracking link and post the final result back to this " +
+          "thread when it's ready.\n\n" +
+          "Use run_strategist / run_content / run_asset instead for quick inline drafts that " +
+          "the user just wants to see in chat without DB artifacts or an approval flow.",
         parameters: z.object({
-          question: z.string(),
+          kind: z.enum(["campaign", "single_post", "asset"]),
+          request: z
+            .string()
+            .min(1)
+            .max(8000)
+            .describe("Natural-language brief describing what to generate."),
+          campaignId: z
+            .string()
+            .uuid()
+            .optional()
+            .describe(
+              "Existing campaign to attach to. Required for single_post on non-vercel engines.",
+            ),
+          contentId: z
+            .string()
+            .uuid()
+            .optional()
+            .describe("Existing content item; used by kind='asset'."),
+          channel: z
+            .enum(CHANNELS)
+            .optional()
+            .describe("Target channel for kind='single_post'."),
         }),
-        execute: async ({ question }) => question,
+        execute: async ({ kind, request, campaignId, contentId, channel }) => {
+          try {
+            const engineId = await getDefaultWorkflowEngine();
+            const dispatchModel = model ?? (await getDefaultWorkflowModel());
+            const result = await dispatchStart(engineId, {
+              kind,
+              workspaceId,
+              request,
+              campaignId,
+              contentId,
+              channel,
+              threadRef,
+              model: dispatchModel,
+              userId,
+            });
+            if (tracker) {
+              tracker.notifyWorkflowDispatched(result.workflowRunId);
+              if (campaignId || contentId) {
+                await tracker.link({
+                  ...(campaignId ? { campaignId } : {}),
+                  ...(contentId ? { contentId } : {}),
+                });
+              }
+            }
+            log.info(
+              {
+                kind,
+                workflowRunId: result.workflowRunId,
+                engine: result.engine,
+              },
+              "dispatch_workflow succeeded",
+            );
+            return {
+              workflowRunId: result.workflowRunId,
+              engine: result.engine,
+              engineRunRef: result.engineRunRef,
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.error({ err: message, kind }, "dispatch_workflow failed");
+            // Return the error to the LLM so it can apologise to the user
+            // instead of throwing and aborting the whole turn.
+            return { error: message };
+          }
+        },
       }),
+
+      // ── Flow: UI (forms + read-only views) ─────────────────────────────
+      // `show_form` replaces the old text-only `clarify` tool — instead of
+      // typing a question, the model emits a form the user fills in and the
+      // structured values come back as the tool result.
+      // `show_view` is how structured sub-agent output (plan calendars,
+      // tables, key/value summaries, status callouts) reaches the UI.
+      ...uiTools,
     },
     } as const,
   };
 }
 
 async function _runOrchestrator(input: OrchestratorInput): Promise<string> {
-  const { resolvedModel, callArgs } = await buildOrchestratorCall(input);
+  const { resolvedModel, baseArgs, systemPrompt, prompt } =
+    await buildOrchestratorCall(input);
   const {
     text: response,
     steps,
     usage,
     experimental_providerMetadata,
-  } = await generateText(callArgs);
+  } = await generateText({
+    ...baseArgs,
+    messages: [
+      cachedSystemMessage(systemPrompt),
+      { role: "user", content: prompt },
+    ],
+  });
   log.info({ steps: steps.length }, "orchestrator finished");
   await recordLlmUsage({
     agent: "orchestrator",
@@ -445,8 +644,15 @@ async function _streamOrchestrator(
   input: OrchestratorInput,
   opts: StreamOrchestratorOpts,
 ): Promise<string> {
-  const { resolvedModel, callArgs } = await buildOrchestratorCall(input);
-  const result = streamText(callArgs);
+  const { resolvedModel, baseArgs, systemPrompt, prompt } =
+    await buildOrchestratorCall(input);
+  const result = streamText({
+    ...baseArgs,
+    messages: [
+      cachedSystemMessage(systemPrompt),
+      { role: "user", content: prompt },
+    ],
+  });
 
   let accumulated = "";
   for await (const delta of result.textStream) {
@@ -475,6 +681,131 @@ async function _streamOrchestrator(
     providerMetadata,
   });
   return accumulated;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// UI-message variant (data stream protocol for the AI SDK's useChat)
+// ─────────────────────────────────────────────────────────────────────────
+
+export type StreamOrchestratorUiInput = Omit<OrchestratorInput, "history" | "text"> & {
+  /**
+   * Full UIMessage[] from the client. The last entry must be a user message —
+   * useChat sends the entire conversation on each turn.
+   */
+  messages: Message[];
+};
+
+export type StreamOrchestratorUiOpts = {
+  /**
+   * Called once the LLM finishes (including all auto-executed tool steps).
+   * Receives the merged UIMessage[] (request + assistant response messages)
+   * so callers can persist the full transcript. Failures are swallowed —
+   * persistence must not break the stream response.
+   */
+  onFinishMessages?: (merged: Message[]) => Promise<void> | void;
+};
+
+/**
+ * UseChat-compatible orchestrator stream. Returns a Response carrying the
+ * AI SDK data stream protocol; the client consumes it with
+ * `useChat({ api })` and renders `message.parts` directly.
+ *
+ * Detach semantics: when the orchestrator calls `dispatch_workflow`, the tool
+ * result lands in the message as a tool-invocation part; the client renders
+ * a "workflow started" card from that part and the assistant's follow-up
+ * text streams in normally. We no longer close the stream early — the user
+ * gets richer mid-stream feedback than the old "kill it" approach gave.
+ */
+export function streamOrchestratorUi(
+  input: StreamOrchestratorUiInput,
+  opts: StreamOrchestratorUiOpts = {},
+): Promise<Response> {
+  return withSpan(
+    "orchestrator.stream.ui",
+    { userId: input.userId, threadRef: input.threadRef },
+    () => _streamOrchestratorUi(input, opts),
+  );
+}
+
+async function _streamOrchestratorUi(
+  input: StreamOrchestratorUiInput,
+  opts: StreamOrchestratorUiOpts,
+): Promise<Response> {
+  const lastUser = [...input.messages].reverse().find((m) => m.role === "user");
+  const userText =
+    lastUser?.content ??
+    lastUser?.parts?.find((p) => p.type === "text")?.text ??
+    "";
+
+  const { resolvedModel, baseArgs, systemPrompt } = await buildOrchestratorCall({
+    ...input,
+    text: userText,
+    // History block is duplicative — `messages` already carries every turn.
+    history: [],
+  });
+
+  const result = streamText({
+    ...baseArgs,
+    messages: [
+      cachedSystemMessage(systemPrompt),
+      ...convertToCoreMessages(input.messages),
+    ],
+    onFinish: async ({ response, usage, providerMetadata }) => {
+      try {
+        await recordLlmUsage({
+          agent: "orchestrator",
+          workspaceId: input.workspaceId,
+          model: resolvedModel,
+          threadRef: input.threadRef,
+          jobId: input.tracker?.getJobId() ?? null,
+          usage,
+          providerMetadata,
+        });
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "recordLlmUsage failed (ui stream)");
+      }
+
+      if (opts.onFinishMessages) {
+        try {
+          const merged = appendResponseMessages({
+            messages: input.messages,
+            responseMessages: response.messages,
+          });
+          await opts.onFinishMessages(merged);
+        } catch (err) {
+          log.warn({ err: (err as Error).message }, "onFinishMessages threw (ui stream)");
+        }
+      }
+    },
+  });
+
+  return result.toDataStreamResponse({
+    sendUsage: true,
+    sendReasoning: true,
+    // Without this, any mid-stream error becomes the generic "An error
+    // occurred" in the client. We log the full error server-side too — the
+    // client banner gets the message string for fast triage.
+    getErrorMessage: (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error({ err: message }, "ui stream error");
+      return message;
+    },
+  });
+}
+
+// Wraps the orchestrator system prompt as a CoreSystemMessage with Anthropic
+// ephemeral cache control. Non-Anthropic providers ignore providerOptions, so
+// this is safe to apply unconditionally. The system block is by far the
+// largest stable input on every turn — caching it cuts steady-state input
+// cost by ~90% on Claude.
+function cachedSystemMessage(systemPrompt: string): CoreMessage {
+  return {
+    role: "system",
+    content: systemPrompt,
+    providerOptions: {
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    },
+  };
 }
 
 async function loadResearchProvider() {

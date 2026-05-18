@@ -39,3 +39,7 @@ yarn-debug.log*
 
 # drizzle
 drizzle/.snapshot
+
+# new-project setup script — committed empty as a template. If you fill in
+# credentials, your local copy will still be staged unless you add it to
+# .git/info/exclude. Be careful — never `git add` this file after editing.

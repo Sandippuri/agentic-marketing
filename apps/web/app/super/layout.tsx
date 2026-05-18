@@ -68,6 +68,7 @@ export default async function SuperLayout({
       label: "Configuration",
       items: [
         { href: "/super/models", label: "Models & processes" },
+        { href: "/super/prompts", label: "Prompts" },
         { href: "/super/usage", label: "Usage" },
       ],
     },

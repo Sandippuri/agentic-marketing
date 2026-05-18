@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import {
+  WORKFLOW_MEDIA,
+  type WorkflowMedia,
+} from "@marketing/shared-types";
 
 type Props = {
   campaignId: string;
@@ -17,6 +21,15 @@ const TYPE_TO_CHANNEL: Record<string, string> = {
   x_thread: "x",
   x_post: "x",
   email: "email_hubspot",
+  instagram: "instagram",
+  facebook: "facebook",
+};
+
+const MEDIA_LABEL: Record<WorkflowMedia, string> = {
+  auto: "Auto",
+  image: "Image",
+  video: "Video",
+  both: "Both",
 };
 
 type State = "idle" | "starting" | "started" | "error";
@@ -30,6 +43,9 @@ export function DraftCalendarItemButton({
 }: Props) {
   const [state, setState] = useState<State>("idle");
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  // Per-item media pick. Local state so each row in the calendar can choose
+  // independently. Defaults to "auto" — legacy behavior.
+  const [media, setMedia] = useState<WorkflowMedia>("auto");
 
   async function onDraft() {
     if (state === "starting" || state === "started") return;
@@ -44,19 +60,21 @@ export function DraftCalendarItemButton({
 
     try {
       // Engine is resolved from settings.workflow_engine on the server.
+      const body: Record<string, unknown> = {
+        kind: "single_post",
+        request,
+        channel,
+        campaignId,
+      };
+      if (media !== "auto") body.media = media;
       const res = await fetch("/api/workflow-runs/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          kind: "single_post",
-          request,
-          channel,
-          campaignId,
-        }),
+        body: JSON.stringify(body),
       });
-      const body = (await res.json()) as { error?: string };
-      if (!res.ok || body.error) {
-        throw new Error(body.error ?? res.statusText);
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok || data.error) {
+        throw new Error(data.error ?? res.statusText);
       }
       setState("started");
     } catch (err) {
@@ -91,13 +109,32 @@ export function DraftCalendarItemButton({
     );
   }
   return (
-    <button
-      type="button"
-      onClick={onDraft}
-      disabled={state === "starting"}
-      className="btn btn-secondary btn-xs"
-    >
-      {state === "starting" ? "Starting…" : "Draft"}
-    </button>
+    <span className="inline-flex items-center gap-1">
+      {/* Media picker rides alongside Draft so the user makes the choice
+          before kickoff. Server enforces feasibility (GEMINI_API_KEY,
+          settings.video_generation_enabled) and 400s with a readable
+          reason; we surface that in the button's error state. */}
+      <select
+        value={media}
+        onChange={(e) => setMedia(e.target.value as WorkflowMedia)}
+        disabled={state === "starting"}
+        title="Media for this draft"
+        className="field py-0.5 text-xs w-auto"
+      >
+        {WORKFLOW_MEDIA.map((m) => (
+          <option key={m} value={m}>
+            {MEDIA_LABEL[m]}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={onDraft}
+        disabled={state === "starting"}
+        className="btn btn-secondary btn-xs"
+      >
+        {state === "starting" ? "Starting…" : "Draft"}
+      </button>
+    </span>
   );
 }

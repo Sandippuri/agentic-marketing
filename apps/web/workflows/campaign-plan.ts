@@ -1,4 +1,4 @@
-import { desc, gt } from "drizzle-orm";
+import { and, desc, eq, gt } from "drizzle-orm";
 import { CpClient } from "@marketing/cp-client";
 import { runStrategist } from "@marketing/agents";
 import { getDb, schema } from "@marketing/db";
@@ -36,20 +36,37 @@ export async function campaignPlanWorkflow(
 ): Promise<CampaignPlanOutput> {
   "use workflow";
 
+  let strategistResult: Awaited<ReturnType<typeof runStrategistStep>> | null = null;
   try {
-    const result = await runStrategistStep(input);
+    strategistResult = await runStrategistStep(input);
+    // The "successful" failure mode: the strategist generated text but never
+    // hit a persistence tool, so nothing landed in the DB. Surfacing this as
+    // a workflow failure prevents the UI from claiming a green run while
+    // showing no campaign anywhere.
+    if (!strategistResult.campaignId) {
+      throw new Error(
+        "strategist produced text but did not create or reference a campaign " +
+          "(no create_campaign / update_campaign / write_calendar call was made). " +
+          "Re-run with a brief that asks for a NEW campaign, or pass campaignId " +
+          "if you meant to update an existing one.",
+      );
+    }
     await finishWorkflowRunStep({
       workflowRunId: input.workflowRunId,
       status: "completed",
-      campaignId: result.campaignId,
+      campaignId: strategistResult.campaignId,
+      result: strategistResult,
     });
-    return { ...result, status: "completed" };
+    return { ...strategistResult, status: "completed" };
   } catch (err) {
     const message = (err as Error).message;
+    // Persist whatever the strategist produced — the text is the most
+    // valuable thing in the run, even if the workflow failed loud.
     await finishWorkflowRunStep({
       workflowRunId: input.workflowRunId,
       status: "failed",
       error: message,
+      result: strategistResult,
     });
     throw err;
   }
@@ -63,7 +80,15 @@ async function runStrategistStep(input: CampaignPlanInput): Promise<{
 
   const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
   const internalToken = process.env.INTERNAL_API_TOKEN ?? "";
-  const cp = new CpClient({ baseUrl, internalToken });
+  // workspaceId on the client makes every CP call land in the user's
+  // workspace via the x-workspace-id header. Without it, internal routes
+  // silently default to the Legacy workspace — that's the bug that hid all
+  // strategist-created campaigns from the user's Campaigns page.
+  const cp = new CpClient({
+    baseUrl,
+    internalToken,
+    workspaceId: input.workspaceId,
+  });
 
   // Capture the cutoff before the strategist runs so we can find any
   // campaign it creates via its create_campaign tool. runStrategist only
@@ -84,7 +109,12 @@ async function runStrategistStep(input: CampaignPlanInput): Promise<{
     const [created] = await db
       .select({ id: schema.campaigns.id })
       .from(schema.campaigns)
-      .where(gt(schema.campaigns.createdAt, cutoff))
+      .where(
+        and(
+          eq(schema.campaigns.workspaceId, input.workspaceId),
+          gt(schema.campaigns.createdAt, cutoff),
+        ),
+      )
       .orderBy(desc(schema.campaigns.createdAt))
       .limit(1);
     if (created) campaignId = created.id;
@@ -98,6 +128,7 @@ async function finishWorkflowRunStep(payload: {
   status: "completed" | "failed" | "cancelled";
   campaignId?: string | null;
   error?: string | null;
+  result?: unknown;
 }): Promise<void> {
   "use step";
   if (!payload.workflowRunId) return;
@@ -105,5 +136,6 @@ async function finishWorkflowRunStep(payload: {
     status: payload.status,
     campaignId: payload.campaignId ?? null,
     error: payload.error ?? null,
+    result: payload.result,
   });
 }

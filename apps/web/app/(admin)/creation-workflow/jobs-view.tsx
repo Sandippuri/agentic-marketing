@@ -8,7 +8,7 @@
 // State only — no fetch logic here. The server component re-runs on
 // realtime invalidation (RealtimeInvalidator subscribes to the table).
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -37,7 +37,15 @@ export type JobView = {
   threadRef: string | null;
   userId: string | null;
   userMessage: string;
-  kind: "campaign" | "single_post" | "asset" | "analysis" | "publish" | "research" | "other";
+  kind:
+    | "campaign"
+    | "execute_campaign"
+    | "single_post"
+    | "asset"
+    | "analysis"
+    | "publish"
+    | "research"
+    | "other";
   status: "running" | "completed" | "failed" | "queued" | "cancelled";
   currentStep: StepView["name"] | null;
   error: string | null;
@@ -94,6 +102,7 @@ const STEP_HINT: Record<StepView["name"], string> = {
 
 const KIND_LABEL: Record<JobView["kind"], string> = {
   campaign: "Campaign",
+  execute_campaign: "Execute campaign",
   single_post: "Single post",
   asset: "Asset",
   analysis: "Analysis",
@@ -112,6 +121,7 @@ type RecentStatusFilter = (typeof RECENT_STATUS_FILTERS)[number]["value"];
 const KIND_FILTERS: Array<{ value: JobView["kind"] | "all"; label: string }> = [
   { value: "all", label: "All kinds" },
   { value: "campaign", label: "Campaign" },
+  { value: "execute_campaign", label: "Execute campaign" },
   { value: "single_post", label: "Single post" },
   { value: "asset", label: "Asset" },
   { value: "analysis", label: "Analysis" },
@@ -400,55 +410,68 @@ function JobCard({ job }: { job: JobView }) {
   const ranByName = new Map(job.steps.map((s) => [s.name, s] as const));
 
   return (
-    <article className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-      <header className="px-5 py-4 border-b border-zinc-100 dark:border-zinc-800 flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
-            <EngineChip engine={job.engine} />
+    <article className="group relative overflow-hidden rounded-xl border border-border bg-surface shadow-sm transition-colors hover:border-border-strong">
+      {/* Left-edge accent — gives each card an at-a-glance status read */}
+      <span
+        aria-hidden
+        className={`absolute inset-y-0 left-0 w-0.75 ${statusAccentClass(job.status)}`}
+      />
+
+      <header className="flex items-start justify-between gap-4 px-5 pl-6 pt-4 pb-3">
+        <div className="min-w-0 flex-1 space-y-2.5">
+          {/* Compact meta strip: status, kind, model, engine — separated
+              from the title so the title can breathe. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusPill status={job.status} />
             <KindChip kind={job.kind} />
-            <StatusChip status={job.status} />
             {job.model && <ModelChip model={job.model} />}
-            {job.linkedCampaign && (
-              <span className="truncate">
-                · campaign{" "}
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">
-                  {job.linkedCampaign.name}
-                </span>
-              </span>
-            )}
-            {job.linkedContent && (
-              <span className="truncate">
-                · content{" "}
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">
-                  {job.linkedContent.title}
-                </span>
-              </span>
-            )}
+            <EngineChip engine={job.engine} />
+            <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-faint tabular-nums">
+              <RelativeTime iso={job.startedAt} />
+              {job.completedAt && (
+                <>
+                  <span className="text-border-strong">·</span>
+                  <span>
+                    {formatDuration(
+                      new Date(job.completedAt).getTime() -
+                        new Date(job.startedAt).getTime(),
+                    )}
+                  </span>
+                </>
+              )}
+            </span>
           </div>
-          <p className="text-sm text-zinc-900 dark:text-zinc-100 font-medium leading-snug line-clamp-2">
+
+          <h3 className="text-[15px] font-semibold leading-snug text-ink line-clamp-2">
             {job.userMessage}
-          </p>
-          <div className="mt-1 text-xs text-zinc-400 flex flex-wrap gap-x-3 gap-y-0.5">
-            <RelativeTime iso={job.startedAt} />
-            {job.completedAt && (
-              <span>
-                ·{" "}
-                {formatDuration(
-                  new Date(job.completedAt).getTime() -
-                    new Date(job.startedAt).getTime(),
-                )}
-              </span>
-            )}
-          </div>
+          </h3>
+
+          {(job.linkedCampaign || job.linkedContent) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {job.linkedCampaign && (
+                <LinkedEntityPill
+                  kind="campaign"
+                  label={job.linkedCampaign.name}
+                />
+              )}
+              {job.linkedContent && (
+                <LinkedEntityPill
+                  kind="content"
+                  label={job.linkedContent.title}
+                />
+              )}
+            </div>
+          )}
         </div>
-        <div className="shrink-0 flex items-center gap-2">
+
+        <div className="shrink-0 flex items-center gap-1.5">
           {canContinueAsPost && (
             <button
               type="button"
               onClick={() => setComposerOpen((v) => !v)}
-              className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/40"
+              className="inline-flex items-center gap-1 rounded-md border border-accent bg-(--accent-soft) px-2.5 py-1 text-xs font-medium text-accent hover:bg-(--accent-soft) hover:brightness-110"
             >
-              {composerOpen ? "Cancel" : "Continue → Draft post"}
+              {composerOpen ? "Cancel" : "Draft post →"}
             </button>
           )}
           {(job.status === "failed" || job.status === "cancelled") && (
@@ -473,9 +496,11 @@ function JobCard({ job }: { job: JobView }) {
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="rounded-md border border-zinc-200 dark:border-zinc-700 px-2 py-1 text-xs text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800"
+            aria-expanded={expanded}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-xs font-medium text-mid hover:border-border-strong hover:text-ink"
           >
-            {expanded ? "Hide details" : "Show details"}
+            <span>{expanded ? "Hide" : "Details"}</span>
+            <ChevronIcon open={expanded} />
           </button>
         </div>
       </header>
@@ -493,32 +518,34 @@ function JobCard({ job }: { job: JobView }) {
           render an engine-aware status block instead so the card doesn't
           look stuck on five empty placeholder pills. */}
       {job.engine === "custom" ? (
-        <div className="px-5 py-4 flex flex-wrap gap-2 items-center">
-          {pipelineNames.map((name, idx) => {
-            const step = ranByName.get(name);
-            const isCurrent = job.currentStep === name;
-            return (
-              <div key={name} className="flex items-center gap-2">
-                <PipelinePill
-                  name={name}
-                  step={step}
-                  isCurrent={isCurrent && job.status === "running"}
-                />
-                {idx < pipelineNames.length - 1 && (
-                  <span className="text-zinc-300 dark:text-zinc-700">→</span>
-                )}
-              </div>
-            );
-          })}
+        <div className="px-5 pl-6 pb-4">
+          <Stepper
+            steps={pipelineNames.map((name) => {
+              const step = ranByName.get(name);
+              const isCurrent =
+                job.currentStep === name && job.status === "running";
+              return {
+                key: name,
+                label: STEP_LABEL[name],
+                hint: STEP_HINT[name],
+                status: !step
+                  ? "pending"
+                  : step.status === "running" || isCurrent
+                    ? "running"
+                    : step.status,
+                pulsing: isCurrent,
+              };
+            })}
+          />
         </div>
       ) : (
         <ExternalEngineStatus job={job} />
       )}
 
       {expanded && (
-        <div className="border-t border-zinc-100 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800">
+        <div className="border-t border-border divide-y divide-border bg-surface-2">
           {job.engine === "custom" && job.steps.length === 0 && (
-            <div className="px-5 py-4 text-sm text-zinc-400">
+            <div className="px-5 pl-6 py-4 text-sm text-faint">
               Waiting for the first sub-agent to start.
             </div>
           )}
@@ -526,26 +553,122 @@ function JobCard({ job }: { job: JobView }) {
             <StepDetail key={step.id} step={step} />
           ))}
           {job.engine !== "custom" && (
-            <div className="px-5 py-4 space-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+            <div className="px-5 pl-6 py-4 space-y-3 text-xs text-mid">
               {job.contentAssets.length > 0 && (
                 <AssetVariantsStrip assets={job.contentAssets} />
               )}
               {job.engineRunRef && (
-                <p className="font-mono">
-                  <span className="text-zinc-400">runId</span>{" "}
-                  <span className="text-zinc-700 dark:text-zinc-300">{job.engineRunRef}</span>
-                </p>
+                <div className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1 font-mono text-[11px]">
+                  <span className="text-faint">runId</span>
+                  <span className="text-ink">{job.engineRunRef}</span>
+                </div>
               )}
             </div>
           )}
           {job.error && (
-            <div className="px-5 py-4 text-sm text-red-600 dark:text-red-400">
+            <div className="px-5 pl-6 py-3 text-sm text-red-600 dark:text-red-400">
               <strong className="font-medium">Job error:</strong> {job.error}
             </div>
           )}
         </div>
       )}
     </article>
+  );
+}
+
+// Maps run status to a tailwind bg-* class for the left-edge accent strip.
+// Running uses the accent variable so it matches the app's brand; the other
+// states use distinct hues so a glance down a list of cards reads:
+// "two running, one done, one in trouble."
+function statusAccentClass(status: JobView["status"]): string {
+  switch (status) {
+    case "running":
+    case "queued":
+      return "bg-[var(--accent)]";
+    case "completed":
+      return "bg-emerald-500";
+    case "failed":
+      return "bg-red-500";
+    case "cancelled":
+      return "bg-amber-500";
+    default:
+      return "bg-[var(--border)]";
+  }
+}
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`transition-transform ${open ? "rotate-180" : ""}`}
+      aria-hidden
+    >
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
+function LinkedEntityPill({
+  kind,
+  label,
+}: {
+  kind: "campaign" | "content";
+  label: string;
+}) {
+  const icon =
+    kind === "campaign" ? (
+      <svg
+        viewBox="0 0 24 24"
+        width="12"
+        height="12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <circle cx="12" cy="12" r="9" />
+        <circle cx="12" cy="12" r="5" />
+        <circle cx="12" cy="12" r="1.5" />
+      </svg>
+    ) : (
+      <svg
+        viewBox="0 0 24 24"
+        width="12"
+        height="12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+        <path d="M14 2v6h6" />
+        <path d="M8 13h8M8 17h5" />
+      </svg>
+    );
+  return (
+    <span
+      title={label}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-mid"
+    >
+      <span className="text-faint">{icon}</span>
+      <span className="text-[10px] uppercase tracking-wider text-faint">
+        {kind}
+      </span>
+      <span className="truncate font-medium text-ink max-w-[18rem]">
+        {label}
+      </span>
+    </span>
   );
 }
 
@@ -729,23 +852,23 @@ function ExternalEngineStatus({ job }: { job: JobView }) {
         ? "text-emerald-600 dark:text-emerald-400"
         : footnote?.tone === "warn"
           ? "text-amber-600 dark:text-amber-400"
-          : "text-zinc-500 dark:text-zinc-400";
+          : "text-mid";
 
   return (
-    <div className="px-5 py-4 space-y-3 text-sm">
-      <div className="flex flex-wrap items-center gap-2">
-        {phases.map((p, idx) => (
-          <div key={p.key} className="flex items-center gap-2">
-            <ExternalPhasePill phase={p} />
-            {p.key === "approval" && job.agentRevisionCount > 0 && (
+    <div className="space-y-3 px-5 pl-6 pb-4">
+      <Stepper
+        steps={phases.map((p) => ({
+          key: p.key,
+          label: p.label,
+          hint: p.hint,
+          status: p.status,
+          pulsing: p.status === "running",
+          adornment:
+            p.key === "approval" && job.agentRevisionCount > 0 ? (
               <RevisionCountBadge count={job.agentRevisionCount} />
-            )}
-            {idx < phases.length - 1 && (
-              <span className="text-zinc-300 dark:text-zinc-700">→</span>
-            )}
-          </div>
-        ))}
-      </div>
+            ) : null,
+        }))}
+      />
       {footnote && <p className={`text-xs ${footnoteCls}`}>{footnote.text}</p>}
       {renderableAssets.length > 0 && (
         <AssetVariantsStrip assets={renderableAssets} />
@@ -778,26 +901,185 @@ function RevisionCountBadge({ count }: { count: number }) {
   );
 }
 
-function ExternalPhasePill({ phase }: { phase: ExternalPhase }) {
-  const tone =
-    phase.status === "running"
-      ? "border-blue-200 dark:border-blue-900/60 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-      : phase.status === "succeeded"
-        ? "border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
-        : phase.status === "failed"
-          ? "border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"
-          : phase.status === "needs_revision"
-            ? "border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
-            : "border-zinc-200 dark:border-zinc-800 text-zinc-400";
+// --- Stepper -------------------------------------------------------------
+//
+// Horizontal stepper used for both custom-engine sub-agent pipelines and
+// the inferred phase pipeline for external engines. The connector line
+// between steps is colored by the destination step's progress: a finished
+// step → next finished step gets a solid emerald line; running gets the
+// accent; pending stays a muted gutter. The result is that the bar reads
+// as a progress meter in addition to the pill labels.
+
+type StepperStepStatus =
+  | "succeeded"
+  | "running"
+  | "failed"
+  | "needs_revision"
+  | "pending";
+
+type StepperStep = {
+  key: string;
+  label: string;
+  hint?: string;
+  status: StepperStepStatus;
+  pulsing?: boolean;
+  adornment?: ReactNode;
+};
+
+function Stepper({ steps }: { steps: StepperStep[] }) {
+  return (
+    <ol className="flex flex-wrap items-center gap-y-2">
+      {steps.map((step, idx) => {
+        const next = steps[idx + 1];
+        return (
+          <li key={step.key} className="flex min-w-0 items-center">
+            <StepperPill step={step} index={idx} />
+            {step.adornment && (
+              <span className="ml-1.5 flex items-center">{step.adornment}</span>
+            )}
+            {next && <StepperConnector nextStatus={next.status} />}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function StepperPill({ step, index }: { step: StepperStep; index: number }) {
+  const { tone, ring } = stepperPillTones(step.status);
   return (
     <span
-      title={phase.hint}
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${tone}`}
+      title={step.hint}
+      className={`relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${tone}`}
     >
-      <StepDot status={phase.status} pulsing={phase.status === "running"} />
-      {phase.label}
+      <span className={`relative inline-flex h-4 w-4 items-center justify-center rounded-full ${ring}`}>
+        <StepperGlyph status={step.status} index={index} />
+        {step.pulsing && (
+          <span className="absolute inset-0 animate-ping rounded-full bg-current opacity-40" />
+        )}
+      </span>
+      <span>{step.label}</span>
     </span>
   );
+}
+
+function StepperGlyph({
+  status,
+  index,
+}: {
+  status: StepperStepStatus;
+  index: number;
+}) {
+  if (status === "succeeded") {
+    return (
+      <svg
+        viewBox="0 0 12 12"
+        width="10"
+        height="10"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <polyline points="2.5,6.5 5,9 9.5,3.5" />
+      </svg>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <svg
+        viewBox="0 0 12 12"
+        width="9"
+        height="9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        aria-hidden
+      >
+        <line x1="3" y1="3" x2="9" y2="9" />
+        <line x1="9" y1="3" x2="3" y2="9" />
+      </svg>
+    );
+  }
+  if (status === "needs_revision") {
+    return (
+      <svg
+        viewBox="0 0 12 12"
+        width="9"
+        height="9"
+        fill="currentColor"
+        aria-hidden
+      >
+        <circle cx="6" cy="6" r="2" />
+      </svg>
+    );
+  }
+  if (status === "running") {
+    return <span className="h-1.5 w-1.5 rounded-full bg-current" />;
+  }
+  // Pending — show the step number so the pipeline reads as 1-2-3-…
+  return (
+    <span className="text-[9px] font-semibold tabular-nums">{index + 1}</span>
+  );
+}
+
+function StepperConnector({ nextStatus }: { nextStatus: StepperStepStatus }) {
+  const cls =
+    nextStatus === "succeeded"
+      ? "bg-emerald-400/70 dark:bg-emerald-500/60"
+      : nextStatus === "running"
+        ? "bg-(--accent)/70"
+        : nextStatus === "failed"
+          ? "bg-red-400/70 dark:bg-red-500/60"
+          : nextStatus === "needs_revision"
+            ? "bg-amber-400/70 dark:bg-amber-500/60"
+            : "bg-border";
+  return (
+    <span
+      aria-hidden
+      className={`mx-1.5 inline-block h-px w-5 sm:w-7 ${cls}`}
+    />
+  );
+}
+
+function stepperPillTones(status: StepperStepStatus): {
+  tone: string;
+  ring: string;
+} {
+  switch (status) {
+    case "succeeded":
+      return {
+        tone:
+          "border-emerald-300/40 bg-emerald-50 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/30 dark:text-emerald-300",
+        ring: "bg-emerald-500 text-white",
+      };
+    case "running":
+      return {
+        tone:
+          "border-(--accent)/40 bg-(--accent-soft) text-accent dark:bg-(--accent-soft) dark:text-accent",
+        ring: "bg-(--accent) text-white",
+      };
+    case "failed":
+      return {
+        tone:
+          "border-red-300/40 bg-red-50 text-red-700 dark:border-red-700/40 dark:bg-red-900/30 dark:text-red-300",
+        ring: "bg-red-500 text-white",
+      };
+    case "needs_revision":
+      return {
+        tone:
+          "border-amber-300/40 bg-amber-50 text-amber-700 dark:border-amber-700/40 dark:bg-amber-900/30 dark:text-amber-300",
+        ring: "bg-amber-500 text-white",
+      };
+    default:
+      return {
+        tone: "border-border bg-surface-2 text-faint",
+        ring: "bg-surface-3 text-faint",
+      };
+  }
 }
 
 // Renders the asset-step output as a compact thumbnail strip. Used by both
@@ -1143,39 +1425,6 @@ function PreBlock({ value }: { value: unknown }) {
   );
 }
 
-function PipelinePill({
-  name,
-  step,
-  isCurrent,
-}: {
-  name: StepView["name"];
-  step: StepView | undefined;
-  isCurrent: boolean;
-}) {
-  let className =
-    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border ";
-  if (!step) {
-    className += "border-zinc-200 dark:border-zinc-800 text-zinc-400";
-  } else if (step.status === "running" || isCurrent) {
-    className +=
-      "border-blue-200 dark:border-blue-900/60 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300";
-  } else if (step.status === "succeeded") {
-    className +=
-      "border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300";
-  } else if (step.status === "failed") {
-    className +=
-      "border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300";
-  } else {
-    className += "border-zinc-200 dark:border-zinc-800 text-zinc-500";
-  }
-  return (
-    <span className={className}>
-      <StepDot status={step?.status ?? "pending"} pulsing={isCurrent} />
-      {STEP_LABEL[name]}
-    </span>
-  );
-}
-
 function StepDot({
   status,
   pulsing,
@@ -1202,25 +1451,65 @@ function StepDot({
   );
 }
 
-function StatusChip({ status }: { status: JobView["status"] }) {
-  const map: Record<JobView["status"], string> = {
-    queued:
-      "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
-    running:
-      "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-    completed:
-      "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-    failed: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-    cancelled:
-      "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-  };
+function StatusPill({ status }: { status: JobView["status"] }) {
+  const { bg, text, dot, pulse } = statusPillTones(status);
   return (
     <span
-      className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${map[status]}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${bg} ${text}`}
     >
+      <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${dot}`}>
+        {pulse && (
+          <span className={`absolute inset-0 animate-ping rounded-full ${dot} opacity-60`} />
+        )}
+      </span>
       {status}
     </span>
   );
+}
+
+function statusPillTones(status: JobView["status"]): {
+  bg: string;
+  text: string;
+  dot: string;
+  pulse: boolean;
+} {
+  switch (status) {
+    case "running":
+      return {
+        bg: "bg-(--accent-soft)",
+        text: "text-accent",
+        dot: "bg-(--accent)",
+        pulse: true,
+      };
+    case "queued":
+      return {
+        bg: "bg-surface-2 border border-border",
+        text: "text-mid",
+        dot: "bg-zinc-400 dark:bg-zinc-500",
+        pulse: true,
+      };
+    case "completed":
+      return {
+        bg: "bg-emerald-100 dark:bg-emerald-900/40",
+        text: "text-emerald-700 dark:text-emerald-300",
+        dot: "bg-emerald-500",
+        pulse: false,
+      };
+    case "failed":
+      return {
+        bg: "bg-red-100 dark:bg-red-900/40",
+        text: "text-red-700 dark:text-red-300",
+        dot: "bg-red-500",
+        pulse: false,
+      };
+    case "cancelled":
+      return {
+        bg: "bg-amber-100 dark:bg-amber-900/40",
+        text: "text-amber-700 dark:text-amber-300",
+        dot: "bg-amber-500",
+        pulse: false,
+      };
+  }
 }
 
 function KindChip({ kind }: { kind: JobView["kind"] }) {

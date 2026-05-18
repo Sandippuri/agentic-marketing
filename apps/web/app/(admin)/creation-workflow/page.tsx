@@ -178,6 +178,10 @@ export default async function CreationWorkflowPage() {
               inArray(schema.assets.contentId, contentIds),
             ),
           )
+          // Chronological so the variants strip reads left-to-right as
+          // "original → revision 1 → revision 2". Without an order the
+          // revised image can land before the original and confuse readers.
+          .orderBy(schema.assets.createdAt)
       : Promise.resolve([]),
     // Latest approval decision per content_id, so the Approval stage chip
     // can distinguish "approval timed out" from "reviewer requested changes"

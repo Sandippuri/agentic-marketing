@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 
-type TabKey = "brief" | "calendar" | "content";
+type TabKey = "brief" | "calendar" | "content" | "brand";
 
 type Tab = {
   key: TabKey;
@@ -16,16 +16,20 @@ export function CampaignTabs({
   brief,
   calendar,
   content,
+  brand,
   hasBrief,
   calendarCount,
   contentCount,
+  partnerLogoCount,
 }: {
   brief: ReactNode;
   calendar: ReactNode;
   content: ReactNode;
+  brand: ReactNode;
   hasBrief: boolean;
   calendarCount: number;
   contentCount: number;
+  partnerLogoCount: number;
 }) {
   const tabs: Tab[] = [
     { key: "brief", label: "Brief", available: hasBrief, panel: brief },
@@ -42,6 +46,13 @@ export function CampaignTabs({
       count: contentCount,
       available: true,
       panel: content,
+    },
+    {
+      key: "brand",
+      label: "Brand",
+      count: partnerLogoCount > 0 ? partnerLogoCount : undefined,
+      available: true,
+      panel: brand,
     },
   ];
 

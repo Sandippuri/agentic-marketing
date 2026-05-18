@@ -7,6 +7,7 @@
  * place rather than scattered across asset.ts and asset-variants.ts.
  */
 import type { GenerateImageOpts, ImageAspect } from "./image-gen";
+import { getPrompt, getRegistryEntry, renderTemplate } from "./prompt-store";
 import type { VisualConceptBrief } from "./sub-agents/art-director";
 
 export type CandidateVariant = {
@@ -33,6 +34,14 @@ export type ConceptToPromptOpts = {
    * attached — and hallucinates a near-miss mark from the brand name.
    */
   brandReferenceImages?: string[];
+  /**
+   * Signed URLs for user-uploaded inspiration images. Used as mood/style
+   * references — the model should match composition, palette, and lighting
+   * but render the brand's actual subject. Placed AFTER brand logos so
+   * provider caps drop inspiration before brand. When set, the prompt also
+   * appends an explicit "match this style" instruction.
+   */
+  inspirationReferenceImages?: string[];
   /** Channel — drives aspect ratio. */
   channel?: string;
   /**
@@ -64,11 +73,8 @@ const VARIANT_PERSPECTIVES = [
   "isometric 3/4 view, hero composition with the focal point centred",
 ];
 
-// Marketing-grade poster discipline. Injected into every prompt regardless of
-// perspective so the model treats the canvas as a poster (clear hierarchy,
-// breathable type, one idea) instead of a diagram (cubes, arrows, fake labels).
-const POSTER_DISCIPLINE =
-  "Treat this as a marketing POSTER, not a technical diagram. One clear focal subject. Strong typographic hierarchy with the headline as the dominant element. Generous negative space — let the composition breathe. Single light source, deliberate shadows. Photographic or rendered-product realism preferred over flat illustration. Do NOT invent on-canvas labels, fake percentages, fee tags, route arrows, or technical annotations the brief did not ask for.";
+// Poster discipline — admin-editable via PROMPT_REGISTRY in prompt-store.ts.
+// Reads as a checklist, not prose, so it doesn't dilute the logo directive.
 
 const ASPECT_BY_CHANNEL: Record<string, ImageAspect> = {
   internal_blog: "landscape",
@@ -82,20 +88,42 @@ const ASPECT_BY_CHANNEL: Record<string, ImageAspect> = {
   email_mailchimp: "landscape",
 };
 
-export function conceptToVariants(
+export async function conceptToVariants(
   brief: VisualConceptBrief,
   opts: ConceptToPromptOpts = {},
-): CandidateVariant[] {
+): Promise<CandidateVariant[]> {
   const variantCount = opts.variantCount ?? 1;
   const aspect = ASPECT_BY_CHANNEL[opts.channel ?? "linkedin"] ?? "square";
   const negative = buildNegative(brief);
 
-  // Logos first so they survive any provider-side cap; dedupe against KB refs
-  // in case a brand asset has also been indexed as a visual reference.
+  // Logos first so they survive any provider-side cap. Inspiration next
+  // (user explicitly asked for this style). KB visual refs last. Dedupe in
+  // case a brand asset has also been indexed as a visual reference.
   const imageInputs = dedupe([
     ...(opts.brandReferenceImages ?? []),
+    ...(opts.inspirationReferenceImages ?? []),
     ...brief.reference_image_urls,
   ]).slice(0, MAX_IMAGE_INPUTS);
+
+  // Admin-editable prompts — fetched once per call (5-min cache makes this
+  // free at scale). Defaults live in PROMPT_REGISTRY in prompt-store.ts.
+  const [posterDiscipline, overlay] = await Promise.all([
+    getPrompt(
+      "concept_to_prompt.poster_discipline",
+      getRegistryEntry("concept_to_prompt.poster_discipline")!.defaultBody,
+    ),
+    brief.slots.headline
+      ? getPrompt(
+          "concept_to_prompt.overlay_with_headline",
+          getRegistryEntry("concept_to_prompt.overlay_with_headline")!.defaultBody,
+        ).then((tpl) =>
+          renderTemplate(tpl, { headline: brief.slots.headline }),
+        )
+      : getPrompt(
+          "concept_to_prompt.overlay_no_headline",
+          getRegistryEntry("concept_to_prompt.overlay_no_headline")!.defaultBody,
+        ),
+  ]);
 
   const subjects =
     brief.real_subjects.length > 0
@@ -107,11 +135,10 @@ export function conceptToVariants(
     brief.reference_image_urls.length > 0
       ? `Match the visual language of the reference images provided (composition, lighting, real product geometry).`
       : "";
-  // Post-0029 the model renders overlay text natively (no template chrome
-  // step). Only suppress text when there's no headline to render.
-  const overlay = brief.slots.headline
-    ? `Render the headline text "${brief.slots.headline}" cleanly into the image with brand-appropriate typography. No other text, no logos, no watermarks.`
-    : `No text, no logos, no watermarks. No anonymous abstract shapes.`;
+  const inspirationHint =
+    (opts.inspirationReferenceImages ?? []).length > 0
+      ? `Use the user-provided inspiration image as the dominant style reference — match its overall mood, palette, composition, and lighting — but render the brand's actual subject defined above, NOT the subject shown in the inspiration. Do not copy literal elements from the inspiration; borrow its visual language only.`
+      : "";
   const retryFix = opts.retryReason
     ? `Previous attempt was rejected for: ${opts.retryReason}. Fix this specifically.`
     : "";
@@ -125,7 +152,8 @@ export function conceptToVariants(
       focal,
       subjects,
       style,
-      POSTER_DISCIPLINE,
+      posterDiscipline,
+      inspirationHint,
       refsHint,
       overlay,
     ]
@@ -156,6 +184,20 @@ export function variantToImageOpts(
   };
 }
 
+// Logo-fidelity guard rails. We DO want the model to render the attached
+// brand logo, but we want to suppress "near-miss" model-invented marks:
+// fake wordmarks, signage with random text, fabricated badges. Honored by
+// SDXL-style providers that support negative prompts; ignored by Nano
+// Banana / Flux (their guard is the strict positive-prompt directive).
+const ALWAYS_BANNED = [
+  "fake brand mark",
+  "invented wordmark",
+  "made-up logo",
+  "misspelled brand name",
+  "garbled letterforms",
+  "watermark",
+];
+
 function buildNegative(brief: VisualConceptBrief): string {
-  return brief.banned_elements.join(", ");
+  return [...brief.banned_elements, ...ALWAYS_BANNED].join(", ");
 }

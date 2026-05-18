@@ -5,7 +5,12 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import { getLanguageModel } from "@marketing/agents/llm-registry";
 import { recordLlmUsage } from "@marketing/agents/usage";
-import { CHANNELS, type Channel, type LlmModel } from "@marketing/shared-types";
+import {
+  CHANNELS,
+  type Channel,
+  type LlmModel,
+  type WorkflowMedia,
+} from "@marketing/shared-types";
 import { kickVideoVariant } from "@/lib/asset-variants";
 import { finishRun } from "@/lib/workflow-engines/runs";
 import { assetPipelineWorkflow } from "./asset-pipeline";
@@ -56,6 +61,23 @@ export type SinglePostInput = {
   // Used by the redraft button and by retry-on-max_revisions to continue
   // revising instead of orphaning the prior draft and starting fresh.
   contentId?: string;
+  /**
+   * Storage path of a user-uploaded inspiration image, forwarded to every
+   * assetPipelineWorkflow invocation in this run (initial draft and any
+   * image-feedback revisions) so the visual stays in the same style across
+   * revisions. See /api/uploads/inspiration-images.
+   */
+  inspirationImagePath?: string;
+  /**
+   * User-chosen media for this run. Hard override:
+   *   - "auto" (default): images via assetPipelineWorkflow + opportunistic
+   *     video via kickVideoVariant (gated by contentTypeWantsVideo()).
+   *   - "image": images only — video kickoff is skipped, needs_video=false.
+   *   - "video": video only — image pipeline is skipped, needs_video=true,
+   *     video gen is forced regardless of channel allowlist.
+   *   - "both": images AND video, both forced (bypasses the type allowlist).
+   */
+  media?: WorkflowMedia;
 };
 
 export type SinglePostOutput = {
@@ -103,6 +125,20 @@ export async function singlePostWorkflow(
   let approvalId: string | undefined;
   let lastReason: string | null = null;
 
+  // Decompose `media` into the two independent decisions the workflow
+  // actually needs to make. `auto` keeps legacy behavior: images run, video
+  // is opportunistic (gated by contentTypeWantsVideo and per-content
+  // needs_video). Any explicit pick is a hard override on both.
+  const media: WorkflowMedia = input.media ?? "auto";
+  const wantsImage = media === "auto" || media === "image" || media === "both";
+  const wantsVideo = media === "video" || media === "both";
+  // forceVideo = the user explicitly picked video for THIS run; bypass the
+  // VIDEO_ENABLED_CONTENT_TYPES allowlist and the needs_video=false gate.
+  const forceVideo = wantsVideo;
+  // When the user said image-only, stamp needs_video=false so subsequent
+  // image-feedback regen passes don't accidentally kick off Veo again.
+  const stampNeedsVideoFalse = media === "image";
+
   // Resume path. When the caller passes contentId (redraft button or a
   // retry of a max_revisions cancelled run), prime the loop so iter 1 lands
   // straight in reviseAndResubmitStep against the existing content row.
@@ -129,6 +165,15 @@ export async function singlePostWorkflow(
         // content (see /api/content/[id]/generate-assets).
         const draft = await draftStep(input);
         contentId = draft.contentId;
+        // Persist the media choice onto the content row so subsequent
+        // revisions (image-feedback regen path below) honour the same
+        // decision and so the approval-panel "Video on/off" toggle reflects
+        // what the user originally picked.
+        if (stampNeedsVideoFalse) {
+          await setNeedsVideoStep({ contentId, value: false });
+        } else if (forceVideo) {
+          await setNeedsVideoStep({ contentId, value: true });
+        }
         // Direct await on assetPipelineWorkflow uses the Workflows
         // "flattening" pattern — the child's steps run inline in this run's
         // event log and share one unified history. Calling a `"use workflow"`
@@ -136,12 +181,28 @@ export async function singlePostWorkflow(
         // this lives in the workflow body rather than a step wrapper.
         // Best-effort: a misconfigured Replicate/Supabase still lets the
         // approval proceed without imagery.
-        await assetPipelineWorkflow({
-          workspaceId: input.workspaceId,
-          contentId,
-          request: input.request,
-        });
-        await kickVideoVariantStep({ contentId });
+        // Even for media=video we still run the image pipeline once so
+        // generateVideoVariant has a first-frame for image-to-video — Veo
+        // produces far more on-brand clips with i2v than text-only. The
+        // image is uploaded but its asset row sits in 'draft' status; the
+        // approval card surfaces the video as the canonical artifact.
+        if (wantsImage || wantsVideo) {
+          await assetPipelineWorkflow({
+            workspaceId: input.workspaceId,
+            contentId,
+            request: input.request,
+            inspirationImagePath: input.inspirationImagePath,
+          });
+        }
+        // For media=video we demote the just-generated still so the
+        // approval queue doesn't promote an image as the winning asset —
+        // the user asked for video; the still is a means, not the output.
+        if (media === "video") {
+          await demotePriorAssetsStep({ contentId });
+        }
+        if (wantsVideo || media === "auto") {
+          await kickVideoVariantStep({ contentId, force: forceVideo });
+        }
         approvalId = await submitForApprovalStep({
           workspaceId: input.workspaceId,
           contentId,
@@ -149,6 +210,13 @@ export async function singlePostWorkflow(
           workflowRunId: input.workflowRunId,
         });
       } else {
+        // Heartbeat: stamp workflow_runs.updated_at the moment we re-enter
+        // the loop after a changes_requested resume. The /approvals stuck
+        // detection and the resume route both use this timestamp to tell a
+        // truly hung workflow apart from one that's mid-revision (image
+        // regen alone can run 1–5 min, longer than the original 30s grace).
+        await touchWorkflowRunStep({ workflowRunId: input.workflowRunId });
+
         // Budget guard: stop auto-revising once the run's LLM spend has
         // crossed the per-run USD ceiling. Without this, a reviewer who
         // asks for full rewrites three times can quietly burn the budget.
@@ -177,14 +245,34 @@ export async function singlePostWorkflow(
         // the moment it appears in the queue. Demote prior approved assets
         // first; without it the old winner stays "approved" alongside the
         // new one and the approval modal can't tell which is canonical.
+        //
+        // Honour the run's media pick on regen too: media=image skips the
+        // video kickoff, media=video runs the still gen only as a first
+        // frame and immediately demotes it.
         if (lastReason && IMAGE_FEEDBACK_RE.test(lastReason)) {
           await demotePriorAssetsStep({ contentId: contentId! });
-          await assetPipelineWorkflow({
-            workspaceId: input.workspaceId,
-            contentId: contentId!,
-            request: `${input.request} — reviewer image feedback: ${lastReason}`,
-          });
-          await kickVideoVariantStep({ contentId: contentId! });
+          // Second heartbeat right before asset regen — Replicate calls are
+          // the longest single step in the revision loop, and we want the
+          // stuck detector to see a fresh updated_at *during* that wait, not
+          // only at iteration start.
+          await touchWorkflowRunStep({ workflowRunId: input.workflowRunId });
+          if (wantsImage || wantsVideo) {
+            await assetPipelineWorkflow({
+              workspaceId: input.workspaceId,
+              contentId: contentId!,
+              request: `${input.request} — reviewer image feedback: ${lastReason}`,
+              inspirationImagePath: input.inspirationImagePath,
+            });
+            if (media === "video") {
+              await demotePriorAssetsStep({ contentId: contentId! });
+            }
+          }
+          if (wantsVideo || media === "auto") {
+            await kickVideoVariantStep({
+              contentId: contentId!,
+              force: forceVideo,
+            });
+          }
         }
         approvalId = await reviseAndResubmitStep({
           contentId: contentId!,
@@ -496,9 +584,43 @@ async function resumeFromContentStep(payload: {
 
 async function kickVideoVariantStep(payload: {
   contentId: string;
+  force?: boolean;
 }): Promise<void> {
   "use step";
-  await kickVideoVariant(payload.contentId);
+  await kickVideoVariant(payload.contentId, { force: payload.force });
+}
+
+// Stamps content_items.needs_video so the approval-panel toggle and the
+// revision-loop video kickoff stay in sync with the user's submit-time
+// pick. We touch it as its own step (rather than rolling it into draftStep)
+// so the resume path also gets a chance to set it.
+async function setNeedsVideoStep(payload: {
+  contentId: string;
+  value: boolean;
+}): Promise<void> {
+  "use step";
+  const db = getDb();
+  await db
+    .update(schema.contentItems)
+    .set({ needsVideo: payload.value, updatedAt: new Date() })
+    .where(eq(schema.contentItems.id, payload.contentId));
+}
+
+// Bumps workflow_runs.updated_at so the /approvals stuck detector and the
+// resume route can see that this run is alive between coarse-grained
+// terminal updates (draftStep / resumeFromContentStep / finishRun). Called
+// at the start of each revision iteration so a slow image-feedback pass
+// doesn't read as "stuck" while it's actually mid-flight.
+async function touchWorkflowRunStep(payload: {
+  workflowRunId?: string;
+}): Promise<void> {
+  "use step";
+  if (!payload.workflowRunId) return;
+  const db = getDb();
+  await db
+    .update(schema.workflowRuns)
+    .set({ updatedAt: new Date() })
+    .where(eq(schema.workflowRuns.id, payload.workflowRunId));
 }
 
 // Sums llm_usage.cost_usd attributed to this workflow_run. Used by the
@@ -692,6 +814,23 @@ async function markTimeoutStep(contentId: string): Promise<void> {
     .update(schema.contentItems)
     .set({ status: "draft", updatedAt: new Date() })
     .where(eq(schema.contentItems.id, contentId));
+  // Also resolve any open approval rows for this content. Without this,
+  // the approval stays decision=null and keeps appearing in the queue with
+  // content already in "draft" — a state the decide route can't transition
+  // out of in the normal in_review -> draft path.
+  await db
+    .update(schema.approvals)
+    .set({
+      decision: "changes_requested",
+      decidedAt: new Date(),
+      reason: "approval timeout",
+    })
+    .where(
+      and(
+        eq(schema.approvals.contentId, contentId),
+        sql`${schema.approvals.decision} is null`,
+      ),
+    );
 }
 
 async function finishWorkflowRunStep(payload: {

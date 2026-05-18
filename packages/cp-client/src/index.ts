@@ -15,6 +15,13 @@ import type {
 export type CpClientOptions = {
   baseUrl: string;
   internalToken: string;
+  /**
+   * Workspace this client acts on. Sent as `x-workspace-id` on every request
+   * so internal Control Plane routes scope reads/writes to this tenant
+   * instead of silently falling back to the Legacy workspace. Omit only for
+   * cross-tenant background work that genuinely operates on Legacy.
+   */
+  workspaceId?: string;
   fetchImpl?: typeof fetch;
 };
 
@@ -28,6 +35,10 @@ export type CampaignDto = {
   endDate: string | null;
   briefMd: string | null;
   calendarJson: unknown | null;
+  // Campaign-level visual identity (migration 0029). Free-form jsonb on the
+  // server; shape is VisualIdentity in @marketing/agents/sub-agents/strategist.
+  // Typed as unknown here so cp-client stays free of agent-package coupling.
+  visualIdentity: unknown | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -89,12 +100,16 @@ export class CpClient {
     path: string,
     body?: unknown,
   ): Promise<T> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-internal-token": this.opts.internalToken,
+    };
+    if (this.opts.workspaceId) {
+      headers["x-workspace-id"] = this.opts.workspaceId;
+    }
     const res = await this.fetchImpl(`${this.opts.baseUrl}${path}`, {
       method,
-      headers: {
-        "content-type": "application/json",
-        "x-internal-token": this.opts.internalToken,
-      },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();

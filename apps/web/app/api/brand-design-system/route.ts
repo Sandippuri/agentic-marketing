@@ -29,27 +29,39 @@ const DesignColor = z.object({
   usage: z.string().max(500).optional(),
 });
 
+// Optional-string fields may arrive as `null` from the brand-extract draft
+// (its LLM-facing schema uses `.nullable().optional()` so the model can emit
+// `null` for unknowns). Normalize null→undefined at the boundary so the
+// stored shape matches the `DesignTypography`/`DesignTokens` TS types.
+const optStr = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .nullable()
+    .optional()
+    .transform((v): string | undefined => v ?? undefined);
+
 const DesignTypography = z.object({
-  headingFamily: z.string().max(120).optional(),
-  bodyFamily: z.string().max(120).optional(),
-  monoFamily: z.string().max(120).optional(),
+  headingFamily: optStr(120),
+  bodyFamily: optStr(120),
+  monoFamily: optStr(120),
   weights: z.array(z.number().int().min(100).max(900)).max(10).optional(),
-  notes: z.string().max(2_000).optional(),
+  notes: optStr(2_000),
 });
 
 const DesignLogoZ = z.object({
   variant: z.enum(DESIGN_LOGO_VARIANTS),
   storagePath: z.string().min(1).max(500),
-  contentType: z.string().max(120).optional(),
-  notes: z.string().max(500).optional(),
+  contentType: optStr(120),
+  notes: optStr(500),
 });
 
 const DesignTokens = z.object({
-  spacing: z.string().max(2_000).optional(),
-  radii: z.string().max(2_000).optional(),
-  shadows: z.string().max(2_000).optional(),
-  iconography: z.string().max(2_000).optional(),
-  notes: z.string().max(4_000).optional(),
+  spacing: optStr(2_000),
+  radii: optStr(2_000),
+  shadows: optStr(2_000),
+  iconography: optStr(2_000),
+  notes: optStr(4_000),
 });
 
 const PutBody = z.object({

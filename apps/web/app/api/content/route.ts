@@ -4,7 +4,7 @@ import { getDb, schema } from "@marketing/db";
 import { CONTENT_TYPES, CONTENT_STAGES, CONTENT_STATUSES } from "@marketing/shared-types";
 import { withAudit } from "@/lib/audit";
 import { getRequestActor } from "@/lib/auth";
-import { isInternal } from "@/lib/internal-auth";
+import { internalWorkspaceOverride, isInternal } from "@/lib/internal-auth";
 import { errorResponse, parseJson } from "@/lib/http";
 import {
   LEGACY_WORKSPACE_ID,
@@ -33,7 +33,10 @@ export async function GET(request: Request) {
   try {
     const isInternalCall = isInternal(request);
     const ctx: WorkspaceContext = isInternalCall
-      ? ({ workspaceId: LEGACY_WORKSPACE_ID } as WorkspaceContext)
+      ? ({
+          workspaceId:
+            internalWorkspaceOverride(request) ?? LEGACY_WORKSPACE_ID,
+        } as WorkspaceContext)
       : await getWorkspaceContext();
 
     const url = new URL(request.url);
@@ -95,7 +98,10 @@ export async function POST(request: Request) {
       ? { id: null, kind: "agent" as const }
       : await getRequestActor();
     const ctx: WorkspaceContext = isInternalCall
-      ? ({ workspaceId: LEGACY_WORKSPACE_ID } as WorkspaceContext)
+      ? ({
+          workspaceId:
+            internalWorkspaceOverride(request) ?? LEGACY_WORKSPACE_ID,
+        } as WorkspaceContext)
       : await getWorkspaceContext();
     const input = await parseJson(request, CreateContent);
     const db = getDb();

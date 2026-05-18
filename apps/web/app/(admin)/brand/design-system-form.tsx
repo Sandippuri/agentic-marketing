@@ -117,6 +117,10 @@ export function DesignSystemForm({ initial }: { initial: InitialDesignSystem }) 
         storagePath: string;
         contentType: string;
         signedUrl: string;
+        // Vision-LLM-generated description of the mark (one line, ≤220 chars).
+        // Used by the image-gen prompt as verbal grounding alongside the
+        // attached file. Pre-fills the notes field so the user can edit.
+        autoNotes?: string | null;
       };
       const next: LogoWithSignedUrl[] = [
         ...logos,
@@ -125,6 +129,7 @@ export function DesignSystemForm({ initial }: { initial: InitialDesignSystem }) 
           storagePath: json.storagePath,
           contentType: json.contentType,
           signedUrl: json.signedUrl,
+          notes: json.autoNotes ?? undefined,
         },
       ];
       await persistLogos(next);

@@ -80,14 +80,26 @@ export function useResumeStuckHook() {
         decision: string;
         reconciled?: boolean;
         terminalStatus?: "completed" | "cancelled";
+        note?: string;
       }>;
     },
     onSuccess: (data) => {
-      toast.success(
-        data.reconciled
-          ? `Reconciled (${data.terminalStatus ?? "completed"})`
-          : "Workflow resumed",
-      );
+      if (data.note === "workflow_in_flight") {
+        toast.info("Workflow is still revising", {
+          description:
+            "The revision is in flight — refresh in a minute to see the new approval row.",
+        });
+      } else if (data.note === "newer_pending_approval_exists") {
+        toast.info("Revision already submitted", {
+          description: "A new approval row is waiting for you in the queue.",
+        });
+      } else {
+        toast.success(
+          data.reconciled
+            ? `Reconciled (${data.terminalStatus ?? "completed"})`
+            : "Workflow resumed",
+        );
+      }
       qc.invalidateQueries({ queryKey: ["approvals"] });
     },
     onError: (err: Error) => {

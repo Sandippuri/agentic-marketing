@@ -181,12 +181,18 @@ export type GenerateVideoVariantInput = {
   campaignId?: string | null;
   /** Workspace scope; mandatory from PR 4. */
   workspaceId: string;
+  /**
+   * When true, bypass the VIDEO_ENABLED_CONTENT_TYPES allowlist. Used when
+   * the user explicitly picked "video" / "both" at submit — they're aware
+   * the channel doesn't normally get video and want it anyway.
+   */
+  force?: boolean;
 };
 
 export async function generateVideoVariant(
   input: GenerateVideoVariantInput,
 ): Promise<{ inserted: number }> {
-  if (!contentTypeWantsVideo(input.contentType as ContentType)) {
+  if (!input.force && !contentTypeWantsVideo(input.contentType as ContentType)) {
     return { inserted: 0 };
   }
 

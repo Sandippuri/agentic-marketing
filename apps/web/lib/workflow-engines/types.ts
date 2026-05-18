@@ -2,10 +2,14 @@
 // ./engines/<id>.ts and exports a WorkflowEngine that satisfies this shape.
 // The registry composes them so the API + UI never branch on engine ids.
 
-import type { Channel, LlmModel } from "@marketing/shared-types";
+import type { Channel, LlmModel, WorkflowMedia } from "@marketing/shared-types";
 
 export type EngineId = "vercel" | "cloudflare";
-export type WorkflowKind = "campaign" | "single_post" | "asset";
+export type WorkflowKind =
+  | "campaign"
+  | "execute_campaign"
+  | "single_post"
+  | "asset";
 
 export type StartInput = {
   kind: WorkflowKind;
@@ -18,6 +22,33 @@ export type StartInput = {
   threadRef?: string;
   userId?: string | null;
   model?: LlmModel | string;
+  /**
+   * Storage path of a user-uploaded inspiration image (see
+   * /api/uploads/inspiration-images). The dispatcher passes it through to
+   * the underlying workflow, which signs it and uses it as a visual
+   * reference in image generation. Only honoured by kinds whose image path
+   * supports it (single_post, asset).
+   */
+  inspirationImagePath?: string;
+  /**
+   * execute_campaign only. Indices into the parent campaign's
+   * calendarJson — only these items get fanned out as single-post runs.
+   * Omitted (or empty) means "no items" → the workflow refuses, since
+   * silently running all is the failure mode we're explicitly avoiding.
+   */
+  itemIndices?: number[];
+  /**
+   * User-chosen media for single_post / asset / execute_campaign-default.
+   * Hard override (see WorkflowMedia docs in shared-types). Undefined is
+   * treated as "auto" by the workflow body — legacy behavior.
+   */
+  media?: WorkflowMedia;
+  /**
+   * execute_campaign only. Per-item media override, parallel array to
+   * `itemIndices` (same length, same order). An entry of "auto" or
+   * undefined falls back to `media` (and then to legacy auto behavior).
+   */
+  itemMedia?: WorkflowMedia[];
 };
 
 export type StartContext = {

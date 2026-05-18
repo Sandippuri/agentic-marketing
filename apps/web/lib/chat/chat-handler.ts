@@ -6,18 +6,31 @@
 //   - Slack/Discord delivery is intentionally out of scope (not used in prod;
 //     §11 decision log). The reply callback is a no-op for non-web threads.
 //
-// Detached-workflow behaviour: as soon as the orchestrator invokes its first
-// sub-agent, we reply with a tracking note and let the orchestrator finish in
-// the background. Pure-conversation turns return inline.
+// Detached-workflow behaviour: when the orchestrator calls dispatch_workflow
+// and the workflow engine returns a real workflow_runs id, we reply with an
+// honest tracking note ("Workflow run started (wrun_…)") and let the
+// orchestrator finish in the background. In-process sub-agent work (strategist
+// draft, content draft, etc.) streams back inline — we do NOT pretend that
+// a workflow ran when none did.
 
 import pino from "pino";
+import type { Message } from "ai";
 import type { CpClient } from "@marketing/cp-client";
 import type { LlmModel, ThreadRef } from "@marketing/shared-types";
-import { runOrchestrator, streamOrchestrator } from "./orchestrator";
+import {
+  runOrchestrator,
+  streamOrchestrator,
+  streamOrchestratorUi,
+} from "./orchestrator";
 import { createGenerationTracker } from "./generation-tracker";
-import { getHistoryStore, type ChatTurn } from "./history-store";
+import {
+  getHistoryStore,
+  getUiHistoryStore,
+  type ChatTurn,
+} from "./history-store";
 import { publishWebThreadEvent } from "./web-bus";
 import { learnFromConversation } from "./learn-from-conversation";
+import { buildThreadAttachmentsContext } from "./thread-attachments";
 
 const log = pino({ name: "chat-handler" });
 
@@ -50,17 +63,19 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
     return await handleGoalMode({ ...params, parsed: mode });
   }
 
-  const systemContext = campaignId
-    ? await (await import("./campaign-context")).buildCampaignContext(campaignId)
-    : undefined;
+  const systemContext = await buildChatSystemContext({
+    workspaceId,
+    threadRef,
+    campaignId,
+  });
 
   const store = getHistoryStore();
   const history: ChatTurn[] = await store.get(threadRef);
   history.push({ role: "user", content: text });
 
-  let firstStepResolve: ((jobId: string) => void) | null = null;
-  const firstStep = new Promise<string>((res) => {
-    firstStepResolve = res;
+  let dispatchResolve: ((workflowRunId: string) => void) | null = null;
+  const workflowDispatched = new Promise<string>((res) => {
+    dispatchResolve = res;
   });
 
   const tracker = createGenerationTracker({
@@ -68,7 +83,7 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
     threadRef,
     userId,
     userMessage: text,
-    onFirstStep: (jobId) => firstStepResolve?.(jobId),
+    onWorkflowDispatched: (workflowRunId) => dispatchResolve?.(workflowRunId),
   });
 
   const orchestratorOutcome: Promise<
@@ -89,7 +104,10 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
   );
 
   const winner = await Promise.race([
-    firstStep.then((jobId) => ({ kind: "workflow" as const, jobId })),
+    workflowDispatched.then((workflowRunId) => ({
+      kind: "workflow" as const,
+      workflowRunId,
+    })),
     orchestratorOutcome.then((outcome) => ({
       kind: "sync" as const,
       outcome,
@@ -117,10 +135,7 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
     return fallback;
   }
 
-  const startMessage =
-    `Workflow started (job ${winner.jobId}). ` +
-    `Track step-by-step progress at /creation-workflow. ` +
-    `I'll post the result back here when it's ready.`;
+  const startMessage = buildDispatchStartMessage(winner.workflowRunId);
   history.push({ role: "assistant", content: startMessage });
   await store.set(threadRef, history);
   replyToThread(threadRef, startMessage);
@@ -146,7 +161,7 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
         const errMessage =
           outcome.err instanceof Error ? outcome.err.message : "unknown error";
         const failureNote =
-          `Workflow failed (job ${winner.jobId}): ${errMessage}. ` +
+          `Workflow run ${winner.workflowRunId} failed: ${errMessage}. ` +
           `See /creation-workflow for the step that broke.`;
         await appendAssistantTurn(threadRef, failureNote);
         replyToThread(threadRef, failureNote);
@@ -164,7 +179,7 @@ export async function handleChat(params: HandleChatParams): Promise<string> {
 
 export type ChatStreamEvent =
   | { kind: "delta"; text: string }
-  | { kind: "workflow_started"; jobId: string; message: string }
+  | { kind: "workflow_started"; workflowRunId: string; message: string }
   | { kind: "done"; finalText: string }
   | { kind: "error"; message: string };
 
@@ -173,10 +188,11 @@ export type HandleChatStreamParams = HandleChatParams & {
 };
 
 /**
- * Streaming variant of `handleChat`. Same detach semantics: if a sub-agent
- * tool fires before the orchestrator finishes, we emit `workflow_started`
- * and let the orchestrator run on in the background — its final result
- * will reach the client via the SSE thread bus once ready.
+ * Streaming variant of `handleChat`. Same detach semantics: if the
+ * orchestrator calls `dispatch_workflow` and a workflow_runs row is created,
+ * we emit `workflow_started` with the real workflowRunId and let the
+ * orchestrator run on in the background — its final result will reach the
+ * client via the SSE thread bus once ready.
  *
  * The `/goal` mode router falls through to the non-streaming `handleChat`
  * because its work is a single POST + immediate stub reply, with nothing
@@ -196,17 +212,19 @@ export async function handleChatStream(
     return;
   }
 
-  const systemContext = campaignId
-    ? await (await import("./campaign-context")).buildCampaignContext(campaignId)
-    : undefined;
+  const systemContext = await buildChatSystemContext({
+    workspaceId,
+    threadRef,
+    campaignId,
+  });
 
   const store = getHistoryStore();
   const history: ChatTurn[] = await store.get(threadRef);
   history.push({ role: "user", content: text });
 
-  let firstStepResolve: ((jobId: string) => void) | null = null;
-  const firstStep = new Promise<string>((res) => {
-    firstStepResolve = res;
+  let dispatchResolve: ((workflowRunId: string) => void) | null = null;
+  const workflowDispatched = new Promise<string>((res) => {
+    dispatchResolve = res;
   });
 
   const tracker = createGenerationTracker({
@@ -214,7 +232,7 @@ export async function handleChatStream(
     threadRef,
     userId,
     userMessage: text,
-    onFirstStep: (jobId) => firstStepResolve?.(jobId),
+    onWorkflowDispatched: (workflowRunId) => dispatchResolve?.(workflowRunId),
   });
 
   // Once detach fires we stop forwarding deltas — the client switches into
@@ -248,7 +266,10 @@ export async function handleChatStream(
   );
 
   const winner = await Promise.race([
-    firstStep.then((jobId) => ({ kind: "workflow" as const, jobId })),
+    workflowDispatched.then((workflowRunId) => ({
+      kind: "workflow" as const,
+      workflowRunId,
+    })),
     orchestratorOutcome.then((outcome) => ({
       kind: "sync" as const,
       outcome,
@@ -282,13 +303,14 @@ export async function handleChatStream(
   }
 
   detached = true;
-  const startMessage =
-    `Workflow started (job ${winner.jobId}). ` +
-    `Track step-by-step progress at /creation-workflow. ` +
-    `I'll post the result back here when it's ready.`;
+  const startMessage = buildDispatchStartMessage(winner.workflowRunId);
   history.push({ role: "assistant", content: startMessage });
   await store.set(threadRef, history);
-  onEvent({ kind: "workflow_started", jobId: winner.jobId, message: startMessage });
+  onEvent({
+    kind: "workflow_started",
+    workflowRunId: winner.workflowRunId,
+    message: startMessage,
+  });
 
   // Mirror the sync handler: replyToThread so other subscribers see the stub,
   // then finalize the background outcome onto the thread SSE bus.
@@ -315,7 +337,7 @@ export async function handleChatStream(
         const errMessage =
           outcome.err instanceof Error ? outcome.err.message : "unknown error";
         const failureNote =
-          `Workflow failed (job ${winner.jobId}): ${errMessage}. ` +
+          `Workflow run ${winner.workflowRunId} failed: ${errMessage}. ` +
           `See /creation-workflow for the step that broke.`;
         await appendAssistantTurn(threadRef, failureNote);
         replyToThread(threadRef, failureNote);
@@ -329,11 +351,186 @@ export async function handleChatStream(
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// useChat-driven streaming (Assistant page)
+//
+// The new handler accepts `messages: Message[]` from the AI SDK's useChat
+// instead of a single `text` field. It returns the AI SDK data stream
+// response that useChat consumes natively (tool-invocation parts and all).
+//
+// Persistence: on stream finish, the merged UIMessage[] is written to the
+// UI history store (parallel to the legacy ChatTurn[] store). Refresh
+// rehydrates via /api/test-chat/history?threadRef=…&format=ui.
+//
+// Workflow detach is no longer special-cased — the tool-invocation part for
+// `dispatch_workflow` IS the user-facing signal that a long-running job
+// kicked off. The catalog's renderer for that tool surfaces the run id and
+// tracking link.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type HandleChatUiStreamParams = {
+  messages: Message[];
+  userId: string;
+  workspaceId: string;
+  threadRef: ThreadRef;
+  cp: CpClient;
+  model?: LlmModel;
+  campaignId?: string;
+};
+
+export async function handleChatUiStream(
+  params: HandleChatUiStreamParams,
+): Promise<Response> {
+  const { messages, userId, workspaceId, threadRef, cp, model, campaignId } =
+    params;
+  log.info(
+    { userId, threadRef, model, campaignId, msgCount: messages.length },
+    "chat ui stream received",
+  );
+
+  const lastUserText = lastUserMessageText(messages);
+
+  const systemContext = await buildChatSystemContext({
+    workspaceId,
+    threadRef,
+    campaignId,
+  });
+
+  const tracker = createGenerationTracker({
+    cp,
+    threadRef,
+    userId,
+    userMessage: lastUserText ?? "",
+    // The data-stream protocol surfaces dispatch_workflow as a tool-invocation
+    // part — no need to detach the response stream early.
+    onWorkflowDispatched: () => undefined,
+  });
+
+  return streamOrchestratorUi(
+    {
+      messages,
+      userId,
+      workspaceId,
+      threadRef,
+      cp,
+      model,
+      tracker,
+      systemContext,
+    },
+    {
+      onFinishMessages: async (merged) => {
+        // Persist the full UIMessage[] for the Assistant page to rehydrate.
+        await getUiHistoryStore().set(threadRef, merged);
+
+        // Keep the legacy text-only mirror up to date too — campaign-context
+        // and learnFromConversation still read from it. We flatten parts to
+        // plain text per turn; tool-invocation parts are dropped (text is
+        // what carries semantic meaning for those consumers).
+        const flat = merged.map((m) => ({
+          role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+          content: messageToText(m),
+        }));
+        await getHistoryStore().set(threadRef, flat);
+
+        await tracker.complete().catch(() => undefined);
+
+        const assistantText = flat
+          .filter((m) => m.role === "assistant")
+          .map((m) => m.content)
+          .join("\n\n");
+        if (lastUserText && assistantText) {
+          learnFromConversation({
+            threadRef,
+            userId,
+            workspaceId,
+            userMessage: lastUserText,
+            assistantMessage: assistantText,
+            history: flat,
+          });
+        }
+      },
+    },
+  );
+}
+
+function lastUserMessageText(messages: Message[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (!m || m.role !== "user") continue;
+    return messageToText(m);
+  }
+  return null;
+}
+
+function messageToText(m: Message): string {
+  if (m.parts && m.parts.length > 0) {
+    const texts = m.parts
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text);
+    if (texts.length > 0) return texts.join("\n").trim();
+  }
+  return (m.content ?? "").trim();
+}
+
+async function buildChatSystemContext(opts: {
+  workspaceId: string;
+  threadRef: ThreadRef;
+  campaignId?: string;
+}): Promise<string | undefined> {
+  const { buildBaseMemory, buildVisualMemory } = await import(
+    "@marketing/agents/memory"
+  );
+  const [brandMemory, visualMemory, campaignCtx, attachmentsCtx] = await Promise.all([
+    buildBaseMemory({
+      workspaceId: opts.workspaceId,
+      campaignId: opts.campaignId,
+    }),
+    buildVisualMemory({
+      workspaceId: opts.workspaceId,
+      campaignId: opts.campaignId,
+      includeTokens: true,
+    }),
+    opts.campaignId
+      ? (await import("./campaign-context")).buildCampaignContext(
+          opts.campaignId,
+        )
+      : Promise.resolve(undefined),
+    buildThreadAttachmentsContext({
+      workspaceId: opts.workspaceId,
+      threadRef: opts.threadRef,
+    }),
+  ]);
+  // Brand memory (voice / ICP / product / positioning / market) plus visual
+  // identity (brand.visual prose + design tokens) goes first so the
+  // orchestrator answers every turn with the business identity in its system
+  // prompt, instead of having to call get_brand_memory() to find out who the
+  // user is.
+  const identityBody = [brandMemory, visualMemory]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+  const businessBlock = identityBody
+    ? `# Business Context\n\nThe following defines who this workspace is — voice, ICP, product, positioning, market, visual identity. Apply it to every response unless the user overrides it.\n\n${identityBody}`
+    : undefined;
+  const parts = [businessBlock, campaignCtx, attachmentsCtx].filter(
+    (s): s is string => typeof s === "string" && s.length > 0,
+  );
+  return parts.length > 0 ? parts.join("\n\n---\n\n") : undefined;
+}
+
 function replyToThread(threadRef: ThreadRef, message: string): void {
   if (threadRef.startsWith("web:")) {
     publishWebThreadEvent(threadRef, { kind: "message", text: message });
   }
   // Slack/Discord delivery is intentionally not wired in Phase 3.
+}
+
+function buildDispatchStartMessage(workflowRunId: string): string {
+  return (
+    `Workflow run started (id ${workflowRunId}). ` +
+    `Track step-by-step progress at /creation-workflow. ` +
+    `I'll post the result back here when it's ready.`
+  );
 }
 
 async function appendAssistantTurn(

@@ -29,8 +29,17 @@ export type GenerateAssetVariantsInput = {
  * Fire-and-forget kickoff for the promotional video clip. The AD pipeline
  * produces stills; this brings the motion side along on every run so the
  * approval card has both modalities for channels that want them.
+ *
+ * `force` bypasses BOTH the per-content `needs_video` flag and the
+ * contentTypeWantsVideo() allowlist inside generateVideoVariant — it's the
+ * hard-override path used when the user explicitly picked "video" / "both"
+ * at submit time. Without it, picking video on a blog/email channel would
+ * still silently produce nothing.
  */
-export async function kickVideoVariant(contentId: string): Promise<void> {
+export async function kickVideoVariant(
+  contentId: string,
+  opts: { force?: boolean } = {},
+): Promise<void> {
   try {
     const db = getDb();
     const [row] = await db
@@ -48,7 +57,8 @@ export async function kickVideoVariant(contentId: string): Promise<void> {
     if (!row) return;
     // Per-post opt-out (migration 0032). The contentTypeWantsVideo() gate
     // still runs inside generateVideoVariant; this flag is the human override.
-    if (row.needsVideo === false) {
+    // `force` skips it — the user just asked for video this run.
+    if (!opts.force && row.needsVideo === false) {
       console.log(
         `[asset-variants] video skipped for ${contentId} (needs_video=false)`,
       );
@@ -62,6 +72,7 @@ export async function kickVideoVariant(contentId: string): Promise<void> {
       firstImageMarker: markers[0] ?? null,
       campaignId: row.campaignId,
       workspaceId: row.workspaceId,
+      force: opts.force,
     }).catch((err) => {
       console.warn(
         `[asset-variants] video variant failed for ${contentId}:`,

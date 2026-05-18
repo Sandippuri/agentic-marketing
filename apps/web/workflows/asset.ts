@@ -8,6 +8,7 @@ import {
   type ImageModel,
   type LlmModel,
 } from "@marketing/shared-types";
+import { getSignedAssetUrl } from "@/lib/supabase/storage";
 import { finishRun } from "@/lib/workflow-engines/runs";
 
 // Vercel asset-only workflow. Wraps a single image generation as one
@@ -37,6 +38,13 @@ export type AssetInput = {
   // Set by lib/workflow-engines so the workflow body can finalise the
   // matching workflow_runs row when generation completes.
   workflowRunId?: string;
+  /**
+   * Storage path of a user-uploaded inspiration image. When set, it's
+   * signed and passed to the image model as a style reference, and a
+   * "match this style" instruction is appended to the prompt. See
+   * /api/uploads/inspiration-images.
+   */
+  inspirationImagePath?: string;
 };
 
 export type AssetOutput = {
@@ -75,12 +83,32 @@ async function generateAndStoreAssetStep(
   const aspect = input.aspect ?? "square";
   const kind = input.kind ?? DEFAULT_ASSET_KIND;
 
-  const prompt = input.request.trim();
-  if (!prompt) {
+  const basePrompt = input.request.trim();
+  if (!basePrompt) {
     throw new Error("asset workflow requires a non-empty request");
   }
 
-  const image = await generateImage({ prompt, aspect, model });
+  // Best-effort sign the inspiration image. If signing fails we drop it
+  // and run without — the prompt-only path still produces a usable image.
+  let inspirationUrl: string | null = null;
+  if (input.inspirationImagePath) {
+    try {
+      inspirationUrl = await getSignedAssetUrl(input.inspirationImagePath);
+    } catch {
+      inspirationUrl = null;
+    }
+  }
+
+  const prompt = inspirationUrl
+    ? `${basePrompt}\n\nUse the provided inspiration image as the dominant style reference — match its mood, palette, composition, and lighting — but render the subject described above, not the subject shown in the inspiration.`
+    : basePrompt;
+
+  const image = await generateImage({
+    prompt,
+    aspect,
+    model,
+    imageInput: inspirationUrl ? [inspirationUrl] : undefined,
+  });
   const ext = (image.mimeType.split("/")[1] ?? "png").toLowerCase();
   const dir = input.contentId ? `variants/${input.contentId}` : "standalone";
   const { storagePath } = await uploadGeneratedMedia(

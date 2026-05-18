@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { HookNotFoundError } from "workflow/internal/errors";
 import { getDb, schema } from "@marketing/db";
 import { approvalHook } from "@/workflows/single-post";
@@ -38,6 +38,34 @@ export async function POST(
       return Response.json({ error: "not_decided" }, { status: 409 });
     }
 
+    // Guardrail: after `changes_requested`, the workflow creates a fresh
+    // pending approval and blocks on its hook. Re-firing the old hook is a
+    // no-op at best — and at worst hits HookNotFoundError below, which would
+    // force-cancel the running workflow. If a newer pending approval exists,
+    // the workflow is not stuck; surface that and bail.
+    const [newerPending] = await db
+      .select({ id: schema.approvals.id })
+      .from(schema.approvals)
+      .where(
+        and(
+          eq(schema.approvals.contentId, approval.contentId),
+          gt(schema.approvals.requestedAt, approval.requestedAt),
+          isNull(schema.approvals.decision),
+        ),
+      )
+      .limit(1);
+    if (newerPending) {
+      return Response.json(
+        {
+          ok: true,
+          decision: approval.decision,
+          reconciled: false,
+          note: "newer_pending_approval_exists",
+          pendingApprovalId: newerPending.id,
+        },
+      );
+    }
+
     try {
       await approvalHook.resume(`approval:${id}`, {
         decision: approval.decision,
@@ -61,11 +89,15 @@ export async function POST(
         );
       }
 
-      // Hook is gone — either already consumed or the workflow terminated
-      // before reaching it. Reconcile the workflow_runs row so the stuck
-      // list clears. Pick the most recent running run for this content.
+      // Hook is gone — either already consumed (workflow is mid-revision
+      // and about to insert the next approval row) or the workflow
+      // terminated before reaching it. Pick the most recent running run
+      // for this content and decide which case we're in.
       const [run] = await db
-        .select({ id: schema.workflowRuns.id })
+        .select({
+          id: schema.workflowRuns.id,
+          updatedAt: schema.workflowRuns.updatedAt,
+        })
         .from(schema.workflowRuns)
         .where(
           and(
@@ -83,6 +115,25 @@ export async function POST(
           decision: approval.decision,
           reconciled: false,
           note: "hook_not_found_no_running_run",
+        });
+      }
+
+      // Safety guard: if the workflow is actively heartbeating (revision
+      // loop touches workflow_runs.updated_at on entry and again before
+      // asset regen), the hook is gone because resume() *already* fired
+      // successfully and the workflow is mid-revision. Cancelling here
+      // would kill an in-flight run and lose the user's revision. Wait
+      // for the new pending approval to materialise instead.
+      const IN_FLIGHT_WINDOW_MS = 10 * 60_000;
+      const isInFlight =
+        Date.now() - run.updatedAt.getTime() < IN_FLIGHT_WINDOW_MS;
+      if (isInFlight) {
+        return Response.json({
+          ok: true,
+          decision: approval.decision,
+          reconciled: false,
+          note: "workflow_in_flight",
+          workflowRunId: run.id,
         });
       }
 

@@ -25,6 +25,7 @@ import {
 import type { CpClient } from "@marketing/cp-client";
 import type { LlmModel } from "@marketing/shared-types";
 import { EXPERIMENT_PROMPT } from "@marketing/prompts";
+import { getPrompt } from "../prompt-store";
 import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 import { randomUUID } from "node:crypto";
@@ -52,9 +53,10 @@ export async function runExperiment({
   jobId,
   workflowRunId,
 }: ExperimentInput): Promise<string> {
+  const systemPrompt = await getPrompt("experiment.system", EXPERIMENT_PROMPT);
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: EXPERIMENT_PROMPT,
+    system: systemPrompt,
     prompt: request,
     maxSteps: 6,
     tools: {

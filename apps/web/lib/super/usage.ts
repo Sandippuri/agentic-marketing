@@ -7,7 +7,7 @@ import {
   type QuotaSet,
   type SubscriptionStatus,
 } from "@marketing/shared-types";
-import { listAllAuthUsers, type AuthUser } from "@/lib/supabase/admin";
+import { emailsByUserId } from "@/lib/supabase/admin";
 
 export type CostBucket = {
   inputTokens: number;
@@ -106,7 +106,7 @@ export async function getSuperWorkspaceUsage(
   const w = wsRows[0];
   if (!w) return null;
 
-  const [planRows, subRows, memberRows, allUsers] = await Promise.all([
+  const [planRows, subRows, memberRows] = await Promise.all([
     db.select().from(schema.plans).where(eq(schema.plans.id, w.planId)).limit(1),
     db
       .select()
@@ -119,7 +119,11 @@ export async function getSuperWorkspaceUsage(
       .from(schema.workspaceMembers)
       .where(eq(schema.workspaceMembers.workspaceId, workspaceId))
       .orderBy(desc(schema.workspaceMembers.createdAt)),
-    listAllAuthUsers(),
+  ]);
+
+  const emailByUser = await emailsByUserId([
+    w.ownerUserId,
+    ...memberRows.map((m) => m.userId),
   ]);
 
   const planRow = planRows[0] ?? null;
@@ -142,7 +146,6 @@ export async function getSuperWorkspaceUsage(
         }
       : null;
   const sub = subRows[0] ?? null;
-  const emailByUser = new Map(allUsers.map((u: AuthUser) => [u.id, u.email]));
 
   const acceptedMembers = memberRows.filter((m) => m.acceptedAt !== null);
   const seats = {
@@ -312,7 +315,7 @@ export async function getSuperWorkspaceUsage(
       .limit(15),
   ]);
 
-  const owner = allUsers.find((u: AuthUser) => u.id === w.ownerUserId) ?? null;
+  const ownerEmail = emailByUser.get(w.ownerUserId) ?? null;
 
   return {
     workspace: {
@@ -321,7 +324,7 @@ export async function getSuperWorkspaceUsage(
       slug: w.slug,
       planCode: planRow?.code ?? "—",
       planName: planRow?.name ?? "—",
-      ownerEmail: owner?.email ?? null,
+      ownerEmail,
       ownerUserId: w.ownerUserId,
     },
     plan,
@@ -387,7 +390,7 @@ export type WorkspacePickerRow = {
 
 export async function listWorkspacePickerRows(): Promise<WorkspacePickerRow[]> {
   const db = getDb();
-  const [rows, planRows, users] = await Promise.all([
+  const [rows, planRows] = await Promise.all([
     db
       .select({
         id: schema.workspaces.id,
@@ -400,10 +403,9 @@ export async function listWorkspacePickerRows(): Promise<WorkspacePickerRow[]> {
       .where(isNull(schema.workspaces.deletedAt))
       .orderBy(schema.workspaces.name),
     db.select({ id: schema.plans.id, code: schema.plans.code }).from(schema.plans),
-    listAllAuthUsers(),
   ]);
   const planById = new Map(planRows.map((p) => [p.id, p.code as string]));
-  const emailByUser = new Map(users.map((u: AuthUser) => [u.id, u.email]));
+  const emailByUser = await emailsByUserId(rows.map((r) => r.ownerUserId));
   return rows.map((r) => ({
     id: r.id,
     name: r.name,

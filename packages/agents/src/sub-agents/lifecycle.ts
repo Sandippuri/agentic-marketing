@@ -20,6 +20,7 @@ import {
 import type { CpClient } from "@marketing/cp-client";
 import type { LlmModel } from "@marketing/shared-types";
 import { LIFECYCLE_PROMPT } from "@marketing/prompts";
+import { getPrompt } from "../prompt-store";
 import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 import { buildKbTools } from "../tools/kb-tools";
@@ -46,10 +47,11 @@ export async function runLifecycle({
   workflowRunId,
 }: LifecycleInput): Promise<string> {
   const kbTools = buildKbTools({ workspaceId, campaignId });
+  const systemPrompt = await getPrompt("lifecycle.system", LIFECYCLE_PROMPT);
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: LIFECYCLE_PROMPT,
+    system: systemPrompt,
     prompt: request,
     maxSteps: 6,
     tools: {

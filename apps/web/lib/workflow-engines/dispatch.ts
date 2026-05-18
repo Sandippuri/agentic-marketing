@@ -22,6 +22,10 @@ export type DispatchResult = {
 // "unset".
 const KIND_TO_SUB_AGENT: Record<WorkflowKind, SubAgentKind> = {
   campaign: "strategist",
+  // execute_campaign fans out into per-item single-post runs, each of
+  // which uses the content sub-agent. Snapshotting "content" on the parent
+  // run keeps the model chip on the dashboard meaningful.
+  execute_campaign: "content",
   single_post: "content",
   asset: "asset",
 };

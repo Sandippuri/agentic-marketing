@@ -100,6 +100,12 @@ export async function finishRun(
     contentId?: string | null;
     campaignId?: string | null;
     error?: string | null;
+    /**
+     * Terminal output of the workflow. Persisted to workflow_runs.result so
+     * the work survives when the run produced text but no DB rows (e.g.
+     * Strategist that never called create_campaign). Migration 0037.
+     */
+    result?: unknown;
   },
 ): Promise<void> {
   const db = getDb();
@@ -110,6 +116,7 @@ export async function finishRun(
       contentId: patch.contentId ?? undefined,
       campaignId: patch.campaignId ?? undefined,
       error: patch.error ?? null,
+      result: patch.result === undefined ? undefined : patch.result,
       completedAt: new Date(),
       updatedAt: new Date(),
     })

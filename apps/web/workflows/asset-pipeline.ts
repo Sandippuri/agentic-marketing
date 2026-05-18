@@ -43,7 +43,10 @@ import { runAssetJudge, pickWinner, type CandidateScore } from "@marketing/agent
 import { generateImage } from "@marketing/agents/image-gen";
 import { uploadGeneratedMedia } from "@marketing/agents/asset-uploader";
 import { getSignedAssetUrl } from "@/lib/supabase/storage";
-import { buildBrandPromptPrefix } from "@marketing/agents/brand-prompt";
+import {
+  buildBrandPromptPrefix,
+  type PartnerLogoReference,
+} from "@marketing/agents/brand-prompt";
 import { CpClient } from "@marketing/cp-client";
 import {
   resolveImageModel,
@@ -67,6 +70,13 @@ export type AssetPipelineInput = {
   variantCount?: number;
   /** Override the AD/judge model (vision-capable required for judge). */
   judgeModel?: LlmModel;
+  /**
+   * Storage path of a user-uploaded inspiration image. When set, it's signed
+   * and passed to the image model as an additional reference (placed after
+   * brand logos), and the prompt is augmented to instruct style-match while
+   * keeping the brand's actual subject. See /api/uploads/inspiration-images.
+   */
+  inspirationImagePath?: string;
 };
 
 export type AssetPipelineOutput = {
@@ -121,6 +131,7 @@ export async function assetPipelineWorkflow(
     channel: ctx.channel,
     brandPrefix: ctx.brandPrefix,
     brandReferenceImages: ctx.brandReferenceImages,
+    inspirationReferenceImages: ctx.inspirationReferenceImages,
     imageModel: ctx.imageModel,
     variantCount,
     passLabel: "v1",
@@ -147,6 +158,7 @@ export async function assetPipelineWorkflow(
       channel: ctx.channel,
       brandPrefix: ctx.brandPrefix,
       brandReferenceImages: ctx.brandReferenceImages,
+      inspirationReferenceImages: ctx.inspirationReferenceImages,
       imageModel: ctx.imageModel,
       variantCount: 1,
       passLabel: "v2",
@@ -197,10 +209,14 @@ type LoadedContext = {
   campaignId: string;
   brandPrefix: string;
   // Signed URLs for brand logos. Passed as visual reference to the image
-  // model so logos are PLACED, not redrawn. Previously dropped — the model
-  // had to invent the mark from text, which is why it kept hallucinating
-  // "Veru Fi" / wordmark variants.
+  // model so logos are PLACED, not redrawn. Without these, the model has
+  // only a text instruction telling it a logo is attached — and hallucinates
+  // a near-miss mark from the brand name.
   brandReferenceImages: string[];
+  // Signed URL(s) for user-uploaded inspiration. Empty when the run didn't
+  // attach one. Best-effort signing — if it fails we skip rather than fail
+  // the whole run, since inspiration is optional.
+  inspirationReferenceImages: string[];
   imageModel: ImageModel;
   imageBrief: ImageBrief | null;
   visualIdentity: VisualIdentity | null;
@@ -244,12 +260,40 @@ async function loadContextStep(
   ]);
   const imageModel = resolveImageModel(settingsRow?.value);
 
+  // Sign each partner logo storagePath. Best-effort per entry — a stale or
+  // deleted storage object shouldn't fail the whole pipeline; we just drop
+  // that mark from the references for this run.
+  const visualIdentity = (campaignRow?.visualIdentity as VisualIdentity | null) ?? null;
+  const partnerLogos: PartnerLogoReference[] = [];
+  for (const logo of visualIdentity?.partner_logos ?? []) {
+    try {
+      const url = await getSignedAssetUrl(logo.storagePath);
+      if (url) partnerLogos.push({ url, label: logo.label });
+    } catch {
+      // skip — signing failed
+    }
+  }
+
   const { prefix: brandPrefix, referenceImages: brandReferenceImages } =
     await buildBrandPromptPrefix({
       medium: "image",
       workspaceId: input.workspaceId,
       campaignId: row.campaignId,
+      partnerLogos,
     });
+
+  // Sign the user-uploaded inspiration once, here. Best-effort — if signing
+  // fails we drop it rather than fail the run; the rest of the brief is
+  // still good.
+  let inspirationReferenceImages: string[] = [];
+  if (input.inspirationImagePath) {
+    try {
+      const signed = await getSignedAssetUrl(input.inspirationImagePath);
+      if (signed) inspirationReferenceImages = [signed];
+    } catch {
+      inspirationReferenceImages = [];
+    }
+  }
 
   return {
     request: input.request ?? row.title,
@@ -259,10 +303,10 @@ async function loadContextStep(
     campaignId: row.campaignId,
     brandPrefix,
     brandReferenceImages,
+    inspirationReferenceImages,
     imageModel,
     imageBrief: (row.imageBrief as ImageBrief | null) ?? null,
-    visualIdentity:
-      (campaignRow?.visualIdentity as VisualIdentity | null) ?? null,
+    visualIdentity,
   };
 }
 
@@ -278,7 +322,7 @@ async function artDirectionStep(args: {
   visualIdentity: VisualIdentity | null;
 }): Promise<VisualConceptBrief> {
   "use step";
-  const cp = buildCpClient();
+  const cp = buildCpClient(args.workspaceId);
   return runArtDirector({
     request: args.request,
     workspaceId: args.workspaceId,
@@ -327,19 +371,30 @@ async function generatePassStep(args: {
   channel: string;
   brandPrefix: string;
   brandReferenceImages: string[];
+  inspirationReferenceImages: string[];
   imageModel: ImageModel;
   variantCount: number;
   passLabel: string;
   retryReason?: string;
 }): Promise<GeneratedCandidate[]> {
   "use step";
-  const variants = conceptToVariants(args.brief, {
+  const variants = await conceptToVariants(args.brief, {
     brandPrefix: args.brandPrefix,
     brandReferenceImages: args.brandReferenceImages,
+    inspirationReferenceImages: args.inspirationReferenceImages,
     channel: args.channel,
     variantCount: args.variantCount,
     retryReason: args.retryReason,
   });
+
+  // Per-invocation discriminator so a re-run against the same contentId
+  // (e.g. revision pass triggered by reviewer image feedback) writes to a
+  // fresh storage path instead of overwriting the previous image. Without
+  // this, the assets table accumulates rows that all point at the same
+  // file, so any "compare original vs revised" UI shows the same thumbnail
+  // twice. Computed inside the step so the workflow runtime checkpoints
+  // and replays the same value.
+  const passDiscriminator = crypto.randomUUID().slice(0, 8);
 
   const results = await Promise.allSettled(
     variants.map(async (variant) => {
@@ -358,10 +413,10 @@ async function generatePassStep(args: {
       }
 
       const ext = (result.mimeType.split("/")[1] ?? "png").toLowerCase();
-      // Path layout: `pipeline/<workspaceId>/<contentId>/<pass>-<index>.<ext>`.
+      // Path layout: `pipeline/<workspaceId>/<contentId>/<pass>-<index>-<rand>.<ext>`.
       // Workspace segment at position 2 (1-indexed) keeps the Storage RLS
       // policy from PR 9 working without migration changes.
-      const storagePath = `pipeline/${args.workspaceId}/${args.contentId}/${args.passLabel}-${variant.index}.${ext}`;
+      const storagePath = `pipeline/${args.workspaceId}/${args.contentId}/${args.passLabel}-${variant.index}-${passDiscriminator}.${ext}`;
       await uploadGeneratedMedia(
         { bytes: rawBytes, mimeType: result.mimeType },
         storagePath,
@@ -387,21 +442,23 @@ async function generatePassStep(args: {
   );
 
   const out: GeneratedCandidate[] = [];
-  const failures: Array<{ index: number; reason: string }> = [];
+  const failures: Array<{ index: number; message: string }> = [];
   for (let i = 0; i < results.length; i++) {
     const r = results[i]!;
     if (r.status === "fulfilled") {
       out.push(r.value);
     } else {
-      const reason =
-        r.reason instanceof Error
-          ? `${r.reason.message}${r.reason.stack ? `\n${r.reason.stack}` : ""}`
-          : String(r.reason);
+      const message =
+        r.reason instanceof Error ? r.reason.message : String(r.reason);
+      const detail =
+        r.reason instanceof Error && r.reason.stack
+          ? `${message}\n${r.reason.stack}`
+          : message;
       console.error(
         `[asset-pipeline] candidate ${variants[i]!.index} (${args.passLabel}) failed:`,
-        reason,
+        detail,
       );
-      failures.push({ index: variants[i]!.index, reason });
+      failures.push({ index: variants[i]!.index, message });
       out.push({
         index:
           args.passLabel === "v1" ? variants[i]!.index : variants[i]!.index + 100,
@@ -413,8 +470,10 @@ async function generatePassStep(args: {
     }
   }
   if (out.every((c) => !c.storagePath)) {
+    // Collapse whitespace so pretty-printed JSON error bodies (OpenAI returns
+    // multi-line 4xx bodies) render as a single readable line in the trace UI.
     const summary = failures
-      .map((f) => `[${f.index}] ${f.reason.split("\n")[0]}`)
+      .map((f) => `[${f.index}] ${f.message.replace(/\s+/g, " ").trim()}`)
       .join("; ");
     throw new Error(
       `All ${variants.length} image candidates failed (${args.passLabel}): ${summary}`,
@@ -495,8 +554,8 @@ async function uploadAndRecordStep(args: {
 
 // ============================================================
 
-function buildCpClient() {
+function buildCpClient(workspaceId?: string) {
   const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
   const internalToken = process.env.INTERNAL_API_TOKEN ?? "";
-  return new CpClient({ baseUrl, internalToken });
+  return new CpClient({ baseUrl, internalToken, workspaceId });
 }

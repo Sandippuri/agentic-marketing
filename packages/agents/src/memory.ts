@@ -1,7 +1,8 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import pino from "pino";
-import { getBrandMemory } from "./brand-store";
+import { getBrandMemory, getBrandMemoryDoc } from "./brand-store";
+import { getDesignSystem, formatDesignSystemForPrompt } from "./design-system-store";
 
 const log = pino({ name: "memory" });
 
@@ -67,11 +68,17 @@ const BASE_MEMORY_SECTIONS = [
  * `workspaceId` is mandatory for multi-tenant correctness — without it the CP
  * endpoint falls back to LEGACY_WORKSPACE_ID and every sub-agent gets user1's
  * brand voice/ICP regardless of who triggered the run.
+ *
+ * `campaignId` is optional: when set, campaign-scoped slug overrides win over
+ * the workspace defaults (per getBrandMemory's merge rules).
  */
 export async function buildBaseMemory(
-  scope: { workspaceId?: string | null } = {},
+  scope: { workspaceId?: string | null; campaignId?: string | null } = {},
 ): Promise<string> {
-  const docs = await getBrandMemory({ workspaceId: scope.workspaceId });
+  const docs = await getBrandMemory({
+    workspaceId: scope.workspaceId,
+    campaignId: scope.campaignId,
+  });
   const bySlug = new Map(docs.map((d) => [d.slug, d]));
 
   return BASE_MEMORY_SECTIONS.map(({ slug, header }) => {
@@ -80,4 +87,43 @@ export async function buildBaseMemory(
   })
     .filter(Boolean)
     .join("\n\n---\n\n");
+}
+
+/**
+ * Build the visual-identity context block.
+ *
+ * `includeTokens=true` adds the structured design-system tokens (named colors
+ * with roles + hex, typography families, spacing/radii notes — logo URLs are
+ * stripped because they're noise outside image generation). The chat
+ * orchestrator wants tokens so it can answer "what's our accent color?"
+ * accurately. Copy generation does NOT want hex codes — pass `false` there
+ * and you'll get just the brand.visual freeform doc.
+ */
+export async function buildVisualMemory(
+  scope: {
+    workspaceId?: string | null;
+    campaignId?: string | null;
+    includeTokens?: boolean;
+  } = {},
+): Promise<string> {
+  const dsScope = { workspaceId: scope.workspaceId, campaignId: scope.campaignId };
+  const [visual, design] = await Promise.all([
+    getBrandMemoryDoc("brand.visual", dsScope).catch(() => null),
+    scope.includeTokens
+      ? getDesignSystem(dsScope).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
+  const sections: string[] = [];
+  const visualBody = visual?.body?.trim();
+  if (visualBody) {
+    sections.push(`# Visual Direction\n\n${visualBody}`);
+  }
+  if (scope.includeTokens && design) {
+    const tokens = formatDesignSystemForPrompt(design, { omitLogos: true }).trim();
+    if (tokens && !tokens.startsWith("(design system not yet")) {
+      sections.push(`# Design Tokens\n\n${tokens}`);
+    }
+  }
+  return sections.join("\n\n---\n\n");
 }

@@ -64,15 +64,20 @@ export async function POST(
           .limit(1);
         if (!content) throw new Error("not_found");
 
-        // State-machine: in_review -> approved | draft (changes_requested / rejected)
+        // State-machine: in_review -> approved | draft (changes_requested / rejected).
+        // Orphaned approvals (workflow timed out / crashed and left content back in
+        // "draft" without deciding the row) still need to clear from the queue, so
+        // skip the transition when content is already at the target — record the
+        // decision and move on.
         const target =
           input.decision === "approved" ? "approved" : "draft";
-        assertContentTransition(content.status, target);
-
-        await db
-          .update(schema.contentItems)
-          .set({ status: target, updatedAt: new Date() })
-          .where(eq(schema.contentItems.id, approval.contentId));
+        if (content.status !== target) {
+          assertContentTransition(content.status, target);
+          await db
+            .update(schema.contentItems)
+            .set({ status: target, updatedAt: new Date() })
+            .where(eq(schema.contentItems.id, approval.contentId));
+        }
 
         const [updated] = await db
           .update(schema.approvals)

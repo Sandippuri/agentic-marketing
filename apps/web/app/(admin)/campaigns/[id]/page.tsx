@@ -3,11 +3,20 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getDb, schema } from "@marketing/db";
 import { getWorkspaceContext } from "@/lib/billing";
+import { getSignedAssetUrl } from "@/lib/supabase/storage";
+import type { VisualIdentity } from "@marketing/agents/sub-agents/strategist";
 import { DraftCalendarItemButton } from "./draft-button";
 import { RedraftButton } from "./redraft-button";
-import { CampaignChat } from "./campaign-chat";
 import { CampaignTabs } from "./campaign-tabs";
+import {
+  PartnerLogosPanel,
+  type PartnerLogoView,
+} from "./partner-logos-panel";
 import { PageHeader, Badge, EmptyState, Card, CardHeader, statusTone } from "../../ui";
+
+// Mirrors the cap enforced server-side in
+// app/api/campaigns/[id]/partner-logos/route.ts (MAX_PARTNER_LOGOS).
+const PARTNER_LOGO_CAP = 3;
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -95,6 +104,27 @@ export default async function CampaignDetail({
     statusSummary.map((r) => [r.status, r.count]),
   );
 
+  // Sign partner logos for the initial render. Each entry is best-effort:
+  // a stale storage object yields a null signedUrl, not a thrown error.
+  const visualIdentity = (campaign.visualIdentity ?? null) as VisualIdentity | null;
+  const partnerLogos: PartnerLogoView[] = await Promise.all(
+    (visualIdentity?.partner_logos ?? []).map(async (logo) => {
+      let signedUrl: string | null = null;
+      try {
+        signedUrl = await getSignedAssetUrl(logo.storagePath);
+      } catch {
+        signedUrl = null;
+      }
+      return {
+        id: logo.id,
+        label: logo.label,
+        storagePath: logo.storagePath,
+        signedUrl,
+        addedAt: logo.addedAt,
+      };
+    }),
+  );
+
   const calendarItems = Array.isArray(campaign.calendarJson)
     ? (campaign.calendarJson as Array<{
         title: string;
@@ -113,7 +143,7 @@ export default async function CampaignDetail({
         : "violet";
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] xl:gap-8">
+    <div>
       <div className="min-w-0">
       {/* Breadcrumb */}
       <div className="mb-3">
@@ -164,6 +194,14 @@ export default async function CampaignDetail({
         hasBrief={Boolean(campaign.briefMd)}
         calendarCount={calendarItems.length}
         contentCount={items.length}
+        partnerLogoCount={partnerLogos.length}
+        brand={
+          <PartnerLogosPanel
+            campaignId={campaign.id}
+            initial={partnerLogos}
+            maxLogos={PARTNER_LOGO_CAP}
+          />
+        }
         brief={
           campaign.briefMd ? (
             <Card padded={false}>
@@ -316,21 +354,6 @@ export default async function CampaignDetail({
       />
       </div>
 
-      {/* Campaign-scoped chat — sticky on the right, full-height column */}
-      <aside className="hidden xl:block">
-        <div className="sticky top-7 h-[calc(100dvh-3.5rem)] flex flex-col">
-          <h2 className="section-title mb-3">Campaign chat</h2>
-          <div className="flex-1 min-h-0">
-            <CampaignChat campaignId={campaign.id} campaignName={campaign.name} fill />
-          </div>
-        </div>
-      </aside>
-
-      {/* Mobile/narrow fallback: chat below content */}
-      <div className="xl:hidden mt-6">
-        <h2 className="section-title mb-3">Campaign chat</h2>
-        <CampaignChat campaignId={campaign.id} campaignName={campaign.name} />
-      </div>
     </div>
   );
 }

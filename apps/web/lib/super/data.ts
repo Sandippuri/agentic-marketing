@@ -1,7 +1,13 @@
 import { and, desc, eq, isNull, sql, inArray } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
 import type { WorkspaceRole, AdminRole, SubscriptionStatus } from "@marketing/shared-types";
-import { listAllAuthUsers, getAuthUser, type AuthUser } from "@/lib/supabase/admin";
+import {
+  emailsByUserId,
+  getAuthUser,
+  listAllAuthUsers,
+  listRecentAuthUsers,
+  type AuthUser,
+} from "@/lib/supabase/admin";
 
 // All queries here are intentionally NON-tenant-scoped. /super/* is the only
 // place in the app where cross-tenant reads are legitimate, so we use the
@@ -31,9 +37,9 @@ export type PlatformOverview = {
 export async function getPlatformOverview(): Promise<PlatformOverview> {
   const db = getDb();
 
-  const [users, workspacesRows, activeSubsRows, pendingInvitesRows, superadminsRows] =
+  const [recentUsers, workspacesRows, activeSubsRows, pendingInvitesRows, superadminsRows] =
     await Promise.all([
-      listAllAuthUsers(),
+      listRecentAuthUsers(8),
       db
         .select({
           id: schema.workspaces.id,
@@ -78,7 +84,9 @@ export async function getPlatformOverview(): Promise<PlatformOverview> {
     .from(schema.plans);
   const planById = new Map(planRows.map((p) => [p.id, p.code as string]));
 
-  const ownerById = new Map(users.map((u) => [u.id, u.email]));
+  const ownerById = await emailsByUserId(
+    workspacesRows.map((w) => w.ownerUserId),
+  );
 
   const memberCounts =
     workspacesRows.length === 0
@@ -106,15 +114,13 @@ export async function getPlatformOverview(): Promise<PlatformOverview> {
 
   return {
     totals: {
-      users: users.length,
+      users: recentUsers.total,
       workspaces: allWorkspacesCountRows[0]?.count ?? 0,
       activeSubscriptions: activeSubsRows[0]?.count ?? 0,
       pendingInvites: pendingInvitesRows[0]?.count ?? 0,
       superadmins: superadminsRows[0]?.count ?? 0,
     },
-    recentSignups: [...users]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 8),
+    recentSignups: recentUsers.users,
     recentWorkspaces: workspacesRows.map((w) => ({
       id: w.id,
       name: w.name,
@@ -350,7 +356,7 @@ export async function listSuperWorkspaces(opts?: {
   const db = getDb();
   const includeDeleted = opts?.includeDeleted ?? false;
 
-  const [rows, planRows, memberCountRows, pendingCountRows, latestSubs, users] =
+  const [rows, planRows, memberCountRows, pendingCountRows, latestSubs] =
     await Promise.all([
       db
         .select({
@@ -391,13 +397,12 @@ export async function listSuperWorkspaces(opts?: {
         })
         .from(schema.subscriptions)
         .orderBy(desc(schema.subscriptions.createdAt)),
-      listAllAuthUsers(),
     ]);
 
   const planById = new Map(planRows.map((p) => [p.id, p.code as string]));
   const memberById = new Map(memberCountRows.map((r) => [r.workspaceId, r.n]));
   const pendingById = new Map(pendingCountRows.map((r) => [r.workspaceId, r.n]));
-  const ownerByUser = new Map(users.map((u) => [u.id, u.email]));
+  const ownerByUser = await emailsByUserId(rows.map((r) => r.ownerUserId));
   const latestSubByWs = new Map<string, SubscriptionStatus>();
   for (const s of latestSubs) {
     if (!latestSubByWs.has(s.workspaceId)) {
@@ -616,7 +621,7 @@ export async function listSuperSubscriptions(filter?: {
     conditions.push(eq(schema.subscriptions.status, filter.status));
   }
 
-  const [rows, planRows, users] = await Promise.all([
+  const [rows, planRows] = await Promise.all([
     db
       .select({
         id: schema.subscriptions.id,
@@ -642,11 +647,10 @@ export async function listSuperSubscriptions(filter?: {
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(schema.subscriptions.createdAt)),
     db.select({ id: schema.plans.id, code: schema.plans.code }).from(schema.plans),
-    listAllAuthUsers(),
   ]);
 
   const planById = new Map(planRows.map((p) => [p.id, p.code as string]));
-  const emailByUser = new Map(users.map((u) => [u.id, u.email]));
+  const emailByUser = await emailsByUserId(rows.map((r) => r.ownerUserId));
 
   return rows.map((r) => ({
     id: r.id,

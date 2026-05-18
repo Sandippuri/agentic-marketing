@@ -3,6 +3,7 @@ import { z } from "zod";
 import pino from "pino";
 import type { CpClient } from "@marketing/cp-client";
 import { ASSET_PROMPT } from "@marketing/prompts";
+import { getPrompt } from "../prompt-store";
 import { getBrandMemoryDoc } from "../brand-store";
 import {
   getDesignSystem,
@@ -11,9 +12,7 @@ import {
 import { generateImage } from "../image-gen";
 import { generateVideo } from "../video-gen";
 import { buildBrandPromptPrefix } from "../brand-prompt";
-import { renderTemplate, type TemplateFields } from "../template-render";
 import {
-  uploadAsset,
   uploadAssetBytes,
   uploadGeneratedMedia,
 } from "../asset-uploader";
@@ -70,9 +69,10 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
     "asset sub-agent received request",
   );
 
+  const systemPrompt = await getPrompt("asset.system", ASSET_PROMPT);
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
-    system: ASSET_PROMPT,
+    system: systemPrompt,
     prompt: request,
     maxSteps: 10,
     tools: {
@@ -150,37 +150,6 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
           );
           log.info({ storagePath }, "background uploaded to Supabase");
           return { storagePath };
-        },
-      }),
-
-      render_template: tool({
-        description:
-          "Render a Bannerbear or Placid template with text/image fields. Returns storagePath after uploading to Supabase.",
-        parameters: z.object({
-          templateId: z.string().describe("Bannerbear template UID or Placid template UUID"),
-          fields: z
-            .record(z.union([z.string(), z.object({ text: z.string().optional(), image_url: z.string().optional() })]))
-            .describe("Layer name → value mapping"),
-          backgroundUrl: z.string().optional().describe("Supabase signed URL or public URL to use as background layer"),
-        }),
-        execute: async ({ templateId, fields, backgroundUrl }) => {
-          log.info({ templateId }, "render_template called");
-          const mergedFields: TemplateFields = { ...fields };
-          if (backgroundUrl) mergedFields["background"] = { image_url: backgroundUrl };
-          log.info(
-            {
-              workspaceId,
-              contentId,
-              templateId,
-              backgroundUrl,
-              fields: mergedFields,
-            },
-            "TEMPLATE RENDER (full) — about to call renderTemplate",
-          );
-          const { url, renderId } = await renderTemplate(templateId, mergedFields);
-          const storagePath = await uploadAsset(url, `renders/${renderId}.png`);
-          log.info({ storagePath, renderId }, "template render uploaded to Supabase");
-          return { storagePath, renderId };
         },
       }),
 

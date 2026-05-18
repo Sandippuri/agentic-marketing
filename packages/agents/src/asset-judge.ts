@@ -10,6 +10,7 @@
  * Stops "generic floating cube" outputs from making it to approval cards.
  */
 import { generateText } from "ai";
+import { getPrompt } from "./prompt-store";
 import { z } from "zod";
 import pino from "pino";
 import type { LlmModel } from "@marketing/shared-types";
@@ -42,7 +43,7 @@ export type CandidateScore = z.infer<typeof ScoreSchema> & {
   imageUrl: string;
 };
 
-const JUDGE_PROMPT = `You are a senior creative reviewer. Score one generated
+export const JUDGE_PROMPT = `You are a senior creative reviewer. Score one generated
 image against the visual concept brief on a 0-5 scale across five axes:
 
 1. subject_specificity — does the image show the SPECIFIC subjects named
@@ -125,9 +126,10 @@ async function scoreOne(
     2,
   );
 
+  const systemPrompt = await getPrompt("asset_judge.system", JUDGE_PROMPT);
   const { text, usage } = await generateText({
     model: getLanguageModel(model),
-    system: JUDGE_PROMPT,
+    system: systemPrompt,
     messages: [
       {
         role: "user",

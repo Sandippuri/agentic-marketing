@@ -190,7 +190,7 @@ function QuotaBar({ row }: { row: QuotaRow }) {
   const tone =
     unlimited
       ? "ok"
-      : fraction >= 1
+      : fraction > 1
         ? "danger"
         : fraction >= 0.85
           ? "warn"

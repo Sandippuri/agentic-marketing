@@ -17,6 +17,8 @@ const TYPE_TO_CHANNEL: Record<string, string> = {
   x_thread: "x",
   x_post: "x",
   email: "email_hubspot",
+  instagram: "instagram",
+  facebook: "facebook",
 };
 
 type State = "idle" | "starting" | "started" | "error";
