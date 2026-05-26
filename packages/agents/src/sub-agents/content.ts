@@ -9,7 +9,12 @@ import { buildSlackApprovalCard, buildDiscordApprovalEmbed, buildWebApprovalCard
 import { findSimilarContent } from "../find-similar";
 import { findBrandGuidance } from "../brand-guidance";
 import { findCommonMistakes } from "../find-common-mistakes";
-import { CHANNELS, type LlmModel } from "@marketing/shared-types";
+import {
+  CHANNELS,
+  maxImagesForContentType,
+  type ContentType,
+  type LlmModel,
+} from "@marketing/shared-types";
 import { getLanguageModel } from "../llm-registry";
 import { recordLlmUsage } from "../usage";
 
@@ -22,7 +27,9 @@ const log = pino({ name: "content" });
  * composition, what to avoid) — never the message ("show growth"). The model
  * can't render abstract concepts; it can render specific things.
  *
- * Stored on `content_items.image_brief` (jsonb).
+ * Stored on `content_items.image_brief` (jsonb) as an ARRAY of briefs since
+ * migration 0040 — one entry per intended image slot. A post may carry 1–4
+ * briefs (clamped by content-type cap; see maxImagesForContentType).
  */
 export type ImageBrief = {
   /** Literal subject in frame: "single laptop on wooden desk, screen showing line chart trending up". */
@@ -81,6 +88,8 @@ export async function runContent({
 
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(180_000),
+    maxRetries: 2,
     system: `${systemBody}\n\n---\n\n# Memory\n\n${memoryBody}`,
     prompt: request,
     maxSteps: 8,
@@ -175,58 +184,73 @@ export async function runContent({
       create_content: tool({
         description:
           "Create a new draft content item in the Control Plane. " +
-          "MUST include an imageBrief — the asset pipeline uses it to direct image generation. " +
-          "Describe the LITERAL subject (what's in frame), not the abstract message. " +
-          "The model can render 'a single laptop on a wooden desk with a sharp upward line chart on screen' " +
-          "but cannot render 'the feeling of growth'.",
+          "MUST include imageBriefs — an array of 1–4 briefs, one per intended image. " +
+          "The asset pipeline generates one image per brief. " +
+          "Use multiple briefs only when each carries distinct information (before/after, multi-step explainer, carousel of stats). " +
+          "Channel caps apply: linkedin and email accept 1 image; blog / x_post / x_thread accept up to 4.",
         parameters: z.object({
           title: z.string(),
           bodyMd: z.string(),
           type: z.enum(["blog", "linkedin", "x_thread", "x_post", "email"]),
           stage: z.enum(["pull", "explain", "reinforce", "push"]).optional(),
-          imageBrief: z
-            .object({
-              subject: z
-                .string()
-                .min(8)
-                .describe(
-                  "Literal subject in frame. Specific objects, no abstractions. Example: 'single laptop on a wooden desk, screen showing a line chart with sharp upward inflection at month 6'",
-                ),
-              composition: z
-                .enum(["close_up", "medium", "wide", "overhead"])
-                .describe("Camera framing"),
-              mood: z
-                .string()
-                .min(4)
-                .describe("Mood / atmosphere ('calm, focused, early-morning light')"),
-              overlay_text: z
-                .string()
-                .max(80)
-                .optional()
-                .describe(
-                  "Optional ≤8-word headline the image model should render INTO the image. Leave empty for blog OG images where text is added separately.",
-                ),
-              must_show: z
-                .array(z.string())
-                .describe("Concrete elements that MUST appear"),
-              must_not_show: z
-                .array(z.string())
-                .describe(
-                  "Concrete elements that must NOT appear (e.g. 'human faces', 'cluttered desk', 'stock 3D coins')",
-                ),
-            })
+          imageBriefs: z
+            .array(
+              z.object({
+                subject: z
+                  .string()
+                  .min(8)
+                  .describe(
+                    "Literal subject in frame. Specific objects, no abstractions. Example: 'single laptop on a wooden desk, screen showing a line chart with sharp upward inflection at month 6'",
+                  ),
+                composition: z
+                  .enum(["close_up", "medium", "wide", "overhead"])
+                  .describe("Camera framing"),
+                mood: z
+                  .string()
+                  .min(4)
+                  .describe("Mood / atmosphere ('calm, focused, early-morning light')"),
+                overlay_text: z
+                  .string()
+                  .max(80)
+                  .optional()
+                  .describe(
+                    "Optional ≤8-word headline the image model should render INTO the image. Leave empty for blog OG images where text is added separately.",
+                  ),
+                must_show: z
+                  .array(z.string())
+                  .describe("Concrete elements that MUST appear"),
+                must_not_show: z
+                  .array(z.string())
+                  .describe(
+                    "Concrete elements that must NOT appear (e.g. 'human faces', 'cluttered desk', 'stock 3D coins')",
+                  ),
+              }),
+            )
+            .min(1)
+            .max(4)
             .describe(
-              "Image direction for the asset pipeline. Required — text-only posts still pass an empty must_show / must_not_show but must name a subject.",
+              "Array of 1–4 image briefs in display order. Slot 0 is the lead/cover. Use multiple briefs only when each adds distinct information.",
             ),
         }),
-        execute: async ({ imageBrief, ...input }) => {
+        execute: async ({ imageBriefs, ...input }) => {
+          // Clamp to the content-type cap as a safety net — the LLM is
+          // instructed via prompt, but a stray 4-brief emit on a `linkedin`
+          // post would otherwise persist and surface as silently-dropped
+          // images at publish time. Trim the tail rather than reject so the
+          // create still succeeds.
+          const cap = maxImagesForContentType(input.type as ContentType);
+          const clamped = imageBriefs.slice(0, cap);
           const item = await cp.createContent({
             campaignId,
             ...input,
-            imageBrief,
+            imageBriefs: clamped,
           });
           log.info(
-            { contentId: item.id, hasImageBrief: Boolean(imageBrief) },
+            {
+              contentId: item.id,
+              imageBriefCount: clamped.length,
+              clampedFrom: imageBriefs.length,
+            },
             "created content item",
           );
           return item;
@@ -269,7 +293,10 @@ export async function runContent({
               };
               const assetRes = await fetch(
                 `${process.env.CP_BASE_URL ?? "http://localhost:3000"}/api/assets?contentId=${id}`,
-                { headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" } },
+                {
+                  headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" },
+                  signal: AbortSignal.timeout(10_000),
+                },
               )
                 .then((r) =>
                   r.ok ? (r.json() as Promise<AssetRow[]>) : Promise.resolve([]),

@@ -11,6 +11,14 @@ export type LinkedInPayload = {
   bodyMd: string;
   /** Signed URL for the visual asset (poster / OG image) */
   assetSignedUrl?: string;
+  /**
+   * Multi-image URLs — accepted for payload-shape symmetry with other
+   * adapters, but LinkedIn UGC feed posts don't support multi-image. The
+   * adapter takes the first entry and drops the rest with a warning. The
+   * publish step already caps to maxImagesForChannel=1, so this is a
+   * defence-in-depth check.
+   */
+  assetSignedUrls?: string[];
 };
 
 async function liRequest<T>(
@@ -27,6 +35,7 @@ async function liRequest<T>(
       "X-Restli-Protocol-Version": "2.0.0",
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!res.ok) {
@@ -61,7 +70,9 @@ async function uploadAssetToLinkedIn(token: string, orgUrn: string, imageUrl: st
   const assetUrn = value.asset;
 
   // Step 2: Fetch the image and PUT it to LinkedIn's upload URL.
-  const imgRes = await fetch(imageUrl);
+  const imgRes = await fetch(imageUrl, {
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!imgRes.ok) throw new Error(`Failed to fetch asset for LinkedIn upload: ${imgRes.status}`);
   const imgBuffer = await imgRes.arrayBuffer();
 
@@ -69,36 +80,59 @@ async function uploadAssetToLinkedIn(token: string, orgUrn: string, imageUrl: st
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "image/png" },
     body: imgBuffer,
+    signal: AbortSignal.timeout(60_000),
   });
 
   return assetUrn;
 }
 
+export type LinkedInCreds = {
+  accessToken: string;
+  /** URN to post as: either urn:li:person:{sub} or urn:li:organization:{id}. */
+  authorUrn: string;
+};
+
 /**
  * LinkedIn UGC Posts adapter.
- * Publishes text-only or image posts to a company page.
- * Requires: LINKEDIN_ACCESS_TOKEN, LINKEDIN_ORGANIZATION_URN in env.
+ * Publishes text-only or image posts on behalf of the authorized member or
+ * organization. Credentials come from the per-workspace social_connections
+ * row populated by /api/oauth/linkedin/callback.
  */
 export class LinkedInAdapter implements PublishingAdapter<LinkedInPayload> {
   readonly channel: Channel = "linkedin";
+  private readonly token: string;
+  private readonly orgUrn: string;
+
+  constructor(creds: LinkedInCreds) {
+    this.token = creds.accessToken;
+    this.orgUrn = creds.authorUrn;
+  }
 
   async publish(payload: LinkedInPayload): Promise<AdapterPublishResult> {
-    const token = process.env.LINKEDIN_ACCESS_TOKEN;
-    const orgUrn = process.env.LINKEDIN_ORGANIZATION_URN; // e.g. "urn:li:organization:12345"
+    const { token, orgUrn } = this;
 
-    if (!token || !orgUrn) {
-      throw new Error("LINKEDIN_ACCESS_TOKEN and LINKEDIN_ORGANIZATION_URN must be set");
+    // LinkedIn feed posts are single-image only. If the caller passed an
+    // array (multi-image post cross-published), take the first and warn.
+    let imageUrl = payload.assetSignedUrl;
+    if (payload.assetSignedUrls && payload.assetSignedUrls.length > 0) {
+      imageUrl = payload.assetSignedUrls[0];
+      if (payload.assetSignedUrls.length > 1) {
+        log.warn(
+          { dropped: payload.assetSignedUrls.length - 1 },
+          "linkedin received multi-image payload; using first only (UGC posts are single-image)",
+        );
+      }
     }
 
-    log.info({ contentId: payload.contentId, hasAsset: !!payload.assetSignedUrl }, "linkedin publish");
+    log.info({ contentId: payload.contentId, hasAsset: !!imageUrl }, "linkedin publish");
 
     // Build the UGC post body.
     let shareMediaCategory: "NONE" | "IMAGE" = "NONE";
     const media: unknown[] = [];
 
-    if (payload.assetSignedUrl) {
+    if (imageUrl) {
       try {
-        const assetUrn = await uploadAssetToLinkedIn(token, orgUrn, payload.assetSignedUrl);
+        const assetUrn = await uploadAssetToLinkedIn(token, orgUrn, imageUrl);
         shareMediaCategory = "IMAGE";
         media.push({
           status: "READY",
@@ -134,22 +168,16 @@ export class LinkedInAdapter implements PublishingAdapter<LinkedInPayload> {
   }
 
   async retract(externalId: string): Promise<void> {
-    const token = process.env.LINKEDIN_ACCESS_TOKEN;
-    if (!token) throw new Error("LINKEDIN_ACCESS_TOKEN must be set");
-
+    const { token } = this;
     log.info({ externalId }, "linkedin retract");
-    // Encode the URN for use in a URL path segment.
     const encoded = encodeURIComponent(externalId);
     await liRequest<void>("DELETE", `/ugcPosts/${encoded}`, token);
     log.info({ externalId }, "linkedin retract succeeded");
   }
 
   async fetchMetrics(externalId: string): Promise<Record<string, number>> {
-    const token = process.env.LINKEDIN_ACCESS_TOKEN;
-    if (!token) return {};
-
+    const { token, orgUrn } = this;
     try {
-      const orgUrn = process.env.LINKEDIN_ORGANIZATION_URN ?? "";
       const encoded = encodeURIComponent(orgUrn);
       const shareEncoded = encodeURIComponent(externalId);
       const data = await liRequest<{

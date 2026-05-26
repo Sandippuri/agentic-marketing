@@ -72,6 +72,8 @@ export async function runAsset({ request, workspaceId, contentId, cp, model, thr
   const systemPrompt = await getPrompt("asset.system", ASSET_PROMPT);
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(240_000),
+    maxRetries: 2,
     system: systemPrompt,
     prompt: request,
     maxSteps: 10,

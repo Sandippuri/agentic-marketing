@@ -85,6 +85,7 @@ async function pollPrediction(
   while (Date.now() < deadline) {
     const res = await fetch(`${REPLICATE_API}/predictions/${predictionId}`, {
       headers: { Authorization: `Token ${token}` },
+      signal: AbortSignal.timeout(15_000),
     });
     const data = (await res.json()) as Prediction;
     if (data.status === "succeeded" && data.output) {
@@ -145,6 +146,7 @@ export async function generateReplicateVideo(
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!startRes.ok) {
     const text = await startRes.text().catch(() => "");
@@ -161,7 +163,9 @@ export async function generateReplicateVideo(
 
   log.info({ videoUrl }, "Replicate video: downloading");
 
-  const dlRes = await fetch(videoUrl);
+  const dlRes = await fetch(videoUrl, {
+    signal: AbortSignal.timeout(120_000),
+  });
   if (!dlRes.ok) {
     const text = await dlRes.text().catch(() => "");
     throw new Error(`Replicate video download ${dlRes.status}: ${text}`);

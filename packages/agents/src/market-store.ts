@@ -42,7 +42,10 @@ async function fetchFromCp(
   if (workspaceId) headers["x-workspace-id"] = workspaceId;
 
   try {
-    const res = await fetch(`${baseUrl}/api/workspace/market-context`, { headers });
+    const res = await fetch(`${baseUrl}/api/workspace/market-context`, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!res.ok) {
       log.warn(
         { status: res.status, workspaceId },

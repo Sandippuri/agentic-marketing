@@ -51,6 +51,8 @@ export async function runLifecycle({
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(180_000),
+    maxRetries: 2,
     system: systemPrompt,
     prompt: request,
     maxSteps: 6,

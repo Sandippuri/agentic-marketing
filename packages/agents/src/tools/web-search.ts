@@ -95,6 +95,7 @@ async function searchTavily({
       topic: freshness && freshness !== "any" ? "news" : "general",
       ...(days ? { days } : {}),
     }),
+    signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) {
     throw new Error(`Tavily search ${res.status}: ${await res.text()}`);
@@ -167,6 +168,7 @@ async function searchBrave({
         Accept: "application/json",
         "X-Subscription-Token": apiKey,
       },
+      signal: AbortSignal.timeout(15_000),
     },
   );
   if (!res.ok) {

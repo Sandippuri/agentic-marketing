@@ -47,7 +47,9 @@ type Operation = {
 async function fetchInlineImage(
   url: string,
 ): Promise<{ mimeType: string; bytesBase64Encoded: string }> {
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) {
     throw new Error(`Failed to fetch first-frame image ${url}: ${res.status}`);
   }
@@ -84,12 +86,9 @@ export async function generateGoogleVideo(
       // Only send generateAudio when the caller explicitly opts in — preview
       // models reject the parameter outright with INVALID_ARGUMENT.
       ...(wantsAudio ? { generateAudio: true } : {}),
-      // Google's API currently returns INVALID_ARGUMENT for "allow_adult" on
-      // most projects/regions ("allow_adult for personGeneration is
-      // currently not supported"). Falling back to the only universally
-      // accepted value; the API also accepts omitting it entirely, but
-      // explicit is clearer and matches what most regions allow.
-      personGeneration: "dont_allow",
+      // personGeneration intentionally omitted: the API rejects both
+      // "dont_allow" and "allow_adult" with INVALID_ARGUMENT on most
+      // projects/regions. Omitting it is universally accepted.
       sampleCount: 1,
     },
   };
@@ -110,6 +109,7 @@ export async function generateGoogleVideo(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!startRes.ok) {
     const text = await startRes.text().catch(() => "");
@@ -128,7 +128,9 @@ export async function generateGoogleVideo(
   let final: Operation | null = null;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    const pollRes = await fetch(pollUrl);
+    const pollRes = await fetch(pollUrl, {
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!pollRes.ok) {
       const text = await pollRes.text().catch(() => "");
       throw new Error(`Veo poll ${pollRes.status}: ${text}`);
@@ -164,7 +166,9 @@ export async function generateGoogleVideo(
 
   log.info({ downloadUrl: downloadUrl.split("?")[0] }, "Veo: downloading file");
 
-  const dlRes = await fetch(downloadUrl);
+  const dlRes = await fetch(downloadUrl, {
+    signal: AbortSignal.timeout(120_000),
+  });
   if (!dlRes.ok) {
     const text = await dlRes.text().catch(() => "");
     throw new Error(`Veo download ${dlRes.status}: ${text}`);

@@ -1,15 +1,21 @@
 import { sleep, FatalError } from "workflow";
-import { eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { getDb, schema } from "@marketing/db";
-import type { Channel, SettingsShape } from "@marketing/shared-types";
+import {
+  maxImagesForChannel,
+  type Channel,
+  type SettingsShape,
+} from "@marketing/shared-types";
 import {
   InternalBlogAdapter,
-  LinkedInAdapter,
   XAdapter,
   HubspotEmailAdapter,
   MailchimpAdapter,
+  buildSocialAdapter,
 } from "@marketing/agents/adapters";
 import { CpClient } from "@marketing/cp-client";
+import { loadSocialAdapterCreds } from "@/lib/oauth/channel-creds";
+import { getSignedAssetUrl } from "@/lib/supabase/storage";
 
 // Phase 2 of the Vercel migration. Mirror of apps/distributor/src/worker.ts
 // without BullMQ. Used by:
@@ -180,7 +186,7 @@ async function adapterPublishStep(input: PublishWorkflowInput): Promise<{
 }> {
   "use step";
 
-  const adapter = buildAdapterForChannel(input.channel);
+  const adapter = await buildAdapterForChannel(input.workspaceId, input.channel);
   if (!adapter) {
     const error = `no adapter registered for channel ${input.channel}`;
     const db = getDb();
@@ -325,35 +331,83 @@ async function loadAdapterPayload(input: PublishWorkflowInput): Promise<unknown>
   if (input.channel === "internal_blog") {
     return { contentId: input.contentId };
   }
-  // Other adapters take a structured payload. Asset URL fetch is best-effort.
+
+  // Multi-image: load every APPROVED asset for this content, ordered by slot
+  // (cover at 0, swipes after). Sign each URL in parallel. Cap the array at
+  // the channel's native maximum so a 4-image post cross-published to
+  // LinkedIn (single-image only) doesn't try to send extras the adapter
+  // would silently drop. Signing failures fall through — adapter publishes
+  // the slots it has and logs the gap.
+  const approvedAssets = await db
+    .select({
+      storagePath: schema.assets.storagePath,
+      mimeType: schema.assets.mimeType,
+      sequenceOrder: schema.assets.sequenceOrder,
+    })
+    .from(schema.assets)
+    .where(
+      and(
+        eq(schema.assets.contentId, input.contentId),
+        eq(schema.assets.status, "approved"),
+      ),
+    )
+    .orderBy(schema.assets.sequenceOrder);
+
+  // Filter to images (video assets live in a separate publish path) and
+  // dedupe within a slot — if a row exists per slot, keep the first.
+  const bySlot = new Map<number, { storagePath: string }>();
+  for (const a of approvedAssets) {
+    const isImage = !a.mimeType || a.mimeType.startsWith("image/");
+    if (!isImage) continue;
+    const slot = a.sequenceOrder ?? 0;
+    if (!bySlot.has(slot)) bySlot.set(slot, { storagePath: a.storagePath });
+  }
+  const orderedSlots = [...bySlot.entries()].sort(([a], [b]) => a - b);
+  const cap = maxImagesForChannel(input.channel);
+  const cappedSlots = orderedSlots.slice(0, cap);
+
+  const signed = await Promise.all(
+    cappedSlots.map(async ([, v]) => {
+      try {
+        return await getSignedAssetUrl(v.storagePath);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const assetSignedUrls = signed.filter(
+    (u): u is string => typeof u === "string" && u.length > 0,
+  );
+  // Adapters still read assetSignedUrl when present — keep it pointing at
+  // the lead (slot 0) so single-image adapters (LinkedIn, email) don't need
+  // to know about the array form.
+  const assetSignedUrl = assetSignedUrls[0];
+
   return {
     contentId: input.contentId,
     title: content.title,
     bodyMd: content.bodyMd,
-    // Phase 2 leaves asset signing to the existing /api/assets route — for
-    // now we omit the URL; adapters tolerate undefined.
+    assetSignedUrl,
+    assetSignedUrls,
   };
 }
 
-function buildAdapterForChannel(channel: Channel) {
-  // For internal_blog the legacy adapter takes a CpClient. Phase 2 keeps that
-  // contract by handing it a self-pointing client. Other adapters are
-  // stateless wrt cp-client.
+async function buildAdapterForChannel(workspaceId: string, channel: Channel) {
+  // Internal_blog needs a CpClient pointed at our own API.
   if (channel === "internal_blog") {
     const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
     const internalToken = process.env.INTERNAL_API_TOKEN ?? "";
     const cp = new CpClient({ baseUrl, internalToken });
     return new InternalBlogAdapter(cp);
   }
-  if (channel === "linkedin") {
-    if (
-      process.env.LINKEDIN_ACCESS_TOKEN &&
-      process.env.LINKEDIN_ORGANIZATION_URN
-    ) {
-      return new LinkedInAdapter();
-    }
-    return null;
+  // LinkedIn / Facebook / Instagram require per-workspace OAuth tokens.
+  if (channel === "linkedin" || channel === "facebook" || channel === "instagram") {
+    const spec = await loadSocialAdapterCreds(workspaceId, channel);
+    return spec ? buildSocialAdapter(spec) : null;
   }
+  // X still uses platform-level OAuth 1.0a creds (required for v1.1 media
+  // upload). The OAuth 2.0 connect flow stores a per-workspace user token —
+  // wiring that into v2 text-only posting is a follow-up.
   if (channel === "x") {
     if (process.env.X_ACCESS_TOKEN) return new XAdapter();
     return null;
@@ -381,6 +435,7 @@ async function notifyThread(threadRef: string, message: string): Promise<void> {
         "x-internal-token": token,
       },
       body: JSON.stringify({ threadRef, message }),
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     // Non-critical.

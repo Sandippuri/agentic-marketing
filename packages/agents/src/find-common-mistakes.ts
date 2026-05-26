@@ -58,6 +58,7 @@ export async function findCommonMistakes(
       model,
       limit: opts.limit ?? 5,
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {

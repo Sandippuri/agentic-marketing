@@ -171,6 +171,8 @@ export async function runStrategist({ request, workspaceId, campaignId, cp, mode
 
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(180_000),
+    maxRetries: 2,
     messages: [systemMessage, { role: "user", content: request }],
     maxSteps: 8,
     tools: {

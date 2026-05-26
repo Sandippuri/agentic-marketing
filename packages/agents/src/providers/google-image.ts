@@ -47,7 +47,9 @@ type GeminiResponse = {
 async function fetchAsInlineData(
   url: string,
 ): Promise<{ mimeType: string; data: string }> {
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) {
     throw new Error(`Failed to fetch reference image ${url}: ${res.status}`);
   }
@@ -98,6 +100,7 @@ export async function generateGoogleImage(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
   });
 
   if (!res.ok) {

@@ -161,17 +161,37 @@ export function useUpdateContent() {
 export function useGenerateAssets() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ contentId }: { contentId: string }) => {
+    mutationFn: async ({
+      contentId,
+      slotIndex,
+    }: {
+      contentId: string;
+      /** Omit to regenerate every slot; set to scope the regen to one image slot. */
+      slotIndex?: number;
+    }) => {
       const res = await fetch(`/api/content/${contentId}/generate-assets`, {
         method: "POST",
+        headers:
+          slotIndex != null
+            ? { "content-type": "application/json" }
+            : undefined,
+        body: slotIndex != null ? JSON.stringify({ slotIndex }) : undefined,
       });
       if (!res.ok) throw await readError(res, "Generate");
       return res.json() as Promise<{ inserted: number }>;
     },
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
+      const noun =
+        variables.slotIndex != null
+          ? `slot ${variables.slotIndex + 1}`
+          : data?.inserted === 1
+            ? "variant"
+            : "variants";
       toast.success(
         data?.inserted
-          ? `Generated ${data.inserted} variant${data.inserted === 1 ? "" : "s"}`
+          ? variables.slotIndex != null
+            ? `Regenerated ${noun}`
+            : `Generated ${data.inserted} ${noun}`
           : "Generation started",
       );
       qc.invalidateQueries({ queryKey: ["approvals"] });

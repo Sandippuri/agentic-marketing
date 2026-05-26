@@ -1,7 +1,11 @@
 import { redirect } from "next/navigation";
+import type { SocialProvider } from "@marketing/shared-types";
 import { getSupabaseServer } from "@/lib/supabase/server";
+import { getWorkspaceContext } from "@/lib/billing";
 import { lookupAdminRole } from "@/lib/billing/admin";
+import { listConnections } from "@/lib/oauth/repository";
 import { PageHeader, Badge } from "../ui";
+import { DisconnectButton } from "./disconnect-button";
 
 export const dynamic = "force-dynamic";
 
@@ -259,7 +263,27 @@ const USER_DESCRIPTIONS: Record<string, string> = {
   mailchimp: "Send marketing email through Mailchimp.",
 };
 
-export default async function IntegrationsPage() {
+// Maps a user-visible channel card to the SocialProvider it OAuths against.
+// Channels without a provider here (hubspot/mailchimp) stay env-var-only and
+// can't be self-served yet.
+const CHANNEL_TO_PROVIDER: Record<string, SocialProvider> = {
+  linkedin: "linkedin",
+  facebook: "meta",
+  instagram: "meta",
+  x: "x",
+};
+
+type ConnectionView = {
+  provider: SocialProvider;
+  accountLabel: string;
+  hasInstagram: boolean;
+};
+
+export default async function IntegrationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ oauth?: string; status?: string; message?: string }>;
+}) {
   const sb = await getSupabaseServer();
   const { data: userData } = await sb.auth.getUser();
   if (!userData.user) redirect("/login?next=/integrations");
@@ -273,17 +297,60 @@ export default async function IntegrationsPage() {
   }));
 
   if (!isSuperadmin) {
-    return <UserIntegrationsView items={items} />;
+    const { workspaceId } = await getWorkspaceContext();
+    const connections = await listConnections(workspaceId);
+    const connViews: ConnectionView[] = connections.map((c) => ({
+      provider: c.provider,
+      accountLabel: c.accountLabel,
+      hasInstagram:
+        c.provider === "meta" &&
+        !!(c.metadata as { instagramBusinessAccountId?: string | null })
+          .instagramBusinessAccountId,
+    }));
+    const sp = await searchParams;
+    return (
+      <UserIntegrationsView
+        items={items}
+        connections={connViews}
+        banner={
+          sp.oauth && sp.status
+            ? {
+                provider: sp.oauth,
+                status: sp.status,
+                message: sp.message,
+              }
+            : null
+        }
+      />
+    );
   }
   return <OperatorIntegrationsView items={items} />;
 }
 
 // ---------- Platform-user view ----------------------------------------------
 
+function findConnection(
+  channelId: string,
+  connections: ConnectionView[],
+): ConnectionView | null {
+  const provider = CHANNEL_TO_PROVIDER[channelId];
+  if (!provider) return null;
+  const match = connections.find((c) => c.provider === provider);
+  if (!match) return null;
+  // Instagram only counts as connected when the Meta connection has a linked
+  // IG Business account.
+  if (channelId === "instagram" && !match.hasInstagram) return null;
+  return match;
+}
+
 function UserIntegrationsView({
   items,
+  connections,
+  banner,
 }: {
   items: (Integration & { status: Status; presentVars: string[] })[];
+  connections: ConnectionView[];
+  banner: { provider: string; status: string; message?: string } | null;
 }) {
   const channels = items.filter((i) => USER_VISIBLE_IDS.has(i.id));
 
@@ -291,61 +358,95 @@ function UserIntegrationsView({
     <div className="max-w-3xl">
       <PageHeader
         title="Integrations"
-        description="Connect the channels you want to publish to. Connections are managed by the workspace owner."
+        description="Connect the channels you want to publish to. Tokens are stored encrypted and scoped to this workspace."
       />
+
+      {banner && (
+        <div
+          className={[
+            "mb-4 text-xs rounded-md px-3 py-2",
+            banner.status === "connected"
+              ? "bg-[var(--success-bg,#102f1d)] text-[var(--success,#5ee29a)]"
+              : "bg-[var(--danger-bg,#2f1010)] text-[var(--danger)]",
+          ].join(" ")}
+        >
+          {banner.status === "connected"
+            ? `${banner.provider} connected.`
+            : `${banner.provider}: ${banner.message ?? "connection failed"}`}
+        </div>
+      )}
 
       <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {channels.map((i) => (
           <UserChannelCard
             key={i.id}
+            channelId={i.id}
             name={i.name}
             description={USER_DESCRIPTIONS[i.id] ?? i.description}
-            status={i.status}
+            connection={findConnection(i.id, connections)}
           />
         ))}
       </ul>
 
       <p className="mt-6 text-xs text-faint">
-        Per-workspace OAuth is coming soon. In the meantime, ask your workspace
-        owner to wire these up.
+        HubSpot and Mailchimp still need the workspace owner to wire env vars
+        — per-workspace OAuth for email is on the roadmap.
       </p>
     </div>
   );
 }
 
 function UserChannelCard({
+  channelId,
   name,
   description,
-  status,
+  connection,
 }: {
+  channelId: string;
   name: string;
   description: string;
-  status: Status;
+  connection: ConnectionView | null;
 }) {
-  // We render every channel as "Not connected" for the user view because the
-  // env-var status is platform-global; it doesn't reflect whether THIS
-  // workspace has connected the channel. Per-workspace OAuth lands later.
-  const userFacingStatus: Status = "missing";
+  const provider = CHANNEL_TO_PROVIDER[channelId];
+  const isOAuthBacked = !!provider;
+  const status: Status = connection ? "connected" : "missing";
+
   return (
     <li className="surface p-4 flex flex-col">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-semibold text-ink">{name}</div>
           <p className="text-xs text-mid mt-0.5 leading-snug">{description}</p>
+          {connection && (
+            <p className="text-[11px] text-faint mt-1 truncate">
+              {connection.accountLabel}
+            </p>
+          )}
         </div>
-        <Badge tone={STATUS_TONE[userFacingStatus]} dot>
-          {STATUS_LABEL[userFacingStatus]}
+        <Badge tone={STATUS_TONE[status]} dot>
+          {STATUS_LABEL[status]}
         </Badge>
       </div>
       <div className="mt-4">
-        <button
-          type="button"
-          disabled
-          className="btn btn-secondary btn-sm opacity-60 cursor-not-allowed"
-          title="Per-workspace connect is coming soon"
-        >
-          Connect
-        </button>
+        {!isOAuthBacked ? (
+          <button
+            type="button"
+            disabled
+            className="btn btn-secondary btn-sm opacity-60 cursor-not-allowed"
+            title="Ask your workspace owner to set the provider env vars"
+          >
+            Operator-managed
+          </button>
+        ) : connection ? (
+          <DisconnectButton provider={connection.provider} />
+        ) : (
+          <a
+            href={`/api/oauth/${provider}/start?return_to=/integrations`}
+            className="btn btn-primary btn-sm"
+          >
+            Connect
+          </a>
+        )}
       </div>
     </li>
   );

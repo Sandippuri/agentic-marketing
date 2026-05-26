@@ -58,6 +58,7 @@ export default async function ApprovalsPage() {
     kind: string;
     mimeType: string | null;
     promptUsed: string | null;
+    sequenceOrder: number;
   };
   const assetsByContent = new Map<string, AssetOption[]>();
   for (const r of rows) {
@@ -70,6 +71,7 @@ export default async function ApprovalsPage() {
           kind: schema.assets.kind,
           mimeType: schema.assets.mimeType,
           promptUsed: schema.assets.promptUsed,
+          sequenceOrder: schema.assets.sequenceOrder,
           createdAt: schema.assets.createdAt,
         })
         .from(schema.assets)
@@ -79,7 +81,10 @@ export default async function ApprovalsPage() {
             eq(schema.assets.contentId, r.contentId),
           ),
         )
-        .orderBy(schema.assets.createdAt);
+        // Slot first (so the detail panel can group), then createdAt within
+        // the slot (oldest → newest, matching the existing variant strip
+        // ordering).
+        .orderBy(schema.assets.sequenceOrder, schema.assets.createdAt);
       const signed = await Promise.all(
         found.map(async (a) => ({
           id: a.id,
@@ -87,6 +92,7 @@ export default async function ApprovalsPage() {
           kind: a.kind,
           mimeType: a.mimeType,
           promptUsed: a.promptUsed,
+          sequenceOrder: a.sequenceOrder ?? 0,
           signedUrl: await getSignedAssetUrl(a.storagePath).catch(() => null),
         })),
       );

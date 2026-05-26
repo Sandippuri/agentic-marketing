@@ -43,10 +43,17 @@ Hard rules:
 - The <rationale> block must appear in the content item's bodyMd above the post copy.
 - Vocabulary and banned-phrase checks from brand/voice.md take precedence over everything else.
 
-Image direction (imageBrief on create_content):
-- After you finish the copy, decide what the SINGLE accompanying image should literally show. The Art Director will translate your brief into a model prompt — your job is to nail the subject, not the prompt engineering.
-- subject = literal objects in frame. "A single laptop on a wooden desk, screen showing a line chart trending up" is a good subject. "The feeling of growth" is not — image models cannot render concepts.
-- The image must reinforce the post's SPECIFIC point, not be generic decoration. If the post argues something specific, the image should show the consequence of that argument.
-- composition: pick close_up / medium / wide / overhead based on the post type. LinkedIn singles → medium or close_up. Blog OG → wide. Email headers → wide.
-- overlay_text: only set this when a poster-style headline IN the image is appropriate (LinkedIn carousel covers, X images with copy). Leave empty for editorial/photographic shots.
-- must_not_show: be ruthless. Default bans you should usually carry: "human faces" (uncanny), "stock 3D crypto coins", "anonymous floating cubes", "rainbow gradients on dark backgrounds", "robotic hands typing".`;
+Image direction (imageBriefs on create_content):
+- After you finish the copy, decide HOW MANY images this post needs and what each one should LITERALLY show. Emit imageBriefs as an ARRAY (1–4 briefs). One brief per intended image; the Art Director will translate each into a model prompt and the asset pipeline will generate one image per slot.
+- Decide the count by the post's job, not by maxing out. Most posts ship 1 image. Use 2–4 only when the additional images carry distinct information the copy needs (a before/after pair, a 3-step explainer with one image per step, a carousel of 4 statistics). Repeating the same subject in different angles is a waste — make each slot earn its place.
+- Channel caps you MUST respect (the tool will reject overflow):
+  · linkedin → 1 image only (LinkedIn feed posts don't support multi-image)
+  · email → 1 image (header slot only)
+  · blog / x_post / x_thread → up to 4
+- Per-brief rules (apply to EVERY entry in the array):
+  · subject = literal objects in frame. "A single laptop on a wooden desk, screen showing a line chart trending up" is a good subject. "The feeling of growth" is not — image models cannot render concepts.
+  · The image must reinforce the post's SPECIFIC point, not be generic decoration. If the post argues something specific, the image should show the consequence of that argument.
+  · composition: pick close_up / medium / wide / overhead based on the post type. LinkedIn singles → medium or close_up. Blog OG → wide. Email headers → wide.
+  · overlay_text: only set this when a poster-style headline IN the image is appropriate (LinkedIn carousel covers, X images with copy). Leave empty for editorial/photographic shots.
+  · must_not_show: be ruthless. Default bans you should usually carry: "human faces" (uncanny), "stock 3D crypto coins", "anonymous floating cubes", "rainbow gradients on dark backgrounds", "robotic hands typing".
+- When emitting >1 image: the order matters. Slot 0 is the lead/cover; slot 1 follows on swipe; etc. Carousel narratives should read in order without re-shuffling.`;

@@ -5,11 +5,12 @@ import type { Channel } from "@marketing/shared-types";
 import {
   HubspotEmailAdapter,
   MailchimpAdapter,
-  LinkedInAdapter,
   XAdapter,
   InternalBlogAdapter,
+  buildSocialAdapter,
 } from "@marketing/agents/adapters";
 import { CpClient } from "@marketing/cp-client";
+import { loadSocialAdapterCreds } from "@/lib/oauth/channel-creds";
 
 // Phase 2 mirror of apps/distributor/src/metrics-cron.ts. Two entrypoints:
 //   metricsFetchWorkflow — sleeps 24h then pulls metrics for one publish_job.
@@ -42,7 +43,7 @@ async function fetchAndRecordStep(
   input: MetricsFetchInput,
 ): Promise<{ recorded: number }> {
   "use step";
-  const adapter = buildAdapterForChannel(input.channel);
+  const adapter = await buildAdapterForChannel(input.workspaceId, input.channel);
   const fetchMetrics = (
     adapter as { fetchMetrics?: (externalId: string) => Promise<Record<string, number>> } | null
   )?.fetchMetrics?.bind(adapter);
@@ -70,7 +71,7 @@ async function fetchAndRecordStep(
   return { recorded: entries.length };
 }
 
-function buildAdapterForChannel(channel: Channel) {
+async function buildAdapterForChannel(workspaceId: string, channel: Channel) {
   if (channel === "internal_blog") {
     const baseUrl = process.env.CP_BASE_URL ?? "http://localhost:3000";
     const internalToken = process.env.INTERNAL_API_TOKEN ?? "";
@@ -78,14 +79,9 @@ function buildAdapterForChannel(channel: Channel) {
       new CpClient({ baseUrl, internalToken }),
     );
   }
-  if (channel === "linkedin") {
-    if (
-      process.env.LINKEDIN_ACCESS_TOKEN &&
-      process.env.LINKEDIN_ORGANIZATION_URN
-    ) {
-      return new LinkedInAdapter();
-    }
-    return null;
+  if (channel === "linkedin" || channel === "facebook" || channel === "instagram") {
+    const spec = await loadSocialAdapterCreds(workspaceId, channel);
+    return spec ? buildSocialAdapter(spec) : null;
   }
   if (channel === "x") return process.env.X_ACCESS_TOKEN ? new XAdapter() : null;
   if (channel === "email_hubspot")

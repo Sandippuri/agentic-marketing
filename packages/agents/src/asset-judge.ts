@@ -35,7 +35,7 @@ const ScoreSchema = z.object({
   on_message: z.number().min(0).max(5),
   total: z.number().optional(),
   verdict: z.enum(["accept", "reject"]),
-  reason: z.string(),
+  reason: z.string().optional().default(""),
 });
 
 export type CandidateScore = z.infer<typeof ScoreSchema> & {
@@ -73,36 +73,56 @@ export type RunJudgeInput = {
   workflowRunId?: string | null;
 };
 
+// Judge runs a tight rubric → tiny JSON; Sonnet is overkill. Haiku 4.5 is
+// vision-capable, ~3-5× faster, and an order of magnitude cheaper, so the
+// retry-once-on-reject path doesn't dominate latency or spend. Override per
+// call by passing `model:` on RunJudgeInput.
+export const JUDGE_DEFAULT_MODEL: LlmModel = "claude-haiku-4-5-20251001";
+
+// Hard cap so a stalled vision request can't park a workflow step forever.
+// 60s is well over normal vision latency (~3-8s on Haiku); anything beyond
+// that is almost certainly a hung socket or provider outage — fail fast and
+// let the retry-once path or catch-all reject handle it.
+const JUDGE_REQUEST_TIMEOUT_MS = 60_000;
+
 export async function runAssetJudge(
   input: RunJudgeInput,
 ): Promise<CandidateScore[]> {
+  const model = input.model ?? JUDGE_DEFAULT_MODEL;
+  const settled = await Promise.allSettled(
+    input.candidates.map((c) => scoreOne(input.brief, c, model)),
+  );
+
   const scores: CandidateScore[] = [];
-  for (const c of input.candidates) {
-    try {
-      const score = await scoreOne(input.brief, c, input.model);
+  for (let i = 0; i < settled.length; i++) {
+    const c = input.candidates[i]!;
+    const r = settled[i]!;
+    if (r.status === "fulfilled") {
+      const score = r.value;
       scores.push({ ...score, index: c.index, imageUrl: c.imageUrl });
-      await recordLlmUsage({
+      recordLlmUsage({
         agent: "asset-judge",
         workspaceId: input.workspaceId,
-        model: input.model,
+        model,
         threadRef: input.threadRef ?? undefined,
         jobId: input.jobId ?? null,
         workflowRunId: input.workflowRunId ?? null,
         usage: score._usage as Parameters<typeof recordLlmUsage>[0]["usage"],
-      });
-    } catch (err) {
-      log.warn({ err: (err as Error).message, index: c.index }, "asset-judge failed; treating as accept");
+      }).catch(() => {});
+    } else {
+      const err = r.reason instanceof Error ? r.reason : new Error(String(r.reason));
+      log.warn({ err: err.message, index: c.index }, "asset-judge failed; rejecting candidate");
       scores.push({
         index: c.index,
         imageUrl: c.imageUrl,
-        subject_specificity: 3,
-        brand_fit: 3,
-        composition: 3,
-        originality: 3,
-        on_message: 3,
-        total: 15,
-        verdict: "accept",
-        reason: `judge_error: ${(err as Error).message}`,
+        subject_specificity: 0,
+        brand_fit: 0,
+        composition: 0,
+        originality: 0,
+        on_message: 0,
+        total: 0,
+        verdict: "reject",
+        reason: `judge_error: ${err.message}`,
       });
     }
   }
@@ -129,6 +149,8 @@ async function scoreOne(
   const systemPrompt = await getPrompt("asset_judge.system", JUDGE_PROMPT);
   const { text, usage } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(JUDGE_REQUEST_TIMEOUT_MS),
+    maxRetries: 2,
     system: systemPrompt,
     messages: [
       {

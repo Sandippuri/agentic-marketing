@@ -57,7 +57,9 @@ async function uploadInputReference(
   apiKey: string,
   imageUrl: string,
 ): Promise<string> {
-  const imgRes = await fetch(imageUrl);
+  const imgRes = await fetch(imageUrl, {
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!imgRes.ok) {
     throw new Error(
       `Failed to fetch first-frame image ${imageUrl}: ${imgRes.status}`,
@@ -81,6 +83,7 @@ async function uploadInputReference(
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
+    signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -152,6 +155,7 @@ export async function generateOpenAiVideo(
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!startRes.ok) {
     const text = await startRes.text().catch(() => "");
@@ -168,6 +172,7 @@ export async function generateOpenAiVideo(
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     const pollRes = await fetch(`${API_BASE}/videos/${job.id}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!pollRes.ok) {
       const text = await pollRes.text().catch(() => "");
@@ -196,7 +201,10 @@ export async function generateOpenAiVideo(
 
   const dlRes = await fetch(
     `${API_BASE}/videos/${final.id}/content?variant=video`,
-    { headers: { Authorization: `Bearer ${apiKey}` } },
+    {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(120_000),
+    },
   );
   if (!dlRes.ok) {
     const text = await dlRes.text().catch(() => "");

@@ -61,6 +61,8 @@ export async function runResearcher({
   const systemPrompt = await getPrompt("researcher.system", RESEARCHER_PROMPT);
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(240_000),
+    maxRetries: 2,
     system: systemPrompt,
     prompt: request,
     maxSteps: 12,
@@ -79,6 +81,7 @@ export async function runResearcher({
           try {
             const res = await fetch(url, {
               headers: { "user-agent": "marketing-agent-researcher/0.1" },
+              signal: AbortSignal.timeout(15_000),
             });
             const contentType = res.headers.get("content-type") ?? "";
             const text = (await res.text()).slice(0, 10_000);

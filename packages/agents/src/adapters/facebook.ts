@@ -8,35 +8,93 @@ export type FacebookPayload = {
   contentId: string;
   title: string;
   bodyMd: string;
-  /** Public image URL. If set, posts as a photo (richer preview). */
+  /**
+   * Single-image URL — used when assetSignedUrls is absent or has one entry.
+   * Posts via /photos as a single-photo post (richer preview than /feed).
+   */
   assetSignedUrl?: string;
+  /**
+   * Multi-image URLs. When >1, the adapter uploads each as an unpublished
+   * photo and attaches them via `attached_media[i]` to a single /feed post,
+   * producing a native FB album with the message as the caption.
+   */
+  assetSignedUrls?: string[];
   /** Optional canonical link to attach to the post. */
   linkUrl?: string;
 };
 
+export type FacebookCreds = {
+  pageAccessToken: string;
+  pageId: string;
+};
+
 /**
  * Facebook Page feed adapter.
- * Requires: META_PAGE_ACCESS_TOKEN (long-lived page token), FB_PAGE_ID.
+ * Posts via the long-lived Page Access Token returned by /me/accounts.
  */
 export class FacebookAdapter implements PublishingAdapter<FacebookPayload> {
   readonly channel: Channel = "facebook";
+  private readonly token: string;
+  private readonly pageId: string;
+
+  constructor(creds: FacebookCreds) {
+    this.token = creds.pageAccessToken;
+    this.pageId = creds.pageId;
+  }
 
   async publish(payload: FacebookPayload): Promise<AdapterPublishResult> {
-    const pageId = process.env.FB_PAGE_ID;
-    if (!pageId) throw new Error("FB_PAGE_ID must be set");
+    const { token, pageId } = this;
 
-    log.info({ contentId: payload.contentId, hasAsset: !!payload.assetSignedUrl }, "facebook publish");
+    const urls =
+      payload.assetSignedUrls && payload.assetSignedUrls.length > 0
+        ? payload.assetSignedUrls
+        : payload.assetSignedUrl
+          ? [payload.assetSignedUrl]
+          : [];
+
+    log.info(
+      { contentId: payload.contentId, imageCount: urls.length },
+      "facebook publish",
+    );
 
     let postId: string;
-    if (payload.assetSignedUrl) {
+    if (urls.length >= 2) {
+      // Album path: upload each photo as `published=false` to grab its id,
+      // then attach via attached_media[i] to a single feed post. This is FB's
+      // documented way to make a multi-image post show up as a native album
+      // instead of N separate posts.
+      const photoIds = await Promise.all(
+        urls.map(async (url) => {
+          const r = await metaRequest<{ id: string }>(
+            token,
+            "POST",
+            `/${pageId}/photos`,
+            { url, published: "false" },
+          );
+          return r.id;
+        }),
+      );
+      const attachedMedia: Record<string, string> = {};
+      photoIds.forEach((mid, i) => {
+        attachedMedia[`attached_media[${i}]`] = JSON.stringify({ media_fbid: mid });
+      });
+      const r = await metaRequest<{ id: string }>(token, "POST", `/${pageId}/feed`, {
+        message: payload.bodyMd,
+        ...(payload.linkUrl ? { link: payload.linkUrl } : {}),
+        ...attachedMedia,
+      });
+      postId = r.id;
+    } else if (urls.length === 1) {
       const r = await metaRequest<{ id: string; post_id: string }>(
+        token,
         "POST",
         `/${pageId}/photos`,
-        { url: payload.assetSignedUrl, caption: payload.bodyMd },
+        { url: urls[0]!, caption: payload.bodyMd },
       );
       postId = r.post_id;
     } else {
       const r = await metaRequest<{ id: string }>(
+        token,
         "POST",
         `/${pageId}/feed`,
         { message: payload.bodyMd, link: payload.linkUrl },
@@ -44,16 +102,14 @@ export class FacebookAdapter implements PublishingAdapter<FacebookPayload> {
       postId = r.id;
     }
 
-    // Post id format is "{pageId}_{postId}" — the user-facing URL is built from that.
     const postUrl = `https://www.facebook.com/${postId.replace("_", "/posts/")}`;
-
     log.info({ postId, postUrl }, "facebook publish succeeded");
     return { externalId: postId, externalUrl: postUrl };
   }
 
   async retract(externalId: string): Promise<void> {
     log.info({ externalId }, "facebook retract");
-    await metaRequest<{ success: boolean }>("DELETE", `/${externalId}`);
+    await metaRequest<{ success: boolean }>(this.token, "DELETE", `/${externalId}`);
     log.info({ externalId }, "facebook retract succeeded");
   }
 
@@ -61,7 +117,7 @@ export class FacebookAdapter implements PublishingAdapter<FacebookPayload> {
     try {
       const data = await metaRequest<{
         data?: Array<{ name: string; values: Array<{ value: number }> }>;
-      }>("GET", `/${externalId}/insights`, {
+      }>(this.token, "GET", `/${externalId}/insights`, {
         metric: "post_impressions,post_reactions_by_type_total,post_clicks,post_engaged_users",
       });
       const out: Record<string, number> = {};

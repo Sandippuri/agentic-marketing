@@ -15,6 +15,7 @@ import {
   CHANNELS,
   type Channel,
   type LlmProvider,
+  type WorkflowMedia,
 } from "@marketing/shared-types";
 
 export type StepView = {
@@ -71,6 +72,10 @@ export type JobView = {
   // onto workflow_runs.input. Null only for very old rows written before the
   // dispatcher began persisting the resolved id.
   model: { id: string; label: string; provider: LlmProvider | null } | null;
+  // User-chosen media for this run (snapshotted onto workflow_runs.input).
+  // Null when the run kind doesn't accept a media override (e.g. campaign,
+  // research) or for older rows written before the field was persisted.
+  media: WorkflowMedia | null;
   // Variants the asset step generated for the linked content. Populated for
   // any engine — used to preview images on Vercel/Cloudflare cards that
   // don't stream per-step rows.
@@ -424,6 +429,7 @@ function JobCard({ job }: { job: JobView }) {
           <div className="flex flex-wrap items-center gap-1.5">
             <StatusPill status={job.status} />
             <KindChip kind={job.kind} />
+            {job.media && <MediaChip media={job.media} />}
             {job.model && <ModelChip model={job.model} />}
             <EngineChip engine={job.engine} />
             <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-faint tabular-nums">
@@ -1544,6 +1550,104 @@ function ModelChip({
       className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${tone}`}
     >
       {model.label}
+    </span>
+  );
+}
+
+function MediaChip({ media }: { media: WorkflowMedia }) {
+  const styles: Record<WorkflowMedia, string> = {
+    auto: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+    image:
+      "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+    video:
+      "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300",
+    both: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300",
+  };
+  const icon: Record<WorkflowMedia, ReactNode> = {
+    auto: (
+      <svg
+        viewBox="0 0 24 24"
+        width="11"
+        height="11"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+      </svg>
+    ),
+    image: (
+      <svg
+        viewBox="0 0 24 24"
+        width="11"
+        height="11"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <circle cx="9" cy="9" r="2" />
+        <path d="M21 15l-5-5L5 21" />
+      </svg>
+    ),
+    video: (
+      <svg
+        viewBox="0 0 24 24"
+        width="11"
+        height="11"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <rect x="2" y="6" width="14" height="12" rx="2" />
+        <path d="M22 8l-6 4 6 4z" />
+      </svg>
+    ),
+    both: (
+      <svg
+        viewBox="0 0 24 24"
+        width="11"
+        height="11"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <rect x="2" y="6" width="14" height="12" rx="2" />
+        <path d="M22 8l-6 4 6 4z" />
+      </svg>
+    ),
+  };
+  const label: Record<WorkflowMedia, string> = {
+    auto: "Auto",
+    image: "Image",
+    video: "Video",
+    both: "Image + Video",
+  };
+  const tooltip: Record<WorkflowMedia, string> = {
+    auto: "Auto — images by default, video only when the content type opts in",
+    image: "Image only — video kickoff skipped",
+    video: "Video only — image pipeline skipped",
+    both: "Forced image + video, regardless of content type",
+  };
+  return (
+    <span
+      title={tooltip[media]}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${styles[media]}`}
+    >
+      {icon[media]}
+      {label[media]}
     </span>
   );
 }

@@ -55,7 +55,7 @@ export async function generateOpenAiImage(
     prompt: opts.prompt,
     size,
     n: 1,
-    quality: opts.quality ?? "high",
+    quality: opts.quality ?? "medium",
   };
 
   log.info(
@@ -70,6 +70,7 @@ export async function generateOpenAiImage(
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(300_000),
   });
 
   if (!res.ok) {

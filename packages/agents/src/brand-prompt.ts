@@ -134,6 +134,26 @@ export async function buildBrandPromptPrefix(
     ...partnerLogos.map((p) => p.url),
   ];
 
+  // Diagnostic: distinguishes "no logo reached the model" (every counter 0)
+  // from "logo reached the model but it still hallucinated a near-miss"
+  // (brandLogosAttached > 0). Without this, both failure modes look identical
+  // downstream.
+  log.info(
+    {
+      workspaceId: opts.workspaceId,
+      campaignId: opts.campaignId,
+      medium: opts.medium,
+      designFetched: Boolean(design),
+      designLogosOnDoc: design?.logos.length ?? 0,
+      designLogosWithSignedUrl:
+        design?.logos.filter((l) => l.signedUrl).length ?? 0,
+      brandLogosAttached: brandLogos.length,
+      partnerLogosAttached: partnerLogos.length,
+      totalReferenceImages: referenceImages.length,
+    },
+    "brand references assembled",
+  );
+
   // === TOP-OF-PROMPT LOGO DIRECTIVE ========================================
   // Promoted above design system / visual direction because logo fidelity is
   // the single most common failure mode. Wording is admin-editable — see

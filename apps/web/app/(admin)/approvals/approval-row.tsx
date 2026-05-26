@@ -13,6 +13,12 @@ export type AssetOption = {
   mimeType: string | null;
   /** Final image/video generation prompt sent to the model, surfaced read-only in the detail panel. */
   promptUsed: string | null;
+  /**
+   * Which image slot this asset fills on the parent content_item (0-based).
+   * Multi-image posts surface one approved asset per slot in the detail
+   * panel; per-slot variant carousels group draft rows by this index.
+   */
+  sequenceOrder: number;
 };
 
 export type PendingApproval = {
@@ -46,8 +52,18 @@ export function ApprovalRow({
   const decide = useDecideApproval();
 
   const renderable = approval.assets.filter((a) => a.signedUrl);
+  // Slot 0 is the canonical lead/cover — show its approved variant in the
+  // row thumbnail, not whatever asset happens to be approved first across
+  // all slots. Falls back to the first renderable slot if 0 isn't present.
+  const slotZero = renderable.filter((a) => (a.sequenceOrder ?? 0) === 0);
+  const leadPool = slotZero.length > 0 ? slotZero : renderable;
   const selected =
-    renderable.find((a) => a.status === "approved") ?? renderable[0] ?? null;
+    leadPool.find((a) => a.status === "approved") ?? leadPool[0] ?? null;
+  // Distinct slot count for the "+N images" badge — count slots, not
+  // variants. A 1-slot post with 4 variants should still show 1 image, not 4.
+  const slotCount = new Set(
+    renderable.map((a) => a.sequenceOrder ?? 0),
+  ).size;
   const isStale = approval.ageLabel?.includes("d");
 
   function handleApprove() {
@@ -102,9 +118,11 @@ export function ApprovalRow({
                 className="object-cover"
               />
             )}
-            {renderable.length > 1 && (
+            {(slotCount > 1 || renderable.length > 1) && (
               <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded-full bg-black/60 text-white text-[9px] font-medium leading-none">
-                +{renderable.length - 1}
+                {slotCount > 1
+                  ? `+${slotCount - 1} img`
+                  : `+${renderable.length - 1}`}
               </span>
             )}
           </>
@@ -137,7 +155,9 @@ export function ApprovalRow({
             <span className="text-[11px] text-[var(--warn)]">images pending</span>
           ) : (
             <span className="text-[11px] text-faint">
-              {renderable.length} {renderable.length === 1 ? "variant" : "variants"}
+              {slotCount > 1
+                ? `${slotCount} images · ${renderable.length} variants`
+                : `${renderable.length} ${renderable.length === 1 ? "variant" : "variants"}`}
             </span>
           )}
         </div>

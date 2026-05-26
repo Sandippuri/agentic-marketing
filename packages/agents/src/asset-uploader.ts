@@ -34,6 +34,7 @@ async function putBytes(
       "x-upsert": "true",
     },
     body,
+    signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -51,7 +52,9 @@ export async function uploadAsset(
 ): Promise<string> {
   const { url, key } = requireSupabaseEnv();
 
-  const imgRes = await fetch(publicUrl);
+  const imgRes = await fetch(publicUrl, {
+    signal: AbortSignal.timeout(60_000),
+  });
   if (!imgRes.ok) {
     throw new Error(
       `Failed to download asset from ${publicUrl}: ${imgRes.status}`,

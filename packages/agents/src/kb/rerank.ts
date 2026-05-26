@@ -94,6 +94,7 @@ async function rerankCohere(
       documents: candidates.map((c) => c.text.slice(0, 4_000)),
       top_n: topN,
     }),
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!res.ok) {

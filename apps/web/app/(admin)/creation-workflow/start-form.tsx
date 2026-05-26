@@ -493,7 +493,7 @@ export function StartForm({
             channel &&
             NON_VIDEO_AUTO_CHANNELS.has(channel) && (
               <div className="mt-1.5 text-xs text-mid">
-                Heads up: {channel} doesn't get a video on Auto. Pick{" "}
+                Heads up: {channel} doesn&apos;t get a video on Auto. Pick{" "}
                 <strong className="text-ink">Video</strong> or{" "}
                 <strong className="text-ink">Both</strong> to force one.
               </div>

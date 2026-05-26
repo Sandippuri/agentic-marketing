@@ -16,6 +16,7 @@ import {
 } from "@marketing/shared-types";
 import { generateGoogleImage } from "./providers/google-image";
 import { generateOpenAiImage } from "./providers/openai-image";
+import { recordImageUsage, type UsageAttribution } from "./usage";
 
 const log = pino({ name: "image-gen" });
 
@@ -41,6 +42,13 @@ export type GenerateImageOpts = {
   imageInput?: string[];
   /** Override the configured/default model for this call. */
   model?: ImageModel;
+  /**
+   * Optional. When provided, the call is recorded in `ai_usage` with the
+   * given workspace/thread/job/workflow attribution. Omitted for one-off
+   * scripts or backfills that aren't tenant-scoped — those calls don't
+   * record (we'd rather drop the row than invent a workspace).
+   */
+  attribution?: UsageAttribution;
 };
 
 /**
@@ -70,6 +78,7 @@ async function pollReplicate(
   for (let i = 0; i < 60; i++) {
     const res = await fetch(`${REPLICATE_API}/predictions/${predictionId}`, {
       headers: { Authorization: `Token ${token}` },
+      signal: AbortSignal.timeout(15_000),
     });
     const data = (await res.json()) as {
       status: string;
@@ -154,6 +163,7 @@ async function callReplicate(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
@@ -219,6 +229,44 @@ export async function generateImage(
     );
   }
 
+  try {
+    const result = await dispatch(info, opts);
+    // Fire-and-forget: usage recording is non-critical and must never
+    // delay the image return path. Errors are swallowed inside the
+    // recorder so we don't need a catch here.
+    void recordImageUsage({
+      attribution: opts.attribution,
+      model: info.id,
+      count: 1,
+      metadata: {
+        provider: info.provider,
+        modelRef: info.modelRef,
+        aspect: opts.aspect ?? "square",
+        mimeType: result.mimeType,
+        promptHead: opts.prompt.slice(0, 200),
+      },
+    });
+    return result;
+  } catch (err) {
+    void recordImageUsage({
+      attribution: opts.attribution,
+      model: info.id,
+      count: 0,
+      error: (err as Error).message,
+      metadata: {
+        provider: info.provider,
+        modelRef: info.modelRef,
+        aspect: opts.aspect ?? "square",
+      },
+    });
+    throw err;
+  }
+}
+
+async function dispatch(
+  info: ImageModelInfo,
+  opts: GenerateImageOpts,
+): Promise<GenerateImageResult> {
   switch (info.provider) {
     case "google":
       return callGoogle(info, opts);

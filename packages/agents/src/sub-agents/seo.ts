@@ -48,6 +48,8 @@ export async function runSeo({
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(180_000),
+    maxRetries: 2,
     system: systemPrompt,
     prompt: request,
     maxSteps: 6,
@@ -161,6 +163,7 @@ async function keywordResearch(
           "X-API-KEY": apiKey,
         },
         body: JSON.stringify({ q: topic, gl: locale.split("-")[1] ?? "us" }),
+        signal: AbortSignal.timeout(15_000),
       });
       if (res.ok) {
         const json = (await res.json()) as {

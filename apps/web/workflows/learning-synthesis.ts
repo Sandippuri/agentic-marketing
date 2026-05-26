@@ -114,6 +114,8 @@ async function synthesiseStep(args: {
   const prompt = buildSynthesisPrompt(summary);
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(),
+    abortSignal: AbortSignal.timeout(90_000),
+    maxRetries: 2,
     system: `You distil patterns from a queue of rejected/edited content.
 Output strict JSON: an array of 3-7 themes, each with {title, pattern,
 prescription, examples}. No markdown fence, no commentary.

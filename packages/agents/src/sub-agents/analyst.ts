@@ -32,6 +32,8 @@ export async function runAnalyst({ request, workspaceId, campaignId, cp, model, 
   const systemPrompt = await getPrompt("analyst.system", ANALYST_PROMPT);
   const { text, steps, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(model),
+    abortSignal: AbortSignal.timeout(180_000),
+    maxRetries: 2,
     system: systemPrompt,
     prompt: request,
     maxSteps: 8,
@@ -110,6 +112,7 @@ export async function runAnalyst({ request, workspaceId, campaignId, cp, model, 
           });
           const res = await fetch(`${cpBase}/api/insights/top-performers?${qs}`, {
             headers: { "x-internal-token": token },
+            signal: AbortSignal.timeout(15_000),
           });
           if (!res.ok) return { error: `top-performers API returned ${res.status}` };
           return res.json();

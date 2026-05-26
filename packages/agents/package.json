@@ -39,7 +39,9 @@
     "./market-store": "./src/market-store.ts",
     "./prompt-store": "./src/prompt-store.ts",
     "./asset-templates": "./src/asset-templates/index.ts",
-    "./asset-templates/tokens": "./src/asset-templates/tokens.ts"
+    "./asset-templates/tokens": "./src/asset-templates/tokens.ts",
+    "./video-script-planner": "./src/video-script-planner.ts",
+    "./video-stitch": "./src/video-stitch.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
@@ -54,6 +56,7 @@
     "@marketing/shared-types": "workspace:*",
     "ai": "^4.0.0",
     "drizzle-orm": "^0.36.0",
+    "ffmpeg-static": "^5.2.0",
     "pino": "^9.0.0",
     "zod": "^3.23.0"
   },

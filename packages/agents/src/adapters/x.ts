@@ -16,8 +16,14 @@ export type XPayload = {
    * Tweets > 280 chars are split by the caller.
    */
   tweets?: string[];
-  /** Signed URL for a visual asset (poster, OG image) */
+  /** Single-asset URL — legacy field, kept for back-compat. */
   assetSignedUrl?: string;
+  /**
+   * Multi-image URLs. X attaches up to 4 media_ids to a single tweet (the
+   * head tweet for threads). Extras beyond 4 are dropped at the adapter
+   * layer; the publish step already caps to maxImagesForChannel.
+   */
+  assetSignedUrls?: string[];
 };
 
 async function tweetV2(
@@ -44,6 +50,7 @@ async function tweetV2(
       "Content-Type": "application/json",
     },
     body: bodyStr,
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!res.ok) {
@@ -62,7 +69,9 @@ async function tweetV2(
 async function uploadMediaToX(assetUrl: string): Promise<string> {
   const creds = getXCreds();
 
-  const imgRes = await fetch(assetUrl);
+  const imgRes = await fetch(assetUrl, {
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!imgRes.ok) throw new Error(`Failed to fetch asset for X upload: ${imgRes.status}`);
   const buffer = Buffer.from(await imgRes.arrayBuffer());
   const base64 = buffer.toString("base64");
@@ -85,6 +94,7 @@ async function uploadMediaToX(assetUrl: string): Promise<string> {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: bodyStr,
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!res.ok) {
@@ -107,15 +117,32 @@ export class XAdapter implements PublishingAdapter<XPayload> {
   async publish(payload: XPayload): Promise<AdapterPublishResult> {
     const tweets = payload.tweets?.length ? payload.tweets : [payload.bodyMd];
 
-    // Optional media upload — attached to the first tweet only.
+    // Normalize URL inputs. X allows up to 4 media per tweet; cap defensively
+    // here even though publish.ts caps at maxImagesForChannel.
+    const urls =
+      payload.assetSignedUrls && payload.assetSignedUrls.length > 0
+        ? payload.assetSignedUrls.slice(0, 4)
+        : payload.assetSignedUrl
+          ? [payload.assetSignedUrl]
+          : [];
+
+    // Optional media upload — attached to the first tweet only. Upload each
+    // URL in parallel; if one fails, we still post with whatever succeeded
+    // rather than dropping the whole tweet's image.
     let mediaIds: string[] | undefined;
-    if (payload.assetSignedUrl) {
-      try {
-        const mediaId = await uploadMediaToX(payload.assetSignedUrl);
-        mediaIds = [mediaId];
-        log.info({ mediaId }, "media uploaded to X");
-      } catch (err) {
-        log.warn({ err: (err as Error).message }, "X media upload failed; continuing without image");
+    if (urls.length > 0) {
+      const results = await Promise.allSettled(urls.map((u) => uploadMediaToX(u)));
+      const ok = results
+        .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
+        .map((r) => r.value);
+      if (ok.length > 0) {
+        mediaIds = ok;
+        log.info({ mediaCount: ok.length, requested: urls.length }, "media uploaded to X");
+      } else {
+        log.warn(
+          { requested: urls.length },
+          "all X media uploads failed; continuing without images",
+        );
       }
     }
 
@@ -186,6 +213,7 @@ export class XAdapter implements PublishingAdapter<XPayload> {
     const res = await fetch(url, {
       method: "DELETE",
       headers: { Authorization: authHeader },
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) {
@@ -201,7 +229,10 @@ export class XAdapter implements PublishingAdapter<XPayload> {
       const url = `${V2}/tweets/${externalId}?tweet.fields=public_metrics`;
       const authHeader = buildOAuth1Header("GET", url, creds);
 
-      const res = await fetch(url, { headers: { Authorization: authHeader } });
+      const res = await fetch(url, {
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(15_000),
+      });
       if (!res.ok) return {};
 
       const json = await res.json() as {

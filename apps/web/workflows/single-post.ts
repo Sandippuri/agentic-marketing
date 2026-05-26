@@ -1,4 +1,5 @@
 import { defineHook, sleep } from "workflow";
+import { start } from "workflow/api";
 import { z } from "zod";
 import { generateText } from "ai";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -11,10 +12,12 @@ import {
   type LlmModel,
   type WorkflowMedia,
 } from "@marketing/shared-types";
-import { kickVideoVariant } from "@/lib/asset-variants";
 import { finishRun } from "@/lib/workflow-engines/runs";
+import { getSignedAssetUrl } from "@/lib/supabase/storage";
+import type { ImageBrief } from "@marketing/agents/sub-agents/content";
 import { assetPipelineWorkflow } from "./asset-pipeline";
 import { publishWorkflow } from "./publish";
+import { videoVariantWorkflow } from "./video-variant";
 
 // Phase 1 of the Vercel migration. This workflow proves the SDK pattern
 // end-to-end without depending on the manager: a /workflow slash command in
@@ -71,7 +74,7 @@ export type SinglePostInput = {
   /**
    * User-chosen media for this run. Hard override:
    *   - "auto" (default): images via assetPipelineWorkflow + opportunistic
-   *     video via kickVideoVariant (gated by contentTypeWantsVideo()).
+   *     video via videoVariantWorkflow (gated by contentTypeWantsVideo()).
    *   - "image": images only — video kickoff is skipped, needs_video=false.
    *   - "video": video only — image pipeline is skipped, needs_video=true,
    *     video gen is forced regardless of channel allowlist.
@@ -201,7 +204,11 @@ export async function singlePostWorkflow(
           await demotePriorAssetsStep({ contentId });
         }
         if (wantsVideo || media === "auto") {
-          await kickVideoVariantStep({ contentId, force: forceVideo });
+          await kickVideoVariantStep({
+            contentId,
+            workspaceId: input.workspaceId,
+            force: forceVideo,
+          });
         }
         approvalId = await submitForApprovalStep({
           workspaceId: input.workspaceId,
@@ -251,6 +258,19 @@ export async function singlePostWorkflow(
         // frame and immediately demotes it.
         if (lastReason && IMAGE_FEEDBACK_RE.test(lastReason)) {
           await demotePriorAssetsStep({ contentId: contentId! });
+          // Multimodal brief revision: feed the current winning image + the
+          // reviewer's feedback into a vision LLM to produce a NEW imageBrief.
+          // Without this, the asset pipeline re-reads the same imageBrief and
+          // regenerates near-identical images (the reviewer's "I don't like
+          // it" never reaches the brief; it only nudges the prompt).
+          await reviseImageBriefStep({
+            workspaceId: input.workspaceId,
+            contentId: contentId!,
+            reason: lastReason,
+            model: input.model,
+            threadRef: input.threadRef,
+            workflowRunId: input.workflowRunId,
+          });
           // Second heartbeat right before asset regen — Replicate calls are
           // the longest single step in the revision loop, and we want the
           // stuck detector to see a fresh updated_at *during* that wait, not
@@ -270,6 +290,7 @@ export async function singlePostWorkflow(
           if (wantsVideo || media === "auto") {
             await kickVideoVariantStep({
               contentId: contentId!,
+              workspaceId: input.workspaceId,
               force: forceVideo,
             });
           }
@@ -441,6 +462,8 @@ async function draftStep(
   // into runContent from @marketing/agents.
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(input.model),
+    abortSignal: AbortSignal.timeout(90_000),
+    maxRetries: 2,
     system:
       "You are a marketing copywriter drafting a single post. " +
       "Return JSON with two keys: title (short, no markdown) and bodyMd (the post body, markdown allowed). " +
@@ -582,12 +605,45 @@ async function resumeFromContentStep(payload: {
   };
 }
 
+// Dispatch the Veo clip generation as its own background workflow run.
+//
+// The previous version called kickVideoVariant() — which fired
+// generateVideoVariant() with `void` — and that pattern doesn't survive
+// inside a workflow step: when the step returns, the serverless function
+// instance terminates and the unawaited promise is reaped before Veo can
+// finish. The documented Workflows pattern is to call start() from a step,
+// which durably launches a child workflow that runs with its own event log
+// (see foundations/common-patterns.mdx). The parent continues immediately,
+// so submit-for-approval lands right away and the video asset row appears
+// in the approval modal a couple of minutes later via the existing React
+// Query polling.
 async function kickVideoVariantStep(payload: {
   contentId: string;
+  workspaceId: string;
   force?: boolean;
 }): Promise<void> {
   "use step";
-  await kickVideoVariant(payload.contentId, { force: payload.force });
+  console.log(
+    `[single-post] kicking video-variant workflow contentId=${payload.contentId} workspaceId=${payload.workspaceId} force=${Boolean(payload.force)}`,
+  );
+  try {
+    const run = await start(videoVariantWorkflow, [
+      {
+        contentId: payload.contentId,
+        workspaceId: payload.workspaceId,
+        force: payload.force,
+      },
+    ]);
+    console.log(
+      `[single-post] video-variant workflow started runId=${run.runId} for contentId=${payload.contentId}`,
+    );
+  } catch (err) {
+    // Don't fail the parent run — the approval card just won't have a video.
+    console.warn(
+      `[single-post] video-variant start() threw for contentId=${payload.contentId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 // Stamps content_items.needs_video so the approval-panel toggle and the
@@ -662,6 +718,181 @@ async function demotePriorAssetsStep(payload: {
     );
 }
 
+// Vision-LLM brief rewrite. When the reviewer asks for image changes, the
+// pipeline used to regen with the SAME imageBriefs — producing near-identical
+// images. Here we read the currently-approved asset PER SLOT, show each to a
+// vision model alongside its brief and the reviewer's words, and persist a
+// NEW imageBriefs array. assetPipelineWorkflow.loadContextStep reads
+// image_brief, so updating the row before the pipeline runs is enough — no
+// signature changes.
+//
+// Best-effort: any per-slot failure (no approved asset for that slot, sign
+// failure, model parse failure) keeps that slot's existing brief in place.
+// Other slots still get revised. The pipeline will still regen — just
+// without the visual-feedback refinement for the affected slot.
+async function reviseImageBriefStep(payload: {
+  workspaceId: string;
+  contentId: string;
+  reason: string;
+  model?: LlmModel;
+  threadRef?: string;
+  workflowRunId?: string;
+}): Promise<void> {
+  "use step";
+  const db = getDb();
+
+  const [content] = await db
+    .select({
+      imageBriefs: schema.contentItems.imageBriefs,
+      bodyMd: schema.contentItems.bodyMd,
+      title: schema.contentItems.title,
+    })
+    .from(schema.contentItems)
+    .where(eq(schema.contentItems.id, payload.contentId))
+    .limit(1);
+  if (!content) return;
+
+  const currentBriefs = (content.imageBriefs as ImageBrief[] | null) ?? null;
+  if (!currentBriefs || currentBriefs.length === 0) return;
+
+  // Demote step has already run, so the previously-approved asset is now
+  // status='draft'. Look for the most recent image asset PER SLOT — that's
+  // the one the reviewer actually saw at that position.
+  const recentAssetsBySlot = new Map<
+    number,
+    { storagePath: string }
+  >();
+  const assetRows = await db
+    .select({
+      storagePath: schema.assets.storagePath,
+      mimeType: schema.assets.mimeType,
+      sequenceOrder: schema.assets.sequenceOrder,
+      createdAt: schema.assets.createdAt,
+    })
+    .from(schema.assets)
+    .where(
+      and(
+        eq(schema.assets.contentId, payload.contentId),
+        sql`${schema.assets.mimeType} is null or ${schema.assets.mimeType} like 'image/%'`,
+      ),
+    )
+    .orderBy(desc(schema.assets.createdAt));
+  for (const row of assetRows) {
+    const slot = row.sequenceOrder ?? 0;
+    if (!recentAssetsBySlot.has(slot) && row.storagePath) {
+      recentAssetsBySlot.set(slot, { storagePath: row.storagePath });
+    }
+  }
+
+  const revisedBriefs = await Promise.all(
+    currentBriefs.map(async (brief, slot) => {
+      const asset = recentAssetsBySlot.get(slot);
+      if (!asset) return brief;
+      let signedUrl: string;
+      try {
+        signedUrl = await getSignedAssetUrl(asset.storagePath);
+      } catch {
+        return brief;
+      }
+      const briefJson = JSON.stringify(brief, null, 2);
+      try {
+        const { text, usage, experimental_providerMetadata } = await generateText({
+          model: getLanguageModel(payload.model),
+          abortSignal: AbortSignal.timeout(90_000),
+          maxRetries: 2,
+          system:
+            "You are an art director revising an image brief based on reviewer feedback. " +
+            "You will see the CURRENT generated image, the CURRENT brief (JSON), and the reviewer's feedback. " +
+            "Produce a NEW brief that, when re-rendered, will visually differ from what the reviewer saw — " +
+            "change subject, composition, must_show, or mood as needed to address the feedback. " +
+            "Do NOT just rephrase the existing brief; the next render must look meaningfully different. " +
+            'Return JSON with keys: subject (string), composition ("close_up" | "medium" | "wide" | "overhead"), ' +
+            "mood (string), overlay_text (string, optional), must_show (string[]), must_not_show (string[]). " +
+            "No fences, no commentary — raw JSON only.",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `# Post title\n${content.title}\n\n` +
+                    `# Post body (excerpt)\n${(content.bodyMd ?? "").slice(0, 800)}\n\n` +
+                    `# Image slot\n${slot + 1} of ${currentBriefs.length}\n\n` +
+                    `# Current image brief (slot ${slot + 1})\n${briefJson}\n\n` +
+                    `# Reviewer feedback (applies to the whole post; tailor to this slot)\n${payload.reason}\n\n` +
+                    `# Current image at this slot (attached)\nReview the attached image. ` +
+                    `Produce the revised brief that addresses the feedback. Output JSON.`,
+                },
+                { type: "image", image: signedUrl },
+              ],
+            },
+          ],
+        });
+        await recordLlmUsage({
+          agent: "single-post-image-revision",
+          workspaceId: payload.workspaceId,
+          model: payload.model,
+          threadRef: payload.threadRef ?? null,
+          workflowRunId: payload.workflowRunId ?? null,
+          usage,
+          providerMetadata: experimental_providerMetadata,
+        });
+        return parseImageBrief(text, brief) ?? brief;
+      } catch {
+        return brief;
+      }
+    }),
+  );
+
+  await db
+    .update(schema.contentItems)
+    .set({ imageBriefs: revisedBriefs, updatedAt: new Date() })
+    .where(eq(schema.contentItems.id, payload.contentId));
+}
+
+function parseImageBrief(
+  text: string,
+  fallback: ImageBrief | null,
+): ImageBrief | null {
+  const trimmed = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const composition = ((): ImageBrief["composition"] => {
+    const c = r.composition;
+    if (c === "close_up" || c === "medium" || c === "wide" || c === "overhead") return c;
+    return fallback?.composition ?? "medium";
+  })();
+  const subject =
+    typeof r.subject === "string" && r.subject.trim() ? r.subject.trim() : fallback?.subject;
+  if (!subject) return null;
+  return {
+    subject,
+    composition,
+    mood: typeof r.mood === "string" ? r.mood : fallback?.mood ?? "",
+    overlay_text:
+      typeof r.overlay_text === "string"
+        ? r.overlay_text
+        : fallback?.overlay_text,
+    must_show: Array.isArray(r.must_show)
+      ? r.must_show.filter((s): s is string => typeof s === "string")
+      : fallback?.must_show ?? [],
+    must_not_show: Array.isArray(r.must_not_show)
+      ? r.must_not_show.filter((s): s is string => typeof s === "string")
+      : fallback?.must_not_show ?? [],
+  };
+}
+
 // Revision pass driven by the reviewer's `changes_requested` reason. Mirrors
 // what the redraft button does in the custom engine, but inlined here so the
 // Vercel workflow can stay durable instead of spawning a separate run.
@@ -690,6 +921,8 @@ async function reviseAndResubmitStep(payload: {
 
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(payload.model),
+    abortSignal: AbortSignal.timeout(90_000),
+    maxRetries: 2,
     system:
       "You are revising an existing marketing post per reviewer feedback. " +
       "Keep the original intent and channel voice; change what the reviewer asked for and nothing else. " +

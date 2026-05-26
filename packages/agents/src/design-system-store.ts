@@ -54,7 +54,10 @@ async function fetchFromCp(
   if (workspaceId) headers["x-workspace-id"] = workspaceId;
 
   try {
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!res.ok) {
       log.warn(
         { status: res.status, workspaceId, campaignId },

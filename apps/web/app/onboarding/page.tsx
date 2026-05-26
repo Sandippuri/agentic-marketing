@@ -4,7 +4,12 @@ import { getDb, schema } from "@marketing/db";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { getWorkspaceContext } from "@/lib/billing";
 import { lookupAdminRole } from "@/lib/billing/admin";
-import { OnboardingWizard, type ExistingBrandDoc } from "./wizard";
+import { listConnections } from "@/lib/oauth/repository";
+import {
+  OnboardingWizard,
+  type ConnectionSummary,
+  type ExistingBrandDoc,
+} from "./wizard";
 
 export const dynamic = "force-dynamic";
 
@@ -16,10 +21,10 @@ export default async function OnboardingPage() {
   const role = await lookupAdminRole(data.user.id);
   if (role === "superadmin") redirect("/super");
 
-  const { workspaceId } = await getWorkspaceContext();
+  const { workspaceId, workspaceName } = await getWorkspaceContext();
   const db = getDb();
 
-  const [memoryRows, docRows] = await Promise.all([
+  const [memoryRows, docRows, connections] = await Promise.all([
     db
       .select({ id: schema.brandMemory.id })
       .from(schema.brandMemory)
@@ -42,6 +47,7 @@ export default async function OnboardingPage() {
         ),
       )
       .orderBy(desc(schema.brandDocuments.uploadedAt)),
+    listConnections(workspaceId),
   ]);
 
   // Already onboarded — bounce to the workspace home. Brand memory is the
@@ -58,11 +64,22 @@ export default async function OnboardingPage() {
     uploadedAt: r.uploadedAt.toISOString(),
   }));
 
+  const connectionSummaries: ConnectionSummary[] = connections.map((c) => ({
+    provider: c.provider,
+    accountLabel: c.accountLabel,
+    hasInstagram:
+      c.provider === "meta" &&
+      !!(c.metadata as { instagramBusinessAccountId?: string | null })
+        .instagramBusinessAccountId,
+  }));
+
   return (
     <OnboardingWizard
       workspaceId={workspaceId}
+      workspaceName={workspaceName}
       userEmail={data.user.email ?? null}
       initialDocs={initialDocs}
+      initialConnections={connectionSummaries}
     />
   );
 }

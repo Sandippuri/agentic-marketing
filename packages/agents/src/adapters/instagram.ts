@@ -8,57 +8,120 @@ export type InstagramPayload = {
   contentId: string;
   /** Caption text. Markdown is not rendered — bodyMd is used as-is. */
   bodyMd: string;
-  /** Publicly reachable image URL. IG does not accept binary upload — must be a URL. */
+  /**
+   * Single-image URL — legacy / single-image posts and Reels' video posters.
+   * When `assetSignedUrls` is set with >1 entries, this is ignored in favor
+   * of the carousel path.
+   */
   assetSignedUrl?: string;
+  /**
+   * Multi-image URLs (1–10 per Graph; we cap at 4 elsewhere). When >1, the
+   * adapter publishes a CAROUSEL_ALBUM container holding one child per URL.
+   * Single-element arrays use the single-image path identically to
+   * `assetSignedUrl`.
+   */
+  assetSignedUrls?: string[];
   /** Optional public video URL for Reels. If both image + video set, video wins. */
   videoUrl?: string;
+};
+
+export type InstagramCreds = {
+  /** Page Access Token from /me/accounts (IG inherits perms via the linked Page). */
+  pageAccessToken: string;
+  /** IG Business account id resolved via instagram_business_account on the Page. */
+  igBusinessAccountId: string;
 };
 
 /**
  * Instagram Business (Graph API) adapter.
  * Two-step publish: create media container, then publish it.
- * Requires: META_PAGE_ACCESS_TOKEN, IG_BUSINESS_ACCOUNT_ID.
  * IG account must be a Business or Creator account linked to a Facebook Page.
  */
 export class InstagramAdapter implements PublishingAdapter<InstagramPayload> {
   readonly channel: Channel = "instagram";
+  private readonly token: string;
+  private readonly igUserId: string;
+
+  constructor(creds: InstagramCreds) {
+    this.token = creds.pageAccessToken;
+    this.igUserId = creds.igBusinessAccountId;
+  }
 
   async publish(payload: InstagramPayload): Promise<AdapterPublishResult> {
-    const igUserId = process.env.IG_BUSINESS_ACCOUNT_ID;
-    if (!igUserId) throw new Error("IG_BUSINESS_ACCOUNT_ID must be set");
+    const { token, igUserId } = this;
 
-    if (!payload.assetSignedUrl && !payload.videoUrl) {
-      throw new Error("instagram publish requires assetSignedUrl or videoUrl — IG has no text-only post type");
+    // Normalize the URL inputs. assetSignedUrls (array) is the canonical
+    // shape post-migration 0040; assetSignedUrl (singular) is the legacy
+    // single-image field still emitted for backwards-compat. If both arrive
+    // we trust the array.
+    const urls =
+      payload.assetSignedUrls && payload.assetSignedUrls.length > 0
+        ? payload.assetSignedUrls
+        : payload.assetSignedUrl
+          ? [payload.assetSignedUrl]
+          : [];
+
+    if (urls.length === 0 && !payload.videoUrl) {
+      throw new Error("instagram publish requires an image URL or videoUrl — IG has no text-only post type");
     }
 
-    log.info({ contentId: payload.contentId, hasVideo: !!payload.videoUrl }, "instagram publish");
-
-    const containerParams: Record<string, string> = { caption: payload.bodyMd };
-    if (payload.videoUrl) {
-      containerParams.media_type = "REELS";
-      containerParams.video_url = payload.videoUrl;
-    } else if (payload.assetSignedUrl) {
-      containerParams.image_url = payload.assetSignedUrl;
-    }
-
-    const container = await metaRequest<{ id: string }>(
-      "POST",
-      `/${igUserId}/media`,
-      containerParams,
+    log.info(
+      { contentId: payload.contentId, hasVideo: !!payload.videoUrl, imageCount: urls.length },
+      "instagram publish",
     );
 
-    // Reels containers need a few seconds to process before publish accepts them.
+    let containerId: string;
     if (payload.videoUrl) {
-      await waitForContainerReady(container.id);
+      // Reels — single video, no carousel support.
+      const container = await metaRequest<{ id: string }>(token, "POST", `/${igUserId}/media`, {
+        caption: payload.bodyMd,
+        media_type: "REELS",
+        video_url: payload.videoUrl,
+      });
+      await waitForContainerReady(token, container.id);
+      containerId = container.id;
+    } else if (urls.length === 1) {
+      // Single-image post (existing path).
+      const container = await metaRequest<{ id: string }>(token, "POST", `/${igUserId}/media`, {
+        caption: payload.bodyMd,
+        image_url: urls[0]!,
+      });
+      containerId = container.id;
+    } else {
+      // Carousel: create one IS_CAROUSEL_ITEM child per URL (no caption on
+      // children, caption goes on the parent), then a CAROUSEL_ALBUM parent
+      // referencing them.
+      const childIds = await Promise.all(
+        urls.map(async (url) => {
+          const child = await metaRequest<{ id: string }>(
+            token,
+            "POST",
+            `/${igUserId}/media`,
+            {
+              image_url: url,
+              is_carousel_item: "true",
+            },
+          );
+          return child.id;
+        }),
+      );
+      const parent = await metaRequest<{ id: string }>(token, "POST", `/${igUserId}/media`, {
+        caption: payload.bodyMd,
+        media_type: "CAROUSEL",
+        children: childIds.join(","),
+      });
+      containerId = parent.id;
     }
 
     const published = await metaRequest<{ id: string }>(
+      token,
       "POST",
       `/${igUserId}/media_publish`,
-      { creation_id: container.id },
+      { creation_id: containerId },
     );
 
     const meta = await metaRequest<{ permalink: string }>(
+      token,
       "GET",
       `/${published.id}`,
       { fields: "permalink" },
@@ -68,9 +131,6 @@ export class InstagramAdapter implements PublishingAdapter<InstagramPayload> {
     return { externalId: published.id, externalUrl: meta.permalink };
   }
 
-  // IG Graph API does not support deleting feed posts programmatically. Stories
-  // are deletable, feed posts are not. Surface this clearly rather than silently
-  // marking the content "retracted" in our DB while it remains live on IG.
   async retract(externalId: string): Promise<void> {
     log.warn({ externalId }, "instagram retract not supported by Graph API — manual deletion required");
     throw new Error(
@@ -82,7 +142,7 @@ export class InstagramAdapter implements PublishingAdapter<InstagramPayload> {
     try {
       const data = await metaRequest<{
         data?: Array<{ name: string; values: Array<{ value: number }> }>;
-      }>("GET", `/${externalId}/insights`, {
+      }>(this.token, "GET", `/${externalId}/insights`, {
         metric: "impressions,reach,likes,comments,saved,shares",
       });
       const out: Record<string, number> = {};
@@ -97,11 +157,11 @@ export class InstagramAdapter implements PublishingAdapter<InstagramPayload> {
   }
 }
 
-// Poll the container status until FINISHED, or fail after ~30s.
-async function waitForContainerReady(containerId: string): Promise<void> {
+async function waitForContainerReady(token: string, containerId: string): Promise<void> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const { status_code } = await metaRequest<{ status_code: string }>(
+      token,
       "GET",
       `/${containerId}`,
       { fields: "status_code" },

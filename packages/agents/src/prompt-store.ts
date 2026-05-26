@@ -58,6 +58,7 @@ async function fetchOverrides(): Promise<Map<string, string>> {
   try {
     const res = await fetch(`${baseUrl}/api/super/prompts/internal`, {
       headers: { "x-internal-token": token },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
       log.warn({ status: res.status }, "CP /api/super/prompts/internal non-2xx");

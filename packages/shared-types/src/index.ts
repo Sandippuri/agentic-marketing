@@ -122,6 +122,12 @@ export type ActorKind = (typeof ACTOR_KINDS)[number];
 export const SCOPE_TYPES = ["content", "campaign"] as const;
 export type ScopeType = (typeof SCOPE_TYPES)[number];
 
+// OAuth-supported social providers. One row per provider per workspace in
+// `social_connections`. Meta publishes to two channels (facebook + instagram)
+// from a single connection — see lib/oauth/providers/meta.ts.
+export const SOCIAL_PROVIDERS = ["linkedin", "meta", "x"] as const;
+export type SocialProvider = (typeof SOCIAL_PROVIDERS)[number];
+
 export const CHANNELS = [
   "internal_blog",
   "linkedin",
@@ -132,6 +138,43 @@ export const CHANNELS = [
   "email_mailchimp",
 ] as const;
 export type Channel = (typeof CHANNELS)[number];
+
+// --- multi-image caps ---------------------------------------------------------
+// Migration 0040 unlocked 1–N images per post. Each cap is the channel's
+// native maximum for a single feed item (IG carousel 10 → capped at 4 by
+// product decision; X allows 4 natively; LinkedIn feed posts are single-image
+// only; email headers are inherently one image). The Content agent reads
+// MAX_IMAGES_BY_CONTENT_TYPE when deciding how many imageBriefs to emit; the
+// publish layer reads MAX_IMAGES_BY_CHANNEL to clip the URL array before
+// handing it to the adapter (defence-in-depth for cross-posting).
+
+export const MAX_IMAGES_GLOBAL = 4;
+
+export const MAX_IMAGES_BY_CONTENT_TYPE: Record<ContentType, number> = {
+  blog: 4,
+  linkedin: 1,
+  x_thread: 4,
+  x_post: 4,
+  email: 1,
+};
+
+export const MAX_IMAGES_BY_CHANNEL: Record<Channel, number> = {
+  internal_blog: 4,
+  linkedin: 1,
+  x: 4,
+  instagram: 4,
+  facebook: 4,
+  email_hubspot: 1,
+  email_mailchimp: 1,
+};
+
+export function maxImagesForContentType(type: ContentType): number {
+  return MAX_IMAGES_BY_CONTENT_TYPE[type] ?? 1;
+}
+
+export function maxImagesForChannel(channel: Channel): number {
+  return MAX_IMAGES_BY_CHANNEL[channel] ?? 1;
+}
 
 // --- LLM models (test-chat selector + manager registry) -------------------
 // Catalog of models the manager can run sub-agents through. The web admin's
@@ -258,8 +301,13 @@ export type LlmPrice = {
   input: number;
   /** USD per 1M output tokens */
   output: number;
-  /** USD per 1M cached input tokens (Anthropic prompt caching). Optional. */
+  /** USD per 1M cached input tokens (Anthropic prompt cache read). Optional. */
   cachedInput?: number;
+  /**
+   * USD per 1M cache_creation_input_tokens (Anthropic prompt cache first
+   * write). When omitted, defaults to `input` rate.
+   */
+  cacheCreation?: number;
 };
 
 export const LLM_PRICING: Record<string, LlmPrice> = {
@@ -290,17 +338,120 @@ export function computeLlmCostUsd(
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens = 0,
+  cacheCreationTokens = 0,
+  pricing: Record<string, LlmPrice> = LLM_PRICING,
 ): number | null {
-  const p = LLM_PRICING[model];
+  const p = pricing[model];
   if (!p) return null;
   const cachedRate = p.cachedInput ?? p.input;
-  const billableInput = Math.max(0, inputTokens - cachedInputTokens);
+  const creationRate = p.cacheCreation ?? p.input;
+  // input_tokens from provider already excludes cached reads on Anthropic,
+  // but on some providers it doesn't. We defensively subtract both cached
+  // categories so we don't double-count.
+  const billableInput = Math.max(
+    0,
+    inputTokens - cachedInputTokens - cacheCreationTokens,
+  );
   return (
     (billableInput / 1_000_000) * p.input +
     (cachedInputTokens / 1_000_000) * cachedRate +
+    (cacheCreationTokens / 1_000_000) * creationRate +
     (outputTokens / 1_000_000) * p.output
   );
 }
+
+// --- Image / Video / Embedding pricing (seed defaults) --------------------
+// All three kinds are DB-overridable via the `ai_pricing` settings key — the
+// values below are the platform-wide seed and the fallback when the DB has
+// no override. Rates captured 2026-Q2; verify with your provider's current
+// list before relying on these for invoicing.
+
+export type ImagePrice = {
+  /** USD per generated image. */
+  perImage: number;
+};
+
+export type VideoPrice = {
+  /** USD per second of produced video. */
+  perSecond: number;
+};
+
+export type EmbeddingPrice = {
+  /** USD per 1M input tokens. */
+  perMillionTokens: number;
+};
+
+export const IMAGE_PRICING: Record<string, ImagePrice> = {
+  // Google Gemini native API
+  "nano-banana-2":        { perImage: 0.04 },
+  "nano-banana-2-flash":  { perImage: 0.02 },
+  // OpenAI
+  "gpt-image-2":          { perImage: 0.04 },
+  // Replicate
+  "ideogram-v3-balanced": { perImage: 0.05 },
+};
+
+export const VIDEO_PRICING: Record<string, VideoPrice> = {
+  "veo-3.1":      { perSecond: 0.50 },
+  "veo-3.1-fast": { perSecond: 0.25 },
+  "sora-2":       { perSecond: 0.40 },
+  "sora-2-pro":   { perSecond: 1.00 },
+  "wan-2.6-t2v":  { perSecond: 0.30 },
+  "wan-2.6-i2v":  { perSecond: 0.30 },
+};
+
+export const EMBEDDING_PRICING: Record<string, EmbeddingPrice> = {
+  "gemini-embedding-001":   { perMillionTokens: 0.15 },
+  "text-embedding-3-small": { perMillionTokens: 0.02 },
+  "text-embedding-3-large": { perMillionTokens: 0.13 },
+};
+
+export function computeImageCostUsd(
+  model: string,
+  count = 1,
+  pricing: Record<string, ImagePrice> = IMAGE_PRICING,
+): number | null {
+  const p = pricing[model];
+  if (!p) return null;
+  return p.perImage * Math.max(1, count);
+}
+
+export function computeVideoCostUsd(
+  model: string,
+  durationSec: number,
+  pricing: Record<string, VideoPrice> = VIDEO_PRICING,
+): number | null {
+  const p = pricing[model];
+  if (!p) return null;
+  return p.perSecond * Math.max(0, durationSec);
+}
+
+export function computeEmbeddingCostUsd(
+  model: string,
+  tokens: number,
+  pricing: Record<string, EmbeddingPrice> = EMBEDDING_PRICING,
+): number | null {
+  const p = pricing[model];
+  if (!p) return null;
+  return (Math.max(0, tokens) / 1_000_000) * p.perMillionTokens;
+}
+
+// Bundle the four price maps so the DB-backed pricing loader in
+// @marketing/agents can return a single object and overlay overrides onto
+// the seed defaults in one pass.
+export type AiPricingCatalog = {
+  llm: Record<string, LlmPrice>;
+  image: Record<string, ImagePrice>;
+  video: Record<string, VideoPrice>;
+  embedding: Record<string, EmbeddingPrice>;
+};
+
+export const DEFAULT_AI_PRICING: AiPricingCatalog = {
+  llm: LLM_PRICING,
+  image: IMAGE_PRICING,
+  video: VIDEO_PRICING,
+  embedding: EMBEDDING_PRICING,
+};
 
 // --- Adapter contract (Phase 6 Day 1) -------------------------------------
 

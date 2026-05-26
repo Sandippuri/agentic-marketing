@@ -179,7 +179,7 @@ export class CpClient {
     stage?: ContentStage;
     title: string;
     bodyMd: string;
-    imageBrief?: unknown;
+    imageBriefs?: unknown;
   }) {
     return this.req<ContentItemDto>("POST", "/api/content", input);
   }

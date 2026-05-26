@@ -101,6 +101,7 @@ async function getAccessToken(sa: ServiceAccountKey): Promise<string> {
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion: jwt,
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {
@@ -178,6 +179,7 @@ export async function runGA4Report(params: GA4RunReportParams): Promise<GA4Repor
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
     },
   );
 

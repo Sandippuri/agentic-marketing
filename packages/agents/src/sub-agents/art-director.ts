@@ -369,6 +369,8 @@ async function runArtDirectorLegacy(
   const systemPrompt = await getPrompt("art_director.system", ART_DIRECTOR_PROMPT);
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: getLanguageModel(input.model),
+    abortSignal: AbortSignal.timeout(90_000),
+    maxRetries: 2,
     system: systemPrompt,
     prompt: userMessage,
   });

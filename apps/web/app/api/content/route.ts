@@ -19,9 +19,10 @@ const CreateContent = z.object({
   stage: z.enum(CONTENT_STAGES).optional(),
   title: z.string().min(1).max(300),
   bodyMd: z.string().default(""),
-  // Migration 0029. Free-form jsonb passthrough — schema lives in
+  // Migration 0040 reshaped image_brief from single object to array of
+  // ImageBrief (1–4 entries). Free-form jsonb passthrough — schema lives in
   // packages/agents/src/sub-agents/content.ts (ImageBrief).
-  imageBrief: z.unknown().optional(),
+  imageBriefs: z.unknown().optional(),
 });
 
 /**
@@ -134,7 +135,7 @@ export async function POST(request: Request) {
             stage: input.stage ?? "explain",
             title: input.title,
             bodyMd: input.bodyMd,
-            imageBrief: input.imageBrief ?? null,
+            imageBriefs: input.imageBriefs ?? null,
           })
           .returning();
         return row!;

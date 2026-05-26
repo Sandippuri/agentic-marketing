@@ -54,7 +54,10 @@ export function buildKbArchiveImageTool() {
           // Peek at content-type to pick a sane extension. uploadAsset will
           // re-download but that's fine — the extra request is cheap and lets
           // us name the file correctly.
-          const head = await fetch(url, { method: "HEAD" }).catch(() => null);
+          const head = await fetch(url, {
+            method: "HEAD",
+            signal: AbortSignal.timeout(10_000),
+          }).catch(() => null);
           const ct = head?.headers.get("content-type") ?? null;
           const ext = extFromContentType(ct);
           const storagePath = `kb/${slugify(namespace)}/${slugify(slug)}.${ext}`;

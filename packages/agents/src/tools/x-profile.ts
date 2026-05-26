@@ -57,7 +57,10 @@ function authHeader(method: string, url: string): { Authorization: string } {
 
 async function xGet<T>(path: string): Promise<T> {
   const url = `${V2}${path}`;
-  const res = await fetch(url, { headers: authHeader("GET", url) });
+  const res = await fetch(url, {
+    headers: authHeader("GET", url),
+    signal: AbortSignal.timeout(15_000),
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`X GET ${path} → ${res.status}: ${body}`);

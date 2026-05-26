@@ -129,6 +129,7 @@ async function embedOpenAI(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
@@ -165,6 +166,7 @@ async function embedGemini(
         outputDimensionality: EMBED_DIMS,
       })),
     }),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

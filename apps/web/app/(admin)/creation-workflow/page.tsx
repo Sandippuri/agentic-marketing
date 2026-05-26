@@ -17,6 +17,8 @@ import { listEngineDescriptors } from "@/lib/workflow-engines";
 import { getWorkspaceContext } from "@/lib/billing";
 import {
   DEFAULT_WORKFLOW_ENGINE,
+  WORKFLOW_MEDIA,
+  type WorkflowMedia,
   getModelInfo,
   resolveWorkflowEngine,
 } from "@marketing/shared-types";
@@ -362,6 +364,19 @@ export default async function CreationWorkflowPage() {
         }
       : null;
 
+    // Surface the user-chosen media override (image / video / both / auto)
+    // on the card. Only meaningful for kinds that fan out media generation;
+    // older rows that pre-date the field on input render no chip.
+    const inputMedia =
+      r.input && typeof r.input === "object"
+        ? (r.input as { media?: unknown }).media
+        : undefined;
+    const media: WorkflowMedia | null =
+      typeof inputMedia === "string" &&
+      (WORKFLOW_MEDIA as readonly string[]).includes(inputMedia)
+        ? (inputMedia as WorkflowMedia)
+        : null;
+
     // Prefer custom-engine status when present (it's updated mid-flight by
     // the GenerationTracker). Otherwise fall back to workflow_runs.status.
     const status = generationJob ? generationJob.status : r.status;
@@ -404,6 +419,7 @@ export default async function CreationWorkflowPage() {
           }
         : null,
       model,
+      media,
       contentAssets: r.contentId
         ? (assetsByContentId.get(r.contentId) ?? [])
         : [],

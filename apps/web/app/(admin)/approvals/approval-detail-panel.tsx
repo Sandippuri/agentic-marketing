@@ -7,7 +7,6 @@ import {
   useDecideApproval,
   useGenerateAssets,
   useSelectAsset,
-  useUpdateContent,
 } from "@/lib/query/use-approvals";
 import { parseRationale } from "@marketing/shared-types";
 import { isVideoAsset } from "@/lib/asset-media";
@@ -94,22 +93,68 @@ function DetailBody({
   const decide = useDecideApproval();
   const selectAsset = useSelectAsset();
   const generateAssets = useGenerateAssets();
-  const updateContent = useUpdateContent();
 
   const [reason, setReason] = useState("");
   const [reasonMode, setReasonMode] = useState<
     "changes_requested" | "rejected" | null
   >(null);
-  const [previewIdx, setPreviewIdx] = useState(0);
+  // Which slot the user is currently inspecting. Defaults to slot 0 (lead).
+  const [activeSlot, setActiveSlot] = useState(0);
+  // Preview index is per-slot — switching slots resets to the slot's first
+  // renderable asset. Stored as a map so navigating between slots remembers
+  // where the reviewer was within each.
+  const [previewIdxBySlot, setPreviewIdxBySlot] = useState<
+    Record<number, number>
+  >({});
 
-  const renderable = approval.assets.filter((a) => a.signedUrl);
+  // Group renderable assets by slot. Each slot is { slotIndex, assets[] }
+  // where assets[] is the slot's variant strip (approved first, drafts
+  // following). slotIndex order = display order (cover at 0, swipes after).
+  const renderableAll = approval.assets.filter((a) => a.signedUrl);
+  const slotsMap = new Map<number, typeof renderableAll>();
+  for (const a of renderableAll) {
+    const slot = a.sequenceOrder ?? 0;
+    if (!slotsMap.has(slot)) slotsMap.set(slot, []);
+    slotsMap.get(slot)!.push(a);
+  }
+  const slots = [...slotsMap.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([slotIndex, assets]) => ({
+      slotIndex,
+      // Approved variant first so the carousel opens on the canonical pick.
+      assets: [...assets].sort((a, b) =>
+        a.status === "approved" ? -1 : b.status === "approved" ? 1 : 0,
+      ),
+    }));
+
+  const safeActiveSlot =
+    slots.length === 0
+      ? 0
+      : slots.find((s) => s.slotIndex === activeSlot)?.slotIndex ??
+        slots[0]!.slotIndex;
+  const activeSlotData =
+    slots.find((s) => s.slotIndex === safeActiveSlot) ?? null;
+  const renderable = activeSlotData?.assets ?? [];
+
+  // Slot-0 approved is the canonical lead the post will publish with. Used
+  // for the row thumbnail elsewhere — here we still expose committedId
+  // scoped to the active slot so "selected" badges read correctly.
   const committedId =
     renderable.find((a) => a.status === "approved")?.id ?? renderable[0]?.id ?? null;
 
+  const previewIdx = previewIdxBySlot[safeActiveSlot] ?? 0;
   const safePreviewIdx =
     renderable.length === 0 ? 0 : Math.min(previewIdx, renderable.length - 1);
   const previewAsset = renderable[safePreviewIdx] ?? null;
   const previewIsCommitted = previewAsset?.id === committedId;
+  const isMultiSlot = slots.length > 1;
+
+  // Body markers ([IMAGE 1: ...], [IMAGE 2: ...]) reference *images at
+  // publish time* — one canonical (approved) asset per slot, ordered by
+  // sequenceOrder. Independent of which slot the reviewer is previewing.
+  const committedBySlot = slots
+    .map((s) => s.assets.find((a) => a.status === "approved") ?? s.assets[0])
+    .filter(Boolean);
 
   const { rationale, bodyCopy } = parseRationale(approval.bodyMd ?? "");
   const bodySegments = bodyCopy ? splitBody(bodyCopy) : [];
@@ -132,13 +177,19 @@ function DetailBody({
     );
   }
 
+  function setPreviewIdxForActive(updater: (prev: number) => number) {
+    setPreviewIdxBySlot((m) => ({
+      ...m,
+      [safeActiveSlot]: updater(m[safeActiveSlot] ?? 0),
+    }));
+  }
   function handlePrev() {
     if (renderable.length < 2) return;
-    setPreviewIdx((i) => (i - 1 + renderable.length) % renderable.length);
+    setPreviewIdxForActive((i) => (i - 1 + renderable.length) % renderable.length);
   }
   function handleNext() {
     if (renderable.length < 2) return;
-    setPreviewIdx((i) => (i + 1) % renderable.length);
+    setPreviewIdxForActive((i) => (i + 1) % renderable.length);
   }
 
   return (
@@ -173,6 +224,42 @@ function DetailBody({
       </header>
 
       <div className="flex-1 overflow-y-auto">
+        {/* SLOT TABS — only when the post carries multiple images. Each tab
+            owns its own variant carousel + regenerate button below. */}
+        {approval.needsImages && isMultiSlot && (
+          <section className="px-5 pt-4">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {slots.map((s) => {
+                const slotHasApproved = s.assets.some(
+                  (a) => a.status === "approved",
+                );
+                const isActive = s.slotIndex === safeActiveSlot;
+                return (
+                  <button
+                    key={s.slotIndex}
+                    type="button"
+                    onClick={() => setActiveSlot(s.slotIndex)}
+                    className={`text-xs px-2.5 py-1.5 rounded-md border transition-colors ${
+                      isActive
+                        ? "border-[var(--accent)] text-[var(--accent)] bg-[color-mix(in_oklab,var(--accent)_10%,transparent)]"
+                        : "border-[var(--border)] text-mid hover:text-ink"
+                    }`}
+                  >
+                    Image {s.slotIndex + 1}
+                    {slotHasApproved && (
+                      <span
+                        className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full"
+                        style={{ background: "var(--success)" }}
+                        aria-label="Has approved asset"
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* HERO IMAGE */}
         <section className="px-5 pt-5">
           {!approval.needsImages ? (
@@ -191,7 +278,16 @@ function DetailBody({
               type="button"
               onClick={() =>
                 generateAssets.mutate(
-                  { contentId: approval.contentId },
+                  // Scope the generation to the active slot when the post
+                  // has multiple — otherwise an empty slot 2 triggers a
+                  // full-post regen and rewrites slot 1's already-approved
+                  // image. Bare call (no slotIndex) is the single-image path.
+                  isMultiSlot
+                    ? {
+                        contentId: approval.contentId,
+                        slotIndex: safeActiveSlot,
+                      }
+                    : { contentId: approval.contentId },
                   { onSuccess: () => router.refresh() },
                 )
               }
@@ -203,7 +299,11 @@ function DetailBody({
                   <svg className="spin text-mid" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M21 12a9 9 0 11-6.219-8.56" />
                   </svg>
-                  <span className="text-xs text-mid">Generating variants…</span>
+                  <span className="text-xs text-mid">
+                    {isMultiSlot
+                      ? `Generating image ${safeActiveSlot + 1}…`
+                      : "Generating variants…"}
+                  </span>
                 </>
               ) : (
                 <>
@@ -213,7 +313,11 @@ function DetailBody({
                     <path d="M21 15l-5-5L5 21" />
                   </svg>
                   <span className="text-sm text-[var(--accent)]">
-                    {generateAssets.isError ? "Retry image generation" : "Generate image variants"}
+                    {generateAssets.isError
+                      ? "Retry image generation"
+                      : isMultiSlot
+                        ? `Generate image ${safeActiveSlot + 1}`
+                        : "Generate image variants"}
                   </span>
                 </>
               )}
@@ -288,7 +392,7 @@ function DetailBody({
                   <button
                     key={asset.id}
                     type="button"
-                    onClick={() => setPreviewIdx(i)}
+                    onClick={() => setPreviewIdxForActive(() => i)}
                     title={isCommitted ? "Currently selected" : "Preview this variant"}
                     className={`relative aspect-square rounded-md overflow-hidden border bg-[var(--surface-2)] transition-all ${
                       isPreviewing
@@ -330,86 +434,62 @@ function DetailBody({
             </div>
           )}
 
-          {/* USE THIS VARIANT */}
-          {renderable.length > 1 && previewAsset && !previewIsCommitted && (
-            <button
-              type="button"
-              onClick={() => selectAsset.mutate({ assetId: previewAsset.id })}
-              disabled={selectAsset.isPending}
-              className="mt-3 btn btn-secondary btn-sm w-full"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
-              Use this variant
-            </button>
+          {/* USE THIS VARIANT / REGENERATE THIS SLOT */}
+          {approval.needsImages && renderable.length > 0 && (
+            <div className="mt-3 flex items-center gap-2">
+              {renderable.length > 1 && previewAsset && !previewIsCommitted && (
+                <button
+                  type="button"
+                  onClick={() => selectAsset.mutate({ assetId: previewAsset.id })}
+                  disabled={selectAsset.isPending}
+                  className="btn btn-secondary btn-sm flex-1"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                  Use this variant
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() =>
+                  generateAssets.mutate(
+                    isMultiSlot
+                      ? {
+                          contentId: approval.contentId,
+                          slotIndex: safeActiveSlot,
+                        }
+                      : { contentId: approval.contentId },
+                    { onSuccess: () => router.refresh() },
+                  )
+                }
+                disabled={generateAssets.isPending}
+                className="btn btn-ghost btn-sm flex-1"
+                title={
+                  isMultiSlot
+                    ? `Generate a fresh variant for image ${safeActiveSlot + 1}`
+                    : "Generate a fresh variant"
+                }
+              >
+                {generateAssets.isPending ? (
+                  <>
+                    <svg className="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M21 12a9 9 0 11-6.219-8.56" />
+                    </svg>
+                    Regenerating…
+                  </>
+                ) : (
+                  <>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 12a9 9 0 1015-6.7L21 8" />
+                      <path d="M21 3v5h-5" />
+                    </svg>
+                    {isMultiSlot ? `Regenerate image ${safeActiveSlot + 1}` : "Regenerate"}
+                  </>
+                )}
+              </button>
+            </div>
           )}
-
-          {/* IMAGES TOGGLE */}
-          <div className="mt-4 flex items-center gap-4">
-            <button
-              type="button"
-              onClick={() =>
-                updateContent.mutate(
-                  {
-                    contentId: approval.contentId,
-                    needsImages: !approval.needsImages,
-                  },
-                  { onSuccess: () => router.refresh() },
-                )
-              }
-              disabled={updateContent.isPending}
-              className="text-xs text-mid hover:text-ink flex items-center gap-1.5"
-            >
-              <span
-                role="switch"
-                aria-checked={approval.needsImages}
-                className="relative inline-flex h-4 w-7 rounded-full transition-colors"
-                style={{
-                  background: approval.needsImages ? "var(--accent)" : "var(--surface-2)",
-                  border: "1px solid var(--border)",
-                }}
-              >
-                <span
-                  className="absolute top-[1px] h-[12px] w-[12px] rounded-full bg-white transition-all"
-                  style={{ left: approval.needsImages ? "13px" : "1px" }}
-                />
-              </span>
-              Images {approval.needsImages ? "on" : "off"}
-            </button>
-
-            {/* VIDEO TOGGLE — only meaningful for channels Veo supports */}
-            <button
-              type="button"
-              onClick={() =>
-                updateContent.mutate(
-                  {
-                    contentId: approval.contentId,
-                    needsVideo: !approval.needsVideo,
-                  },
-                  { onSuccess: () => router.refresh() },
-                )
-              }
-              disabled={updateContent.isPending}
-              className="text-xs text-mid hover:text-ink flex items-center gap-1.5"
-            >
-              <span
-                role="switch"
-                aria-checked={approval.needsVideo}
-                className="relative inline-flex h-4 w-7 rounded-full transition-colors"
-                style={{
-                  background: approval.needsVideo ? "var(--accent)" : "var(--surface-2)",
-                  border: "1px solid var(--border)",
-                }}
-              >
-                <span
-                  className="absolute top-[1px] h-[12px] w-[12px] rounded-full bg-white transition-all"
-                  style={{ left: approval.needsVideo ? "13px" : "1px" }}
-                />
-              </span>
-              Video {approval.needsVideo ? "on" : "off"}
-            </button>
-          </div>
         </section>
 
         {/* AI RATIONALE */}
@@ -446,7 +526,11 @@ function DetailBody({
                       </p>
                     );
                   }
-                  const asset = renderable[seg.index];
+                  // Body markers map to the post's PUBLISHED images (one per
+                  // slot, ordered), not the active-slot's variant strip.
+                  // Without this, switching to slot 2 in the carousel would
+                  // make the [IMAGE 1] marker render slot 2's preview.
+                  const asset = committedBySlot[seg.index];
                   return (
                     <Fragment key={`i-${i}`}>
                       {asset?.signedUrl ? (
@@ -530,10 +614,16 @@ function DetailBody({
               placeholder={
                 reasonMode === "rejected"
                   ? "Why are you rejecting this? (captured for the learning loop)"
-                  : "What needs to change?"
+                  : "What should change? e.g. 'replace the 3D cards with a student photo'"
               }
               className="field flex-1"
             />
+            {reasonMode === "changes_requested" && (
+              <p className="text-[11px] leading-snug text-[var(--muted)]">
+                For image changes, describe what you want differently — subject, mood, or layout.
+                Vague feedback (&ldquo;I don&rsquo;t like it&rdquo;) often produces a similar image.
+              </p>
+            )}
             <div className="flex gap-2">
               <button
                 onClick={() => decideWith(reasonMode, reason.trim())}

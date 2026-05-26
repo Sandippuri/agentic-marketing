@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 import type { CpClient } from "@marketing/cp-client";
 import {
   CHANNELS,
+  WORKFLOW_MEDIA,
   resolveLlmModel,
   resolveResearchSearchProvider,
   type LlmModel,
@@ -34,6 +35,7 @@ import { chunkAndEmbed } from "@marketing/agents/kb";
 import { buildWorkspaceTools } from "./workspace-tools";
 import { buildAttachmentTools } from "./attachment-tools";
 import { buildUiTools } from "./ui-tools";
+import { buildKnowledgeContext } from "./knowledge-context";
 import { publishWebThreadEvent } from "./web-bus";
 import {
   dispatchStart,
@@ -526,8 +528,14 @@ async function buildOrchestratorCall({
             .enum(CHANNELS)
             .optional()
             .describe("Target channel for kind='single_post'."),
+          media: z
+            .enum(WORKFLOW_MEDIA)
+            .optional()
+            .describe(
+              "Hard override for visual format: 'image' = image only, 'video' = video only (forced even on channels that don't normally get video), 'both' = image AND video, 'auto' = channel default. Set this whenever the user names a format ('make a video', 'video for LinkedIn', 'just an image'). Leave undefined to let the channel decide.",
+            ),
         }),
-        execute: async ({ kind, request, campaignId, contentId, channel }) => {
+        execute: async ({ kind, request, campaignId, contentId, channel, media }) => {
           try {
             const engineId = await getDefaultWorkflowEngine();
             const dispatchModel = model ?? (await getDefaultWorkflowModel());
@@ -538,6 +546,7 @@ async function buildOrchestratorCall({
               campaignId,
               contentId,
               channel,
+              media,
               threadRef,
               model: dispatchModel,
               userId,
@@ -587,8 +596,11 @@ async function buildOrchestratorCall({
 }
 
 async function _runOrchestrator(input: OrchestratorInput): Promise<string> {
-  const { resolvedModel, baseArgs, systemPrompt, prompt } =
-    await buildOrchestratorCall(input);
+  const [{ resolvedModel, baseArgs, systemPrompt, prompt }, knowledgeBlock] =
+    await Promise.all([
+      buildOrchestratorCall(input),
+      buildKnowledgeContext({ workspaceId: input.workspaceId, query: input.text }),
+    ]);
   const {
     text: response,
     steps,
@@ -598,6 +610,7 @@ async function _runOrchestrator(input: OrchestratorInput): Promise<string> {
     ...baseArgs,
     messages: [
       cachedSystemMessage(systemPrompt),
+      ...uncachedSystem(knowledgeBlock),
       { role: "user", content: prompt },
     ],
   });
@@ -644,12 +657,16 @@ async function _streamOrchestrator(
   input: OrchestratorInput,
   opts: StreamOrchestratorOpts,
 ): Promise<string> {
-  const { resolvedModel, baseArgs, systemPrompt, prompt } =
-    await buildOrchestratorCall(input);
+  const [{ resolvedModel, baseArgs, systemPrompt, prompt }, knowledgeBlock] =
+    await Promise.all([
+      buildOrchestratorCall(input),
+      buildKnowledgeContext({ workspaceId: input.workspaceId, query: input.text }),
+    ]);
   const result = streamText({
     ...baseArgs,
     messages: [
       cachedSystemMessage(systemPrompt),
+      ...uncachedSystem(knowledgeBlock),
       { role: "user", content: prompt },
     ],
   });
@@ -737,17 +754,22 @@ async function _streamOrchestratorUi(
     lastUser?.parts?.find((p) => p.type === "text")?.text ??
     "";
 
-  const { resolvedModel, baseArgs, systemPrompt } = await buildOrchestratorCall({
-    ...input,
-    text: userText,
-    // History block is duplicative — `messages` already carries every turn.
-    history: [],
-  });
+  const [{ resolvedModel, baseArgs, systemPrompt }, knowledgeBlock] =
+    await Promise.all([
+      buildOrchestratorCall({
+        ...input,
+        text: userText,
+        // History block is duplicative — `messages` already carries every turn.
+        history: [],
+      }),
+      buildKnowledgeContext({ workspaceId: input.workspaceId, query: userText }),
+    ]);
 
   const result = streamText({
     ...baseArgs,
     messages: [
       cachedSystemMessage(systemPrompt),
+      ...uncachedSystem(knowledgeBlock),
       ...convertToCoreMessages(input.messages),
     ],
     onFinish: async ({ response, usage, providerMetadata }) => {
@@ -806,6 +828,18 @@ function cachedSystemMessage(systemPrompt: string): CoreMessage {
       anthropic: { cacheControl: { type: "ephemeral" } },
     },
   };
+}
+
+// Wrap a per-turn block (today: kb_search hits) as a non-cached system
+// message AFTER the cached orchestrator prompt. The Anthropic provider packs
+// consecutive system messages into a single multi-block `system` field; the
+// cache breakpoint stays on the first block, so this block doesn't bust the
+// cache but also doesn't get cached (which is correct — its content changes
+// every turn). Returns an empty array when the block is empty so we don't
+// inject a useless system message.
+function uncachedSystem(block: string): CoreMessage[] {
+  if (!block.trim()) return [];
+  return [{ role: "system", content: block }];
 }
 
 async function loadResearchProvider() {

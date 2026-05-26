@@ -23,6 +23,12 @@ export type GenerateAssetVariantsInput = {
   workspaceId: string;
   /** Optional override for the subject prompt; defaults to the content title. */
   subject?: string;
+  /**
+   * When set, only this slot regenerates and the previous approved asset at
+   * the same slot is demoted. Omitted = regenerate every slot in
+   * content_items.image_brief.
+   */
+  slotIndex?: number;
 };
 
 /**
@@ -106,11 +112,17 @@ export async function generateAssetVariants(
       workspaceId: input.workspaceId,
       contentId: input.contentId,
       request: input.subject,
+      slotIndex: input.slotIndex,
     },
   ]);
   // run.returnValue is typed as `unknown` by the workflow SDK overloads; cast
   // to the workflow's declared output now that we passed a concrete input.
   const result = (await run.returnValue) as { candidatesGenerated: number };
-  void kickVideoVariant(input.contentId);
+  // Skip the video kickoff for per-slot regenerations — video is keyed off
+  // the lead (slot 0) and re-rendering slot 1's image shouldn't churn an
+  // already-good video.
+  if (input.slotIndex == null) {
+    void kickVideoVariant(input.contentId);
+  }
   return { inserted: result.candidatesGenerated };
 }

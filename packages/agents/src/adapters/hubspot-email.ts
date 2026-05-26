@@ -37,6 +37,7 @@ async function hs<T>(method: string, path: string, token: string, body?: unknown
       "Content-Type": "application/json",
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

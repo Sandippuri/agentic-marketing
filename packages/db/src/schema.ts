@@ -40,6 +40,7 @@ import {
   ACTOR_KINDS,
   SCOPE_TYPES,
   CHANNELS,
+  SOCIAL_PROVIDERS,
   BRAND_DOC_STATUSES,
   BRAND_DRAFT_STATUSES,
   EXTRACTION_RUN_STATUSES,
@@ -78,6 +79,7 @@ export const publishJobStatusEnum = pgEnum(
   "publish_job_status",
   PUBLISH_JOB_STATUSES,
 );
+export const socialProviderEnum = pgEnum("social_provider", SOCIAL_PROVIDERS);
 export const publishJobModeEnum = pgEnum("publish_job_mode", ["live", "test"]);
 export const assetKindEnum = pgEnum("asset_kind", ASSET_KINDS);
 export const assetStatusEnum = pgEnum("asset_status", ASSET_STATUSES);
@@ -316,12 +318,13 @@ export const contentItems = pgTable(
     // generators). Schema lives in art-director.ts as VisualConceptBrief —
     // free-form jsonb here so the brief shape can evolve without migrations.
     visualBrief: jsonb("visual_brief"),
-    // Per-post image brief (migration 0029) emitted by the Content agent at
-    // draft time. Names the literal subject + composition + must-show /
-    // must-not-show. The Art Director refines this into the model prompt
-    // instead of guessing visuals from the body. Shape lives in
+    // Per-post image briefs (migration 0029, reshaped to array in 0040).
+    // The Content agent emits ONE brief per intended image (1–4), clamped by
+    // the channel's native max (LinkedIn=1, IG/FB/X=4). Each brief names the
+    // literal subject + composition + must-show / must-not-show; the Art
+    // Director refines each into a model prompt. Shape lives in
     // packages/agents/src/sub-agents/content.ts as ImageBrief.
-    imageBrief: jsonb("image_brief"),
+    imageBriefs: jsonb("image_brief"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -465,6 +468,12 @@ export const assets = pgTable(
     judgeScore: jsonb("judge_score"),
     judgeTotal: numeric("judge_total", { precision: 5, scale: 2 }),
     judgeVerdict: text("judge_verdict"),
+    // Which image slot this asset fills on the parent content_item (0-based,
+    // 0…N-1 where N = content_items.image_brief array length). Multiple rows
+    // can share contentId+sequenceOrder — those are competing variants for
+    // the slot, with one promoted to status=approved at any time. Added in
+    // migration 0040; legacy single-image rows default to 0.
+    sequenceOrder: integer("sequence_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -474,6 +483,10 @@ export const assets = pgTable(
   },
   (t) => ({
     contentIdx: index("assets_content_idx").on(t.contentId),
+    contentSequenceIdx: index("assets_content_sequence_idx").on(
+      t.contentId,
+      t.sequenceOrder,
+    ),
     judgeTotalIdx: index("assets_judge_total_idx").on(t.judgeTotal),
     workspaceIdx: index("assets_workspace_idx").on(t.workspaceId),
   }),
@@ -988,58 +1001,95 @@ export const workflowRuns = pgTable(
   }),
 );
 
-// --- llm_usage ----------------------------------------------------------------
-// One row per LLM call. Written by recordLlmUsage in @marketing/agents/usage,
-// read by the /api/usage aggregate endpoint and rendered on the settings page.
-// cost_usd is computed at write time from the static price map in
-// shared-types so historical rows stay accurate even if rates change later.
+// --- ai_usage -----------------------------------------------------------------
+// One row per AI provider call. Written by recordAiUsage in
+// @marketing/agents/usage; read by /api/usage, the runs admin page, the cost
+// budget guard, and the single-post workflow's per-run cost rollup.
+//
+// `kind` distinguishes 'llm' | 'embedding' | 'image' | 'video' so a single
+// aggregate query sums total spend across all AI modalities. cost_usd is
+// computed at write time from the DB-backed price catalog (settings key
+// `ai_pricing`) with seed defaults from shared-types — historical rows stay
+// accurate even when rates change later.
+//
+// Token columns (input_tokens, output_tokens, cached_input_tokens,
+// total_tokens) remain populated for kind='llm' and kind='embedding'. For
+// images/videos they are 0 and the meaningful billing dimension is
+// unit_count_output (images generated, video seconds produced).
 
-export const llmUsage = pgTable(
-  "llm_usage",
+export const aiUsage = pgTable(
+  "ai_usage",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    // Stamped at write time by recordLlmUsage once PR 5 lands. Without this
-    // we can't attribute LLM spend to a tenant for cost dashboards.
+    // Stamped at write time by recordAiUsage; required so every row is
+    // tenant-attributed for cost dashboards.
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     occurredAt: timestamp("occurred_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // 'llm' | 'embedding' | 'image' | 'video'. Existing rows backfilled to
+    // 'llm' by migration 0039.
+    kind: text("kind").notNull().default("llm"),
+    // 'tokens' | 'images' | 'seconds'. Tells the cost calculator how to
+    // interpret unit_count_input/output.
+    units: text("units").notNull().default("tokens"),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     // strategist | content | asset | analyst | orchestrator | single-post …
+    // For non-LLM kinds: the caller (e.g. "asset", "kb-search", "ingest").
     agent: text("agent").notNull(),
     threadRef: text("thread_ref"),
     jobId: uuid("job_id"),
     // Engine-agnostic workflow run this call belongs to. Lets the
-    // /api/usage/by-workflow endpoint sum tokens per run regardless of
-    // which engine (custom/vercel/cloudflare) executed it. Nullable for
-    // calls outside any workflow (e.g. chat orchestrator turns).
+    // /api/usage/by-workflow endpoint sum cost per run regardless of which
+    // engine executed it. Nullable for calls outside any workflow.
     workflowRunId: uuid("workflow_run_id").references(
       () => workflowRuns.id,
       { onDelete: "set null" },
     ),
+    // LLM-specific token counts. For embeddings, inputTokens carries the
+    // embed input tokens and outputTokens is 0. For images/videos, all
+    // four token columns are 0; use unit_count_output instead.
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+    // Anthropic cache_creation_input_tokens — counted at the first write of
+    // a cached prefix. Billed at a higher rate than cached reads.
+    cacheCreationTokens: integer("cache_creation_tokens").notNull().default(0),
     totalTokens: integer("total_tokens").notNull().default(0),
-    // Null when the model isn't in the price map (e.g. a brand-new id we
-    // haven't priced yet); the row is still useful for token aggregates.
+    // Generalized billing dimension. For kind='image' output=#images
+    // generated (input=0). For kind='video' output=seconds produced.
+    // For kind='llm'/'embedding' these mirror input_tokens/output_tokens
+    // so cross-kind aggregates work without special casing.
+    unitCountInput: integer("unit_count_input").notNull().default(0),
+    unitCountOutput: integer("unit_count_output").notNull().default(0),
+    // Null when the model isn't in the price map (e.g. a brand-new id);
+    // the row is still useful for usage aggregates.
     costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
+    // Provider-specific extras: replicate prediction id, aspect ratio,
+    // raw provider metadata blob, etc.
+    metadata: jsonb("metadata").notNull().default({}),
     error: text("error"),
   },
   (t) => ({
-    occurredIdx: index("llm_usage_occurred_at_idx").on(t.occurredAt),
-    modelIdx: index("llm_usage_model_idx").on(t.model),
-    agentIdx: index("llm_usage_agent_idx").on(t.agent),
-    workflowRunIdx: index("llm_usage_workflow_run_idx").on(t.workflowRunId),
-    workspaceIdx: index("llm_usage_workspace_idx").on(
+    occurredIdx: index("ai_usage_occurred_at_idx").on(t.occurredAt),
+    modelIdx: index("ai_usage_model_idx").on(t.model),
+    agentIdx: index("ai_usage_agent_idx").on(t.agent),
+    workflowRunIdx: index("ai_usage_workflow_run_idx").on(t.workflowRunId),
+    workspaceIdx: index("ai_usage_workspace_idx").on(
       t.workspaceId,
       t.occurredAt,
     ),
+    kindIdx: index("ai_usage_kind_idx").on(t.kind, t.occurredAt),
   }),
 );
+
+// Backwards-compat alias for callers still importing `llmUsage`. New code
+// should use `aiUsage`. This alias will be removed once all readers
+// migrate.
+export const llmUsage = aiUsage;
 
 // --- settings -----------------------------------------------------------------
 // PR 4: per-workspace settings with a global fallback row (workspace_id IS NULL).
@@ -1687,8 +1737,11 @@ export type GenerationJobStep = typeof generationJobSteps.$inferSelect;
 export type NewGenerationJobStep = typeof generationJobSteps.$inferInsert;
 export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type NewWorkflowRun = typeof workflowRuns.$inferInsert;
-export type LlmUsage = typeof llmUsage.$inferSelect;
-export type NewLlmUsage = typeof llmUsage.$inferInsert;
+export type AiUsage = typeof aiUsage.$inferSelect;
+export type NewAiUsage = typeof aiUsage.$inferInsert;
+// Backwards-compat type aliases — prefer AiUsage / NewAiUsage in new code.
+export type LlmUsage = AiUsage;
+export type NewLlmUsage = NewAiUsage;
 export type KbCollection = typeof kbCollections.$inferSelect;
 export type NewKbCollection = typeof kbCollections.$inferInsert;
 export type KbDocument = typeof kbDocuments.$inferSelect;
@@ -1736,7 +1789,44 @@ export {
   ACTOR_KINDS,
   SCOPE_TYPES,
   CHANNELS,
+  SOCIAL_PROVIDERS,
 } from "@marketing/shared-types";
+
+// --- Social connections (per-workspace OAuth tokens) ------------------------
+
+export const socialConnections = pgTable(
+  "social_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    provider: socialProviderEnum("provider").notNull(),
+    accountId: text("account_id").notNull(),
+    accountLabel: text("account_label").notNull(),
+    // Base64(iv|tag|ciphertext) — see apps/web/lib/oauth/encryption.ts.
+    accessTokenEnc: text("access_token_enc").notNull(),
+    refreshTokenEnc: text("refresh_token_enc"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    scopes: text("scopes").array().notNull().default(sql`'{}'::text[]`),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    workspaceProviderIdx: uniqueIndex(
+      "social_connections_workspace_provider_idx",
+    ).on(t.workspaceId, t.provider),
+  }),
+);
+
+export type SocialConnection = typeof socialConnections.$inferSelect;
+export type NewSocialConnection = typeof socialConnections.$inferInsert;
 
 // Hint for drizzle-kit / Postgres trigger authors: the plan §3 invariant is
 // that publish_jobs MUST refuse inserts when the linked content_items row is
